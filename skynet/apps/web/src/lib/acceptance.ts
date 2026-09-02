@@ -341,4 +341,256 @@ export const SCENARIOS: Scenario[] = [
       return steps;
     },
   },
+  {
+    id: "momentum-board-transitions",
+    name: "Momentum Board transitions feed reads clean for a fresh project",
+    desc: "A brand-new project (no kanban moves yet) reports an empty transition feed, not an error — control-plane only.",
+    run: async () => {
+      const steps: Step[] = [];
+      const name = `UAT: momentum ${uid()}`;
+      await api.createProject({ name, goal: "acceptance" });
+      const s = await settle((sn) => sn.projects.some((p) => p.name === name));
+      const p = s.projects.find((p2) => p2.name === name)!;
+      const transitions = await api.fetchProjectTransitions(p.id, { limit: 50 });
+      steps.push(step("transitions endpoint returns an array", Array.isArray(transitions), `${transitions.length} transitions`));
+      steps.push(step("a fresh project has no transitions yet", transitions.length === 0));
+      await swallow(api.deleteProject(p.id));
+      return steps;
+    },
+  },
+  {
+    id: "home-workspace-transitions",
+    name: "Home's workspace-wide transitions read (Phase 22)",
+    desc: "The cross-project transitions endpoint Home's automation-rate/stalled-count stats read — control-plane only: array shape, and `since` actually filters, not just per-project scoping.",
+    run: async () => {
+      const steps: Step[] = [];
+      const all = await api.fetchTransitions({ limit: 50 });
+      steps.push(step("workspace transitions endpoint returns an array", Array.isArray(all), `${all.length} transitions`));
+      // A `since` far in the future can never match anything real — proves
+      // the filter is actually applied server-side, not just ignored.
+      const future = await api.fetchTransitions({ since: Date.now() + 365 * 24 * 60 * 60 * 1000 });
+      steps.push(step("a future `since` returns nothing", future.length === 0));
+      return steps;
+    },
+  },
+  {
+    id: "roadmap-doc-view",
+    name: "Roadmap document view's doc/proposals endpoints (Phase 26)",
+    desc: "The parsed-doc and proposals-list reads for an unbound project (no repo — control-plane only, no local git checkout needed here), plus applying a nonexistent proposal is refused honestly.",
+    run: async () => {
+      const steps: Step[] = [];
+      const name = `UAT: roadmap doc view ${uid()}`;
+      await api.createProject({ name, goal: "acceptance" });
+      const s = await settle((sn) => sn.projects.some((p) => p.name === name));
+      const p = s.projects.find((p2) => p2.name === name)!;
+
+      const doc = await api.fetchProjectRoadmapDoc(p.id);
+      steps.push(step("parsed-doc endpoint returns a RoadmapDoc shape (never errors on an unbound project)", Array.isArray(doc.ast) && Array.isArray(doc.sections)));
+
+      const proposals = await api.fetchRoadmapProposals(p.id);
+      steps.push(step("proposals list returns an array", Array.isArray(proposals), `${proposals.length} proposals`));
+      steps.push(step("a fresh project has no proposals yet", proposals.length === 0));
+
+      let refused = false;
+      try {
+        await api.applyRoadmapProposal(p.id, "nope");
+      } catch {
+        refused = true;
+      }
+      steps.push(step("applying a proposal id that doesn't exist is refused, not silently accepted", refused));
+
+      await swallow(api.deleteProject(p.id));
+      return steps;
+    },
+  },
+  {
+    id: "task-detail-panel",
+    name: "Task Detail panel's own endpoints — trail + subtask accept",
+    desc: "A fresh task's transition trail is empty; accepting all (zero) suggested subtasks is a clean no-op; accepting a specific but nonexistent one is refused — control-plane only, no seeded Proposal needed.",
+    run: async () => {
+      const steps: Step[] = [];
+      const name = `UAT: task detail ${uid()}`;
+      await api.createProject({ name, goal: "acceptance" });
+      let s = await settle((sn) => sn.projects.some((p) => p.name === name));
+      const p = s.projects.find((p2) => p2.name === name)!;
+      await api.createTask(p.id, "acceptance: subtasks + trail");
+      s = await settle((sn) => sn.tasks.some((t) => t.projectId === p.id));
+      const task = s.tasks.find((t) => t.projectId === p.id)!;
+
+      const trail = await api.fetchTaskTransitions(task.id);
+      steps.push(step("a fresh task's trail is empty", Array.isArray(trail) && trail.length === 0, `${trail.length} transitions`));
+
+      const acceptedAll = await api.acceptAllSubtasks(task.id);
+      steps.push(step("accept-all with nothing pending is a clean no-op", Array.isArray(acceptedAll) && acceptedAll.length === 0));
+
+      try {
+        await api.acceptSubtask(task.id, "nonexistent-proposal-id");
+        steps.push(step("accepting an unknown proposal id is refused", false, "did not throw"));
+      } catch (e) {
+        const status = e instanceof api.ApiError ? e.status : 0;
+        steps.push(step("accepting an unknown proposal id is refused", status === 404, `status ${status}`));
+      }
+
+      await swallow(api.deleteProject(p.id));
+      return steps;
+    },
+  },
+  {
+    id: "activity-feed-undo",
+    name: "Activity Feed's pending-actions + undo endpoints",
+    desc: "A fresh project has no pending rule actions yet; undoing a nonexistent one is refused — control-plane only, no seeded rule trigger needed.",
+    run: async () => {
+      const steps: Step[] = [];
+      const name = `UAT: activity feed ${uid()}`;
+      await api.createProject({ name, goal: "acceptance" });
+      const s = await settle((sn) => sn.projects.some((p) => p.name === name));
+      const p = s.projects.find((p2) => p2.name === name)!;
+
+      const pending = await api.fetchPendingActions(p.id, { status: "finalized" });
+      steps.push(step("pending-actions endpoint returns an array", Array.isArray(pending), `${pending.length} pending`));
+      steps.push(step("a fresh project has no pending actions yet", pending.length === 0));
+
+      try {
+        await api.undoRuleAction("nonexistent-pending-id");
+        steps.push(step("undoing an unknown pending action is refused", false, "did not throw"));
+      } catch (e) {
+        const status = e instanceof api.ApiError ? e.status : 0;
+        steps.push(step("undoing an unknown pending action is refused", status === 404, `status ${status}`));
+      }
+
+      await swallow(api.deleteProject(p.id));
+      return steps;
+    },
+  },
+  {
+    id: "pattern-onboarding-accept-dismiss",
+    name: "Pattern-spotted onboarding's accept/dismiss endpoints",
+    desc: "Waiting for the real pattern detector to fire needs weeks of genuine manual-move history (by design — see sweepPatternDetection's own doc comment), so this exercises the generic accept/dismiss refusal path against a nonexistent proposal id — control-plane only, no seeded detector trigger needed.",
+    run: async () => {
+      const steps: Step[] = [];
+      const name = `UAT: pattern onboarding ${uid()}`;
+      await api.createProject({ name, goal: "acceptance" });
+      const s = await settle((sn) => sn.projects.some((p) => p.name === name));
+      const p = s.projects.find((p2) => p2.name === name)!;
+
+      try {
+        await api.acceptProposal(p.id, "nonexistent-proposal-id");
+        steps.push(step("accepting an unknown proposal is refused", false, "did not throw"));
+      } catch (e) {
+        const status = e instanceof api.ApiError ? e.status : 0;
+        steps.push(step("accepting an unknown proposal is refused", status === 404, `status ${status}`));
+      }
+
+      try {
+        await api.dismissProposal(p.id, "nonexistent-proposal-id");
+        steps.push(step("dismissing an unknown proposal is refused", false, "did not throw"));
+      } catch (e) {
+        const status = e instanceof api.ApiError ? e.status : 0;
+        steps.push(step("dismissing an unknown proposal is refused", status === 404, `status ${status}`));
+      }
+
+      await swallow(api.deleteProject(p.id));
+      return steps;
+    },
+  },
+  {
+    id: "hardening-retry-rule-action",
+    name: "TASK 13 hardening — retry a rule action",
+    desc: "Retrying re-dispatches a rule's CURRENT actions for a task, regardless of prior failure — no seeded failure needed to exercise the endpoint. Confirms a real retry moves the task, and that retrying an unknown rule/task pair is refused.",
+    run: async () => {
+      const steps: Step[] = [];
+      const name = `UAT: retry action ${uid()}`;
+      await api.createProject({ name, goal: "acceptance" });
+      let s = await settle((sn) => sn.projects.some((p) => p.name === name));
+      const p = s.projects.find((p2) => p2.name === name)!;
+
+      await api.createTask(p.id, "acceptance: retry target");
+      s = await settle((sn) => sn.tasks.some((t) => t.projectId === p.id));
+      const task = s.tasks.find((t) => t.projectId === p.id)!;
+      steps.push(step("task created in backlog", task.state === "backlog", task.state));
+
+      const rule = await api.createRule(p.id, {
+        name: "Acceptance: backlog -> triage",
+        when: "WHEN task state is Backlog THEN move task to Triage",
+        conditions: [{ field: "state", op: "state_equals", value: "backlog" }],
+        actions: [{ type: "move_task", params: { toState: "triage" } }],
+        safety: { announceBeforeActing: false, undoWindowMin: 10, pauseAfterUndos: 3, excludePriorities: [] },
+      });
+
+      // retryRuleAction's whole dispatch (applyAction → recordTransition →
+      // upsertTask) is one awaited chain server-side, so the Transition it
+      // produces already exists by the time this call resolves — no polling.
+      await api.retryRuleAction(rule.id, task.id);
+      const transitions = await api.fetchTaskTransitions(task.id);
+      steps.push(step("retry re-dispatched the rule and moved the task", transitions.some((t) => t.to === "triage" && t.ruleId === rule.id)));
+
+      try {
+        await api.retryRuleAction("nonexistent-rule-id", task.id);
+        steps.push(step("retrying an unknown rule is refused", false, "did not throw"));
+      } catch (e) {
+        const status = e instanceof api.ApiError ? e.status : 0;
+        steps.push(step("retrying an unknown rule is refused", status === 404, `status ${status}`));
+      }
+
+      await swallow(api.deleteProject(p.id));
+      return steps;
+    },
+  },
+  {
+    id: "rail-graph-pause-all-rules",
+    name: "Rail Graph's 'pause rules' bulk endpoint",
+    desc: "Creates two live rules and one already-watch rule, confirms pauseAllRules pauses only the two live ones in a single call, and leaves the watch rule untouched.",
+    run: async () => {
+      const steps: Step[] = [];
+      const name = `UAT: pause all rules ${uid()}`;
+      await api.createProject({ name, goal: "acceptance" });
+      const s = await settle((sn) => sn.projects.some((p) => p.name === name));
+      const p = s.projects.find((p2) => p2.name === name)!;
+
+      const ruleBody = (n: number) => ({
+        name: `Acceptance rule ${n}`,
+        when: "x",
+        conditions: [{ field: "state" as const, op: "state_equals", value: "backlog" }],
+        actions: [{ type: "move_task", params: { toState: "triage" } }],
+      });
+      const live1 = await api.createRule(p.id, ruleBody(1));
+      const live2 = await api.createRule(p.id, ruleBody(2));
+      const watch = await api.createRule(p.id, { ...ruleBody(3), state: "watch" });
+
+      const paused = await api.pauseAllRules(p.id);
+      steps.push(step("pauses exactly the 2 live rules, not the watch one", paused.length === 2 && paused.every((r) => r.state === "paused")));
+      steps.push(step("the correct rule ids were paused", new Set(paused.map((r) => r.id)).size === 2 && [live1.id, live2.id].every((id) => paused.some((r) => r.id === id))));
+
+      // A second call is a genuine no-op (nothing left in "live" to pause) —
+      // confirms this isn't accidentally re-pausing/duplicating on repeat.
+      const secondCall = await api.pauseAllRules(p.id);
+      steps.push(step("a second call pauses nothing further — no live rules left", secondCall.length === 0));
+      void watch; // its id is never in `paused` above — that IS the "left alone" evidence
+
+      await swallow(api.deleteProject(p.id));
+      return steps;
+    },
+  },
+  {
+    id: "decision-inbox-fetch",
+    name: "Decision Inbox — GET /api/decisions",
+    desc: "Confirms the cross-project decisions endpoint returns an array of only-open items, and — when a gate happens to already be open — that it's joined with the correct project fields.",
+    run: async () => {
+      const steps: Step[] = [];
+      // Same keyless constraint as hitl-audit above: this suite can't spawn a
+      // real agent to RAISE a gate, so it can only exercise the join/shape
+      // when one already happens to be open.
+      const decisions = await api.fetchDecisions();
+      steps.push(step("returns an array", Array.isArray(decisions)));
+      steps.push(step("every item is open — resolved ones don't leak through", decisions.every((d) => d.resolution === null)));
+      const open = decisions[0];
+      if (!open) {
+        steps.push(skipped("an open decision to check the project/task join on", "none open (keyless) — the self-contained version needs a real agent-raised gate"));
+        return steps;
+      }
+      steps.push(step("joined with a real projectName", typeof open.projectName === "string" && open.projectName.length > 0));
+      steps.push(step("costOfWaiting reflects real idle time", open.costOfWaiting >= 0));
+      return steps;
+    },
+  },
 ];

@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { useStore } from "../lib/store";
 import * as api from "../lib/client";
-import type { StewardActionOutcome } from "@skynet/shared";
+import type { AuditRecordWithActor, Project, SourceRef, StewardActionOutcome, TaskRun } from "@skynet/shared";
+import { classifyOperatorId } from "@skynet/shared";
 import { Markdown } from "./markdown";
 import { DiffView } from "./diff-view";
+import { resolveSourceChips } from "../lib/source-chips";
 
 // Steward as a right-hand dock available on every page. Workspace-wide by default;
 // when a project is in focus (the page you're on) it's the full project assistant
@@ -22,10 +24,48 @@ type Msg = {
   // Which project the proposed actions target (captured at propose time, so
   // confirming later runs against the right project even after you navigate).
   actionProjectId?: string | null;
+  // TASK 21 — "no claim without a chip": what backs up a specific claim in
+  // this reply (a run, its commit, a breaker event). Resolved into an
+  // actual href/label at render time (source-chips.ts) against whatever the
+  // store currently holds — never stale, since a run/project can be renamed
+  // or gone by the time this message scrolls back into view.
+  sources?: SourceRef[];
 };
 
 let thread: Msg[] = [];
 let draftCache = "";
+
+// TASK 21 — "no claim without a chip": ghost-pill links closing out an
+// answer, one per source citation. Plain <a href="#/..."> for an in-app hash
+// route (same convention as repo-picker.tsx) — the router's own hashchange
+// listener (App.tsx) picks it up, no special Link component needed here.
+function SourceChips({
+  sources,
+  runs,
+  projects,
+}: {
+  sources: SourceRef[];
+  runs: TaskRun[];
+  projects: Project[];
+}) {
+  const chips = resolveSourceChips(sources, runs, projects);
+  if (chips.length === 0) return null;
+  return (
+    <div className="asst-sources" aria-label="Sources">
+      {chips.map((c, i) => (
+        <a
+          key={i}
+          className="asst-source-chip"
+          href={c.href}
+          target={c.external ? "_blank" : undefined}
+          rel={c.external ? "noreferrer" : undefined}
+        >
+          {c.label}
+        </a>
+      ))}
+    </div>
+  );
+}
 
 const SUGGESTIONS = [
   "What's running right now?",
@@ -39,6 +79,7 @@ export function StewardDock({
   onClose,
   seedText,
   seedNonce,
+  onOpenTask,
 }: {
   focusProjectId: string | null;
   focusProjectName: string | null;
@@ -49,8 +90,12 @@ export function StewardDock({
   // otherwise re-trigger the effect.
   seedText?: string;
   seedNonce?: number;
+  // TASK 21 — navigate to a run's detail page: a source-chip click through
+  // App.tsx's own openTask (same handler every other view uses), and the
+  // audit footer's own rows.
+  onOpenTask: (id: string) => void;
 }) {
-  const { projects, createTask, transitionTask, updateTask, deleteTask, archiveTask, moveTask, requestReview, resyncProjectSource, updateProject, createFeature, createMilestone, updateFeature } = useStore();
+  const { projects, runs, createTask, transitionTask, updateTask, deleteTask, archiveTask, moveTask, requestReview, resyncProjectSource, updateProject, createFeature, createMilestone, updateFeature, wsPhase } = useStore();
   const [msgs, setMsgs] = useState<Msg[]>(thread);
   const [input, setInput] = useState(draftCache);
   const [busy, setBusy] = useState(false);
@@ -255,7 +300,7 @@ function describeOutcome(kind: string, o: StewardActionOutcome): string {
           next[next.length - 1] = { ...last, content: last.content + chunk };
           return next;
         });
-      const { reply, actions, projectId } = await api.streamStewardChat(
+      const { reply, actions, projectId, sources } = await api.streamStewardChat(
         question,
         history,
         focusProjectId ?? undefined,
@@ -264,8 +309,9 @@ function describeOutcome(kind: string, o: StewardActionOutcome): string {
       // Steward resolved a project from the conversation → carry that focus so the
       // header + later turns reflect the project it's now working on.
       if (!focusProjectId && projectId) setResolvedId(projectId);
-      // Reconcile to the authoritative CLEAN reply (strips a trailing action JSON
-      // that may have streamed through) and attach any proposed action.
+      // Reconcile to the authoritative CLEAN reply (strips a trailing action/
+      // sources JSON that may have streamed through) and attach any proposed
+      // action + source citations (TASK 21).
       setMsgs((m) => {
         const next = m.slice();
         next[next.length - 1] = {
@@ -274,6 +320,7 @@ function describeOutcome(kind: string, o: StewardActionOutcome): string {
           ...(actions && actions.length
             ? { actions: actions.map((action) => ({ action, state: "pending" as const })), actionProjectId: projectId ?? effFocusId }
             : {}),
+          ...(sources && sources.length ? { sources } : {}),
         };
         return next;
       });
@@ -311,6 +358,7 @@ function describeOutcome(kind: string, o: StewardActionOutcome): string {
       <div className="steward-head">
         <span className="steward-title mono">✦ STEWARD</span>
         <span className="steward-scope mono">{effFocusName ? `focused · ${effFocusName}` : "workspace"}</span>
+        {wsPhase !== "open" && <span className="steward-disconnect-pill" role="status">⚠ RECONNECTING</span>}
         <span className="steward-spacer" />
         <button className="btn btn-ghost btn-sm" onClick={onClose} title="Close Steward" aria-label="Close Steward">✕</button>
       </div>
@@ -340,9 +388,41 @@ function describeOutcome(kind: string, o: StewardActionOutcome): string {
             ) : (
               <div className="asst-text">{m.content}</div>
             )}
+            {m.role === "assistant" && m.sources && m.sources.length > 0 && (
+              <SourceChips sources={m.sources} runs={runs} projects={projects} />
+            )}
+            {/* TASK 21 — exactly 2 proposed actions get the redesigned confirm
+                bubble (blue-bordered, numbered rows, DO BOTH / JUST #01 /
+                CANCEL); 3+ keep the existing general "N changes" group below
+                unchanged rather than stretching an unspecified UX to it. */}
+            {m.actions && m.actions.length === 2 && (
+              <div className="asst-confirm2">
+                <div className="asst-confirm2-head mono">TWO ACTIONS · CONFIRM TO RUN</div>
+                {m.actions.map((pa, ai) => (
+                  <div className="asst-confirm2-row" key={ai}>
+                    <span className="asst-confirm2-num mono">#{String(ai + 1).padStart(2, "0")}</span>
+                    <div className="asst-confirm2-row-body">
+                      <span className={"asst-confirm2-label" + (pa.state !== "pending" ? " asst-confirm2-label-resolved" : "")}>
+                        {pa.state === "done" ? `✓ ${pa.action.summary}` : pa.state === "dismissed" ? `Dismissed: ${pa.action.summary}` : pa.action.summary}
+                      </span>
+                      {pa.state === "pending" && pa.action.kind === "edit_roadmap" && (
+                        <DiffView patch={pa.action.patch ?? ""} add={pa.action.add ?? 0} del={pa.action.del ?? 0} defaultOpen />
+                      )}
+                    </div>
+                  </div>
+                ))}
+                {m.actions.some((pa) => pa.state === "pending") && (
+                  <div className="asst-confirm2-actions">
+                    <button className="btn btn-ghost btn-sm" onClick={() => dismissAll(i)}>Cancel</button>
+                    <button className="btn btn-ghost btn-sm" onClick={() => void resolveAction(i, 0, true)}>Just #01</button>
+                    <button className="btn btn-primary btn-sm asst-confirm2-both" onClick={() => void confirmAll(i)}>Do both</button>
+                  </div>
+                )}
+              </div>
+            )}
             {m.actions && m.actions.length > 0 && (
               <div className="asst-propose-group">
-                {m.actions.length > 1 && m.actions.some((pa) => pa.state === "pending") && (
+                {m.actions.length > 2 && m.actions.some((pa) => pa.state === "pending") && (
                   <div className="asst-propose-all">
                     <span className="asst-propose-all-label">{m.actions.length} changes</span>
                     <span className="asst-propose-actions">
@@ -351,7 +431,7 @@ function describeOutcome(kind: string, o: StewardActionOutcome): string {
                     </span>
                   </div>
                 )}
-                {m.actions.map((pa, ai) => (
+                {m.actions.length !== 2 && m.actions.map((pa, ai) => (
                   <div className="asst-propose" key={ai}>
                     {pa.state === "done" ? (
                       <span className="asst-propose-done">✓ {pa.action.summary}</span>
@@ -400,6 +480,107 @@ function describeOutcome(kind: string, o: StewardActionOutcome): string {
         />
         <button className="btn btn-primary" type="submit" disabled={busy || !input.trim()}>Ask</button>
       </form>
+      <AuditFooter onOpenTask={onOpenTask} />
     </aside>
+  );
+}
+
+const ACTOR_FILTERS = ["all", "human", "policy", "agent-review"] as const;
+type ActorFilter = (typeof ACTOR_FILTERS)[number];
+const ACTOR_DOT_COLOR: Record<Exclude<ActorFilter, "all">, string> = {
+  policy: "var(--ak-machine)",
+  human: "var(--ak-human)",
+  "agent-review": "var(--ak-warn)",
+};
+
+/** One decision's plain-language sentence — the same light payload reading
+ *  audit.tsx does, kept minimal here since this is a compact footer, not the
+ *  full audit page (which stays the place for the diff/rationale detail). */
+function auditSentence(rec: AuditRecordWithActor): string {
+  const p = (rec.payload ?? {}) as { kind?: string; title?: string };
+  const what = p.title || p.kind || rec.action;
+  return `${rec.action} — ${what}`;
+}
+
+function fmtFooterTime(at: number): string {
+  return new Date(at).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+}
+
+/** TASK 21 — compact audit trail below the chat: header + export, filters,
+ *  and a short recent-decisions list — the fuller detail (diffs, rationale,
+ *  archive/delete) stays on the dedicated Audit page (views/audit.tsx); this
+ *  is "prove it after" surfaced right where the conversation already is. */
+function AuditFooter({ onOpenTask }: { onOpenTask: (id: string) => void }) {
+  const { projects, runs } = useStore();
+  const [records, setRecords] = useState<AuditRecordWithActor[] | null>(null);
+  const [actorFilter, setActorFilter] = useState<ActorFilter>("all");
+  const [projectFilter, setProjectFilter] = useState<string>("all");
+  const [kindFilter, setKindFilter] = useState<string>("all");
+  const [exporting, setExporting] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    void api.fetchAudit().then((r) => { if (!cancelled) setRecords(r); });
+    return () => { cancelled = true; };
+  }, []);
+
+  const runProjectId = (runId: string) => runs.find((r) => r.id === runId)?.projectId ?? null;
+  const kinds = Array.from(new Set((records ?? []).map((r) => r.action))).sort();
+  const filtered = (records ?? [])
+    .filter((r) => actorFilter === "all" || (r.actorType ?? classifyOperatorId(r.operatorId)) === actorFilter)
+    .filter((r) => projectFilter === "all" || runProjectId(r.runId) === projectFilter)
+    .filter((r) => kindFilter === "all" || r.action === kindFilter)
+    .slice(0, 25);
+
+  const doExport = async () => {
+    setExporting(true);
+    try {
+      const body = await api.exportAudit();
+      const blob = new Blob([body], { type: "application/x-ndjson" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `skynet-audit-${new Date().toISOString().slice(0, 10)}.ndjson`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  return (
+    <div className="asst-audit-footer">
+      <div className="asst-audit-head">
+        <span className="asst-audit-title mono">DECISION TRAIL</span>
+        <button className="asst-audit-export" onClick={() => void doExport()} disabled={exporting}>
+          {exporting ? "exporting…" : "export CSV"}
+        </button>
+      </div>
+      <div className="asst-audit-filters">
+        <select className="asst-audit-select" value={actorFilter} onChange={(e) => setActorFilter(e.target.value as ActorFilter)}>
+          {ACTOR_FILTERS.map((a) => <option key={a} value={a}>{a === "all" ? "Any actor" : a}</option>)}
+        </select>
+        <select className="asst-audit-select" value={projectFilter} onChange={(e) => setProjectFilter(e.target.value)}>
+          <option value="all">Any project</option>
+          {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+        </select>
+        <select className="asst-audit-select" value={kindFilter} onChange={(e) => setKindFilter(e.target.value)}>
+          <option value="all">Any decision</option>
+          {kinds.map((k) => <option key={k} value={k}>{k}</option>)}
+        </select>
+      </div>
+      <div className="asst-audit-rows">
+        {records === null && <div className="asst-audit-empty">Loading…</div>}
+        {records !== null && filtered.length === 0 && <div className="asst-audit-empty">No decisions match.</div>}
+        {filtered.map((r) => (
+          <button key={r.hitlId} className="asst-audit-row" onClick={() => onOpenTask(r.runId)}>
+            <span className="asst-audit-time mono">{fmtFooterTime(r.at)}</span>
+            <span className="asst-audit-dot" style={{ background: ACTOR_DOT_COLOR[r.actorType ?? classifyOperatorId(r.operatorId)] }} aria-hidden="true" />
+            <span className="asst-audit-sentence">{auditSentence(r)}</span>
+            <span className="asst-audit-actor mono">{r.operatorId}</span>
+          </button>
+        ))}
+      </div>
+    </div>
   );
 }

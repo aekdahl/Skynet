@@ -28,6 +28,10 @@ export type AutoApproval = { by: string } | null;
  * (commandless approvals from non-Claude runners return null → always gate).
  *
  * Order (safety-first):
+ *  0. an ALWAYS-GATE override (the project's own "no, never this one",
+ *     `Project.alwaysGateCommands`) matching the EXACT command → null. Checked
+ *     before even the standing-rule step, so it can never be silently outrun
+ *     by a rule that also matches the same command.
  *  1. hard-DENY command → null (never auto-approve; also blocked at approve time).
  *  2. a standing rule matching the EXACT command → approve, but only while the
  *     command's CURRENT risk is still within the rule's cap (a rule can't widen).
@@ -38,12 +42,17 @@ export function decideAutoApproval(input: {
   command: string | null | undefined;
   level: ApprovalLevel;
   rules: ApprovalRule[];
+  /** Project.alwaysGateCommands — exact commands that must always gate,
+   *  overriding a standing rule or the risk tier. Defaults to none. */
+  alwaysGate?: string[];
   /** The workspace's active CommandPolicy — defaults to the shipped classifier. */
   policy?: CommandPolicy;
 }): AutoApproval {
   if (!input.command) return null; // commandless approval → always gate
   const command = normalizeCommand(input.command);
   if (!command) return null;
+
+  if (input.alwaysGate?.some((c) => normalizeCommand(c) === command)) return null;
 
   const verdict = classifyCommand(command, input.policy ?? DEFAULT_COMMAND_POLICY);
   if (verdict.decision === "deny") return null; // safety floor — never auto-approve

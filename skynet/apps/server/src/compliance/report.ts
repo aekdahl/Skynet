@@ -44,7 +44,10 @@ function isChangeKind(kind: string | null | undefined): boolean {
   return kind === "diff" || kind === "merge" || (kind?.endsWith("-merge") ?? false);
 }
 
-function classifyApprover(
+/** Classify who/what actually approved something, from the raw `operatorId`
+ *  an AuditRecord carries — TASK 21 also exposes this on `GET /api/audit`
+ *  (see operations.ts#listAudit), not just the compliance evidence pack. */
+export function classifyApprover(
   operatorId: string,
   task: Task | undefined,
 ): { approverType: ComplianceApproverType; policyDetail: string | null; reasonFromReviewer: string | null } {

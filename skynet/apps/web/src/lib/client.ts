@@ -1,5 +1,5 @@
 import {
-  AuditRecord,
+  AuditRecordWithActor,
   GithubConnection,
   Snapshot,
   WsMessage,
@@ -32,6 +32,28 @@ import {
   type SolutionBrief,
   type Task,
   type ProjectQualityResult,
+  type Transition,
+  type Rule,
+  type RuleCondition,
+  type RuleAction,
+  type RuleSafety,
+  type RuleLifecycleState,
+  type PendingRuleAction,
+  type PendingRuleActionStatus,
+  type Proposal,
+  type AutonomyDetent,
+  type AutonomyDetentState,
+  type AutonomyOverride,
+  type SourceRef,
+  type Decision,
+  type RoadmapDoc,
+  type RoadmapLineClaim,
+  type RoadmapProposal,
+  type HitlItem,
+  type RoadmapConflictResolveRequest,
+  type ProposeRoadmapChangeRequest,
+  type CommitRoadmapLineEditRequest,
+  type RoadmapWorkspaceRollup,
 } from "@skynet/shared";
 import { parseStewardStream, type StewardReply } from "./steward-stream";
 import { toast } from "../components/toast";
@@ -219,12 +241,12 @@ export async function fetchSnapshot(): Promise<Snapshot> {
 // the entire audit page — so one legacy record from an older schema (or from a
 // half-applied migration) makes it look like every approval was lost. Per-row
 // parse keeps the good rows visible; drops are logged so we can diagnose.
-export async function fetchAudit(): Promise<AuditRecord[]> {
+export async function fetchAudit(): Promise<AuditRecordWithActor[]> {
   const raw = await req<unknown>("GET", "/api/audit");
   if (!Array.isArray(raw)) return [];
-  const out: AuditRecord[] = [];
+  const out: AuditRecordWithActor[] = [];
   for (const row of raw) {
-    const parsed = AuditRecord.safeParse(row);
+    const parsed = AuditRecordWithActor.safeParse(row);
     if (parsed.success) out.push(parsed.data);
     else {
       const id = row && typeof row === "object" ? (row as { hitlId?: unknown }).hitlId : undefined;
@@ -233,6 +255,18 @@ export async function fetchAudit(): Promise<AuditRecord[]> {
     }
   }
   return out;
+}
+// TASK 21 — the audit trail export (NDJSON, for SIEM ingestion — see
+// api.ts's /api/audit/export). Bearer-token auth means a plain `<a href>`
+// download won't authenticate (browsers don't attach a custom Authorization
+// header to a link click), so this fetches the text through the same
+// authenticated path `req()` uses and hands the caller the raw body to
+// download as a Blob (see compliance-export.tsx's downloadFile for the
+// same pattern with the compliance report).
+export async function exportAudit(): Promise<string> {
+  const res = await fetch("/api/audit/export", { headers: { authorization: `Bearer ${token()}` } });
+  if (!res.ok) throw new ApiError(res.status, (await res.text().catch(() => "")) || res.statusText);
+  return res.text();
 }
 // Audit maintenance — archive/restore + delete, per-record and bulk.
 export function archiveAudit(hitlId: string, archived: boolean) {
@@ -420,6 +454,17 @@ export function dismissFeaturePr(featureId: string) {
 export function fetchFeaturePrChecks(featureId: string) {
   return req<PrChecksStatus | null>("GET", `/api/features/${featureId}/pr/checks`);
 }
+// Review & Merge (Phase 15) — the project's LOCAL merge queue (apps/server/src/merge.ts),
+// distinct from the GitHub-PR-flow "Ready to merge" list above.
+export interface MergeQueueEntry {
+  runId: string;
+  position: number;
+  mode: "human" | "auto";
+  reason: string | null;
+}
+export function fetchMergeQueue(projectId: string) {
+  return req<MergeQueueEntry[]>("GET", `/api/projects/${projectId}/merge-queue`);
+}
 export function pauseAgent(id: string) {
   return req<unknown>("POST", `/api/runs/${id}/pause`);
 }
@@ -430,6 +475,29 @@ export function resumeAgent(id: string) {
 /** The product roadmap (ROADMAP.md), rendered in Settings. */
 export function fetchRoadmap() {
   return req<{ markdown: string }>("GET", "/api/roadmap");
+}
+
+// ─── Decision Inbox (TASK 16) ───────────────────────────────────────────────
+// Every open HITL across every project in the workspace, joined with the
+// project/task it belongs to and sorted by cost-of-waiting server-side (see
+// Operations.listDecisions, TASK 15).
+export function fetchDecisions() {
+  return req<Decision[]>("GET", "/api/decisions");
+}
+
+// ─── Depleted provider keys (TASK 23 hardening) ────────────────────────────
+// The ONE fleet-level source for "a provider key is out of credits/quota" —
+// backs a single banner instead of a duplicated per-run billing escalation
+// being the operator's only signal.
+export type DepletedKey = { credentialId: string; reason: string; at: number };
+export function fetchDepletedKeys() {
+  return req<DepletedKey[]>("GET", "/api/depleted-keys");
+}
+
+// TASK 24 — the command palette's destructive "Pause the whole fleet"
+// action. Same kill switch Telegram's /stop already exposes to the operator.
+export function stopAllRuns() {
+  return req<{ stopped: number }>("POST", "/api/fleet/stop-all");
 }
 
 // ─── Project roadmap doc (ROADMAP.md, read from the project's bound repo) ──
@@ -455,6 +523,216 @@ export function commitProjectRoadmap(
   body: { path: string; content: string; baselineHash: string; baselineSha?: string },
 ) {
   return req<ProjectRoadmapResult>("POST", `/api/projects/${projectId}/roadmap`, body);
+}
+
+// ─── Roadmap document view (Phase 26 — TASK 29) ─────────────────────────────
+// The parsed RoadmapDoc (real per-line state, blame-derived provenance,
+// "claim as mine" overrides already applied server-side) — distinct from
+// fetchProjectRoadmap above, which only ever returns raw markdown text.
+export function fetchProjectRoadmapDoc(projectId: string) {
+  return req<RoadmapDoc>("GET", `/api/projects/${projectId}/roadmap/doc`);
+}
+
+export function fetchRoadmapProposals(projectId: string) {
+  return req<RoadmapProposal[]>("GET", `/api/projects/${projectId}/roadmap/proposals`);
+}
+
+/** Open a new governed roadmap proposal — the Drift dashboard's ORPHANS
+ *  panel ("propose N roadmap lines to cover these"), riding the exact same
+ *  agent-proposal path (Operations.proposeRoadmapChange) an autonomous
+ *  agent's own proposal uses. */
+export function proposeRoadmapChange(projectId: string, body: ProposeRoadmapChangeRequest) {
+  return req<RoadmapProposal>("POST", `/api/projects/${projectId}/roadmap/proposals`, body);
+}
+
+export function applyRoadmapProposal(projectId: string, proposalId: string) {
+  return req<{ proposal: RoadmapProposal; committed: boolean; sha?: string }>(
+    "POST",
+    `/api/projects/${projectId}/roadmap/proposals/${proposalId}/apply`,
+  );
+}
+
+/** "KEEP · CLAIM AS MINE" on an agent-added line — see RoadmapLineClaim's own
+ *  doc comment: a display-layer override, never a git operation. */
+export function claimRoadmapLine(projectId: string, lineId: string) {
+  return req<RoadmapLineClaim>("POST", `/api/projects/${projectId}/roadmap/lines/${lineId}/claim`);
+}
+
+/** "REVERT THE COMMIT" on an agent-added line — a real `git revert` of
+ *  whatever commit git-blame attributes that line to. Local-repo-bound
+ *  projects only; throws with a clear message otherwise. */
+export function revertRoadmapLine(projectId: string, lineId: string) {
+  return req<{ committed: boolean; sha?: string }>("POST", `/api/projects/${projectId}/roadmap/lines/${lineId}/revert`);
+}
+
+export interface RoadmapHistoryEntry {
+  sha: string;
+  authorName: string;
+  authorEmail: string;
+  at: number;
+  subject: string;
+}
+export function fetchRoadmapHistory(projectId: string, opts?: { limit?: number }) {
+  const qs = opts?.limit != null ? `?limit=${opts.limit}` : "";
+  return req<RoadmapHistoryEntry[]>("GET", `/api/projects/${projectId}/roadmap/history${qs}`);
+}
+
+/** The Drift dashboard's ONE DECISION panel ("MOVE IT TO Q4"/"KEEP AND
+ *  RE-DATE Q3") — a single-line edit the operator decided directly, committed
+ *  through TASK 28's attributed-commit path with no proposal/HITL detour. */
+export function commitRoadmapLineEdit(projectId: string, body: CommitRoadmapLineEditRequest) {
+  return req<{ committed: boolean; sha?: string }>("POST", `/api/projects/${projectId}/roadmap/commit-edit`, body);
+}
+
+/** "Without a file there is no roadmap — create one from the board." */
+export function scaffoldProjectRoadmap(projectId: string) {
+  return req<RoadmapDoc>("POST", `/api/projects/${projectId}/roadmap/scaffold`);
+}
+
+// ── workspace roadmap roll-up (Phase 29 — TASK 32) ────────────────────────
+// "Six repos, one quarter" — scoped server-side to the caller's own project
+// access; every project in the response is one this operator can already see.
+export function fetchWorkspaceRoadmapRollup() {
+  return req<RoadmapWorkspaceRollup>("GET", "/api/roadmap-rollup");
+}
+
+// ── roadmap proposal governance (TASK 30) ────────────────────────────────
+// A roadmap_edit HITL's plain approve/reject rides the existing resolveHitl
+// above (Operations.resolveHitl branches on kind itself) — no dedicated
+// function for it. The Inbox/conflict card fetches the LIVE proposal here
+// rather than trusting the HITL's own (Telegram-only) title/why snapshot, so
+// a Rule 1 join or Rule 3 supersede that happens after the card was raised
+// shows up the moment it's opened.
+export function fetchRoadmapProposal(projectId: string, proposalId: string) {
+  return req<RoadmapProposal>("GET", `/api/projects/${projectId}/roadmap-proposals/${proposalId}`);
+}
+
+export function resolveRoadmapConflict(hitlId: string, body: RoadmapConflictResolveRequest) {
+  return req<HitlItem>("POST", `/api/hitl/${hitlId}/roadmap-conflict-resolve`, body);
+}
+
+// ─── Momentum Board (Phase 4) — transitions ─────────────────────────────────
+// Rules/Proposals ride the Snapshot + WS deltas (see store.tsx); Transition[]
+// doesn't (it's an append-only feed, not current state), so the board fetches
+// it directly and stays live via the `transition.created` WS event instead.
+export function fetchProjectTransitions(projectId: string, opts?: { since?: number; limit?: number }) {
+  const qs = new URLSearchParams();
+  if (opts?.since != null) qs.set("since", String(opts.since));
+  if (opts?.limit != null) qs.set("limit", String(opts.limit));
+  const q = qs.toString();
+  return req<Transition[]>("GET", `/api/projects/${projectId}/transitions${q ? `?${q}` : ""}`);
+}
+
+// ─── Home rebuild (Phase 22) — workspace-wide transitions ──────────────────
+// Same fetch-once-then-merge-live pattern as BoardHealth, just not scoped to
+// one project — Home's automation-rate/stalled-count stats span every
+// project in the workspace.
+export function fetchTransitions(opts?: { since?: number; limit?: number }) {
+  const qs = new URLSearchParams();
+  if (opts?.since != null) qs.set("since", String(opts.since));
+  if (opts?.limit != null) qs.set("limit", String(opts.limit));
+  const q = qs.toString();
+  return req<Transition[]>("GET", `/api/transitions${q ? `?${q}` : ""}`);
+}
+
+// ─── Momentum Board (Phase 5) — task detail: trail + suggested subtasks ────
+export function fetchTaskTransitions(taskId: string) {
+  return req<Transition[]>("GET", `/api/tasks/${taskId}/transitions`);
+}
+
+/** Accept ONE suggested subtask Proposal — creates the real Task (parentTaskId
+ *  set) and flips the Proposal to accepted; see Operations.acceptSubtask. */
+export function acceptSubtask(taskId: string, proposalId: string) {
+  return req<Task>("POST", `/api/tasks/${taskId}/subtasks/accept`, { proposalId });
+}
+
+/** Accept every PENDING suggested_subtask Proposal for this task in one call. */
+export function acceptAllSubtasks(taskId: string) {
+  return req<Task[]>("POST", `/api/tasks/${taskId}/subtasks/accept-all`);
+}
+
+// ─── Momentum Board (Phase 6a) — rules (Automation Builder) ─────────────────
+// Reads ride the Snapshot + `rule.upserted`/`rule.deleted` WS deltas (see
+// store.tsx) — no fetchRules() here, same as features/milestones. Mutations
+// + the live backtest replay (a pure read with no state to keep in sync,
+// called directly by the component like fetchProjectTransitions above) are
+// the REST surface this file owns.
+export interface CreateRuleBody {
+  name: string;
+  when: string;
+  conditions: RuleCondition[];
+  actions: RuleAction[];
+  safety?: RuleSafety;
+  state?: RuleLifecycleState;
+}
+export function createRule(projectId: string, body: CreateRuleBody) {
+  return req<Rule>("POST", `/api/projects/${projectId}/rules`, body);
+}
+export interface UpdateRuleBody {
+  name?: string;
+  when?: string;
+  conditions?: RuleCondition[];
+  actions?: RuleAction[];
+  safety?: RuleSafety;
+  state?: RuleLifecycleState;
+  archived?: boolean;
+}
+export function updateRule(projectId: string, ruleId: string, body: UpdateRuleBody) {
+  return req<Rule>("PATCH", `/api/projects/${projectId}/rules/${ruleId}`, body);
+}
+export function deleteRule(projectId: string, ruleId: string) {
+  return req<unknown>("DELETE", `/api/projects/${projectId}/rules/${ruleId}`);
+}
+export interface BacktestResult {
+  wouldHaveMoved: number;
+  sample: Transition[];
+}
+/** Replay a DRAFT (not-yet-saved) rule's conditions against this project's
+ *  historical Transition log — the Automation Builder's live backtest card.
+ *  `actions`/`safety` ride along for a forward-compatible request shape but
+ *  the backtest itself only ever checks `conditions` (see the server's own
+ *  doc comment on BacktestRuleRequest). */
+export function backtestRule(projectId: string, body: { conditions: RuleCondition[]; actions?: RuleAction[]; safety?: RuleSafety }) {
+  return req<BacktestResult>("POST", `/api/projects/${projectId}/rules/backtest`, body);
+}
+/** Rail Graph's "pause rules" action (Phase 11, TASK 12) — bulk-pauses every
+ *  live rule for this project in one call. Returns exactly the rules that
+ *  were actually paused (watch/already-paused rules are left untouched). */
+export function pauseAllRules(projectId: string) {
+  return req<Rule[]>("POST", `/api/projects/${projectId}/rules/pause-all`);
+}
+
+// ─── Activity Feed (Phase 6b) — undo window ─────────────────────────────────
+// Which rule-engine actions are still cancellable, and the undo call itself.
+// No WS event exists for a PendingRuleAction's own lifecycle (only the
+// Transition it eventually produces is live) — the feed refetches this
+// periodically and updates the acted-on row optimistically on a successful undo.
+export function fetchPendingActions(projectId: string, opts?: { status?: PendingRuleActionStatus }) {
+  const qs = opts?.status ? `?status=${opts.status}` : "";
+  return req<PendingRuleAction[]>("GET", `/api/projects/${projectId}/pending-actions${qs}`);
+}
+
+export function undoRuleAction(pendingId: string) {
+  return req<PendingRuleAction>("POST", `/api/pending-actions/${pendingId}/undo`);
+}
+
+/** TASK 13 hardening — the Activity Feed's "retry" action on a
+ *  `status:"failed"` row: re-runs the rule's current dispatch for this task. */
+export function retryRuleAction(ruleId: string, taskId: string) {
+  return req<Task>("POST", `/api/rules/${ruleId}/retry`, { taskId });
+}
+
+// ─── Proposals (Momentum Rollout Phase 1c) — accept / dismiss ──────────────
+// Generic across every ProposalKind; TASK 10's "pattern spotted" card is the
+// first UI to actually call these (`stall_nudge` stays read-only elsewhere —
+// see board.tsx). `activate` only affects a `suggested_rule` proposal (the
+// onboarding card's "TURN IT ON" vs "WATCH FIRST") and is ignored server-side
+// for every other kind.
+export function acceptProposal(projectId: string, proposalId: string, opts?: { activate?: boolean }) {
+  return req<Proposal>("POST", `/api/projects/${projectId}/proposals/${proposalId}/accept`, opts?.activate ? { activate: true } : undefined);
+}
+export function dismissProposal(projectId: string, proposalId: string) {
+  return req<Proposal>("POST", `/api/projects/${projectId}/proposals/${proposalId}/dismiss`);
 }
 
 // ─── Advanced env settings (desktop) ───────────────────────────────────────
@@ -550,6 +828,12 @@ export function resumeCredential(id: string) {
 }
 export function smokeTestCredential(id: string, model?: string) {
   return req<EndpointSmokeResult>("POST", `/api/credentials/${id}/smoke`, model ? { model } : {});
+}
+// Governance flag: is this key the workspace's own, or a personal key running
+// agent work? An operator's explicit correction — never auto-detected. See
+// SecretMeta.orgOwned.
+export function setCredentialOrgOwned(id: string, orgOwned: boolean) {
+  return req<{ secret: SecretMeta }>("POST", `/api/credentials/${id}/org-owned`, { orgOwned });
 }
 // Credential lifecycle log (created/rotated/removed, who + when — never the
 // key) — answers "why did this provider suddenly show not connected".
@@ -668,9 +952,23 @@ export function updateProject(
     checkCmd?: string | null;
     deepReview?: boolean;
     breakerReview?: boolean;
+    // Momentum Board opt-in; see Project.newBoardEnabled.
+    newBoardEnabled?: boolean;
+    // Momentum Board's Queued-column WIP limit; null clears back to no limit.
+    queuedWipLimit?: number | null;
+    // Exact commands that must ALWAYS gate for a human — see Project.alwaysGateCommands.
+    alwaysGateCommands?: string[];
+    // Project-level default for a NEW automation rule's safety rails — see
+    // Project.ruleSafetyDefaults.
+    ruleSafetyDefaults?: RuleSafety;
   },
 ) {
   return req<Project>("PATCH", `/api/projects/${id}`, body);
+}
+/** Add a standing "approve always" rule directly (Keys & Budget panel's
+ *  "+ add pattern" — the risk cap is derived server-side). */
+export function addApprovalRule(projectId: string, command: string) {
+  return req<Project>("POST", `/api/projects/${projectId}/approval-rules`, { command });
 }
 /** Revoke one standing "approve always" rule from a project's approval policy. */
 export function removeApprovalRule(projectId: string, ruleId: string) {
@@ -683,6 +981,17 @@ export function deleteProject(id: string) {
  *  (headless/GCP), so agents can work on it. Sets repoPath + gitBacked. */
 export function cloneProjectRepo(id: string) {
   return req<unknown>("POST", `/api/projects/${id}/clone`);
+}
+// TASK 19 — autonomy dial: composite notch + persisted breaker/override state.
+export function getAutonomyDetent(projectId: string) {
+  return req<AutonomyDetentState>("GET", `/api/projects/${projectId}/autonomy-detent`);
+}
+export function setAutonomyDetent(projectId: string, detent: AutonomyDetent) {
+  return req<Project>("POST", `/api/projects/${projectId}/autonomy-detent`, { detent });
+}
+/** "OVERRIDE — I'LL WATCH IT": bypass a tripped breaker for a bounded window. */
+export function createAutonomyOverride(projectId: string) {
+  return req<AutonomyOverride>("POST", `/api/projects/${projectId}/autonomy-override`);
 }
 // Import the project's open GitHub issues as tasks (linked back via Task.source).
 export function importGithubIssues(projectId: string) {
@@ -867,7 +1176,7 @@ export function stewardChat(
   history: { role: "user" | "assistant"; content: string }[],
   projectId?: string,
 ) {
-  return req<{ reply: string; actions?: AssistantAction[]; projectId?: string | null }>(
+  return req<{ reply: string; actions?: AssistantAction[]; projectId?: string | null; sources?: SourceRef[] }>(
     "POST",
     "/api/steward/chat",
     { question, history, projectId },
@@ -929,8 +1238,14 @@ export async function streamStewardChat(
 export function revertRun(runId: string) {
   return req<TaskRun>("POST", `/api/runs/${runId}/revert`);
 }
-export function executeStewardAction(projectId: string, action: unknown, dryRun?: boolean) {
-  return req<StewardActionOutcome>("POST", `/api/projects/${projectId}/steward/actions`, { action, ...(dryRun ? { dryRun } : {}) });
+// `onlyIndices` — TASK 21's "JUST #01"-style partial acceptance: 0-indexed
+// positions into the action's own batch (see ExecuteStewardActionRequest).
+export function executeStewardAction(projectId: string, action: unknown, dryRun?: boolean, onlyIndices?: number[]) {
+  return req<StewardActionOutcome>("POST", `/api/projects/${projectId}/steward/actions`, {
+    action,
+    ...(dryRun ? { dryRun } : {}),
+    ...(onlyIndices && onlyIndices.length > 0 ? { onlyIndices } : {}),
+  });
 }
 export function crystallizeBrief(
   projectId: string,

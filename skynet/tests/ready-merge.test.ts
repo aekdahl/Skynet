@@ -93,11 +93,28 @@ describe("ready-to-merge", () => {
 
     const res = await orch.mergeReadyPr(DEFAULT_WORKSPACE, "r1", "squash");
     expect(res.merged).toBe(true);
-    expect(githubService.mergePr).toHaveBeenCalledWith(DEFAULT_WORKSPACE, "acme/app", 42, "squash");
+    // No pinned account on this project → the 5th arg (githubCredentialId) is null,
+    // same as every other GitHub call (prStatus, pushAndOpenPr) already threads.
+    expect(githubService.mergePr).toHaveBeenCalledWith(DEFAULT_WORKSPACE, "acme/app", 42, "squash", null);
     expect((await store.getRun("r1"))?.pr?.state).toBe("merged");
     expect((await store.getRun("r1"))?.status).toBe("done");
     expect((await store.getTask("t1"))?.state).toBe("done");
     expect(await orch.listReadyPrs(DEFAULT_WORKSPACE)).toEqual([]); // no longer open
+  });
+
+  it("merge → uses the PROJECT's pinned GitHub account, not the workspace default", async () => {
+    // Regression: mergePr used to be the one GitHub call site that DIDN'T
+    // thread Project.githubCredentialId (push/PR/prStatus/clone always did),
+    // so a project pinned to its own PAT still merged under the workspace's
+    // default GitHub connection instead.
+    const { store, orch } = await setup();
+    await store.putProject({ ...project, githubCredentialId: "gh-cyberdyne-pat" });
+    await store.putRun(mkRun());
+    await store.putTask({ id: "t1", workspaceId: DEFAULT_WORKSPACE, projectId: "p1", text: "do X", state: "review", runId: "r1" } as Task);
+
+    const res = await orch.mergeReadyPr(DEFAULT_WORKSPACE, "r1", "squash");
+    expect(res.merged).toBe(true);
+    expect(githubService.mergePr).toHaveBeenCalledWith(DEFAULT_WORKSPACE, "acme/app", 42, "squash", "gh-cyberdyne-pat");
   });
 
   it("merge blocked → classifies a CONFLICT (base moved) and keeps the PR ready", async () => {
@@ -292,11 +309,21 @@ describe("ready-to-merge — feature-scoped batches", () => {
 
     const res = await orch.mergeReadyFeaturePr(DEFAULT_WORKSPACE, "f1", "squash");
     expect(res.merged).toBe(true);
-    expect(githubService.mergePr).toHaveBeenCalledWith(DEFAULT_WORKSPACE, "acme/app", 43, "squash");
+    expect(githubService.mergePr).toHaveBeenCalledWith(DEFAULT_WORKSPACE, "acme/app", 43, "squash", null);
     const fresh = await store.getFeature("f1");
     expect(fresh?.status).toBe("shipped");
     expect(fresh?.pr?.state).toBe("merged");
     expect(await orch.listReadyFeaturePrs(DEFAULT_WORKSPACE)).toEqual([]); // no longer open
+  });
+
+  it("merge → uses the PROJECT's pinned GitHub account, not the workspace default", async () => {
+    const { store, orch } = await setup();
+    await store.putProject({ ...project, githubCredentialId: "gh-cyberdyne-pat" });
+    await store.putFeature(mkFeature());
+
+    const res = await orch.mergeReadyFeaturePr(DEFAULT_WORKSPACE, "f1", "squash");
+    expect(res.merged).toBe(true);
+    expect(githubService.mergePr).toHaveBeenCalledWith(DEFAULT_WORKSPACE, "acme/app", 43, "squash", "gh-cyberdyne-pat");
   });
 
   it("merge blocked → classifies a CONFLICT (base moved) and keeps the feature PR ready, status untouched", async () => {

@@ -8,21 +8,35 @@ import { Pool } from "pg";
 import type {
   TaskRun,
   AuditRecord,
+  AutonomyBreaker,
+  AutonomyOverride,
   Checkpoint,
   Dependency,
   Feature,
   GithubConnection,
   HitlItem,
+  LogLine,
+  LogVerb,
   Milestone,
   Module,
+  PendingRuleAction,
+  PendingRuleActionStatus,
   PolicyVersion,
   Project,
   ProjectContextEntry,
+  Proposal,
+  ProposalStatus,
   ProviderInfo,
   Agent,
+  RoadmapDoc,
+  RoadmapLineClaim,
+  RoadmapProposal,
+  RoadmapProposalState,
+  Rule,
   Snapshot,
   SolutionBrief,
   Task,
+  Transition,
   WorkspaceSettings,
 } from "@skynet/shared";
 import { chainAuditRecord } from "../audit-chain.js";
@@ -41,11 +55,18 @@ CREATE TABLE IF NOT EXISTS features   (id text PRIMARY KEY, workspace_id text NO
 CREATE TABLE IF NOT EXISTS milestones (id text PRIMARY KEY, workspace_id text NOT NULL, data jsonb NOT NULL);
 CREATE TABLE IF NOT EXISTS context_entries (id text PRIMARY KEY, workspace_id text NOT NULL, data jsonb NOT NULL);
 CREATE TABLE IF NOT EXISTS solution_briefs (id text PRIMARY KEY, workspace_id text NOT NULL, data jsonb NOT NULL);
+-- Momentum Rollout kanban rebuild, Phase 0 (see @skynet/shared's Transition/Rule/Proposal).
+CREATE TABLE IF NOT EXISTS transitions (id text PRIMARY KEY, workspace_id text NOT NULL, project_id text NOT NULL, task_id text NOT NULL, at bigint NOT NULL, data jsonb NOT NULL);
+CREATE TABLE IF NOT EXISTS rules      (id text PRIMARY KEY, workspace_id text NOT NULL, project_id text NOT NULL, data jsonb NOT NULL);
+CREATE TABLE IF NOT EXISTS proposals  (id text PRIMARY KEY, workspace_id text NOT NULL, project_id text NOT NULL, status text NOT NULL, data jsonb NOT NULL);
+CREATE TABLE IF NOT EXISTS pending_rule_actions (id text PRIMARY KEY, workspace_id text NOT NULL, project_id text NOT NULL, status text NOT NULL, ready_at bigint NOT NULL, data jsonb NOT NULL);
 CREATE TABLE IF NOT EXISTS agents    (id text PRIMARY KEY, workspace_id text NOT NULL, data jsonb NOT NULL);
 CREATE TABLE IF NOT EXISTS modules    (id text PRIMARY KEY, workspace_id text NOT NULL, data jsonb NOT NULL);
 CREATE TABLE IF NOT EXISTS deps       (id bigserial PRIMARY KEY, workspace_id text NOT NULL, data jsonb NOT NULL);
 CREATE TABLE IF NOT EXISTS run_log  (id bigserial PRIMARY KEY, run_id text NOT NULL, at bigint NOT NULL, line text NOT NULL, detail text);
 ALTER TABLE run_log ADD COLUMN IF NOT EXISTS detail text;
+ALTER TABLE run_log ADD COLUMN IF NOT EXISTS verb text;
+ALTER TABLE run_log ADD COLUMN IF NOT EXISTS result_kind text;
 CREATE TABLE IF NOT EXISTS hitl_audit (id bigserial PRIMARY KEY, workspace_id text NOT NULL, hitl_id text NOT NULL,
                                        run_id text NOT NULL, action text NOT NULL, operator_id text NOT NULL,
                                        at bigint NOT NULL, payload jsonb);
@@ -60,6 +81,21 @@ CREATE TABLE IF NOT EXISTS github_tokens      (workspace_id text PRIMARY KEY, ci
 CREATE TABLE IF NOT EXISTS service_tokens     (id text PRIMARY KEY, token_hash text NOT NULL, workspace_id text NOT NULL, data jsonb NOT NULL);
 CREATE INDEX IF NOT EXISTS service_tokens_hash ON service_tokens(token_hash);
 CREATE INDEX IF NOT EXISTS service_tokens_ws   ON service_tokens(workspace_id);
+-- Autonomy breaker/override (TASK 19) — one row per project, replacing the
+-- old in-memory autonomyStreaks Map so a restart mid-streak doesn't reset it.
+CREATE TABLE IF NOT EXISTS autonomy_breakers  (project_id text PRIMARY KEY, data jsonb NOT NULL);
+CREATE TABLE IF NOT EXISTS autonomy_overrides (project_id text PRIMARY KEY, data jsonb NOT NULL);
+-- Roadmap doc cache (Phase 24) — one parsed RoadmapDoc per project, replaced
+-- wholesale on every sync.
+CREATE TABLE IF NOT EXISTS roadmap_docs (project_id text PRIMARY KEY, workspace_id text NOT NULL, data jsonb NOT NULL);
+-- Roadmap proposal governance (Phase 25 -- TASK 28) -- an agent's proposed
+-- edit to a project's roadmap doc; project-scoped like proposals above but
+-- a distinct collection (see @skynet/shared's RoadmapProposal).
+CREATE TABLE IF NOT EXISTS roadmap_proposals (id text PRIMARY KEY, workspace_id text NOT NULL, project_id text NOT NULL, state text NOT NULL, data jsonb NOT NULL);
+CREATE INDEX IF NOT EXISTS roadmap_proposals_project ON roadmap_proposals(project_id, state);
+-- Roadmap line claims (Phase 26 — TASK 29) — one row per (project, line),
+-- "claim as mine" upserts by that pair, never keyed by the claim's own id.
+CREATE TABLE IF NOT EXISTS roadmap_line_claims (project_id text NOT NULL, line_id text NOT NULL, workspace_id text NOT NULL, data jsonb NOT NULL, PRIMARY KEY (project_id, line_id));
 CREATE INDEX IF NOT EXISTS runs_ws   ON runs(workspace_id);
 CREATE INDEX IF NOT EXISTS checkpoints_run ON checkpoints(run_id);
 CREATE INDEX IF NOT EXISTS hitl_ws     ON hitl_queue(workspace_id);
@@ -69,6 +105,15 @@ CREATE INDEX IF NOT EXISTS features_ws   ON features(workspace_id);
 CREATE INDEX IF NOT EXISTS milestones_ws ON milestones(workspace_id);
 CREATE INDEX IF NOT EXISTS context_entries_ws ON context_entries(workspace_id);
 CREATE INDEX IF NOT EXISTS solution_briefs_ws ON solution_briefs(workspace_id);
+CREATE INDEX IF NOT EXISTS transitions_task    ON transitions(task_id);
+CREATE INDEX IF NOT EXISTS transitions_project ON transitions(project_id, at DESC);
+CREATE INDEX IF NOT EXISTS transitions_ws      ON transitions(workspace_id, at DESC);
+CREATE INDEX IF NOT EXISTS rules_project        ON rules(project_id);
+CREATE INDEX IF NOT EXISTS rules_ws             ON rules(workspace_id);
+CREATE INDEX IF NOT EXISTS proposals_project    ON proposals(project_id, status);
+CREATE INDEX IF NOT EXISTS proposals_ws         ON proposals(workspace_id);
+CREATE INDEX IF NOT EXISTS pending_actions_project ON pending_rule_actions(project_id, status);
+CREATE INDEX IF NOT EXISTS pending_actions_ready   ON pending_rule_actions(status, ready_at);
 CREATE INDEX IF NOT EXISTS agents_ws  ON agents(workspace_id);
 CREATE INDEX IF NOT EXISTS log_run   ON run_log(run_id);
 `;
@@ -86,16 +131,29 @@ export class PostgresStore implements Store {
   }
 
   // ── runs (log lives in the append-only run_log table) ─────────────────
-  private async logsFor(runIds: string[]): Promise<Map<string, { at: number; line: string; detail?: string }[]>> {
-    const map = new Map<string, { at: number; line: string; detail?: string }[]>();
+  private async logsFor(runIds: string[]): Promise<Map<string, LogLine[]>> {
+    const map = new Map<string, LogLine[]>();
     if (!runIds.length) return map;
-    const { rows } = await this.pool.query<{ run_id: string; at: string; line: string; detail: string | null }>(
-      "SELECT run_id, at, line, detail FROM run_log WHERE run_id = ANY($1) ORDER BY at ASC, id ASC",
+    const { rows } = await this.pool.query<{
+      run_id: string;
+      at: string;
+      line: string;
+      detail: string | null;
+      verb: string | null;
+      result_kind: string | null;
+    }>(
+      "SELECT run_id, at, line, detail, verb, result_kind FROM run_log WHERE run_id = ANY($1) ORDER BY at ASC, id ASC",
       [runIds],
     );
     for (const r of rows) {
       const list = map.get(r.run_id) ?? [];
-      list.push(r.detail != null ? { at: Number(r.at), line: r.line, detail: r.detail } : { at: Number(r.at), line: r.line });
+      list.push({
+        at: Number(r.at),
+        line: r.line,
+        ...(r.detail != null ? { detail: r.detail } : {}),
+        ...(r.verb != null ? { verb: r.verb as LogVerb } : {}),
+        ...(r.result_kind != null ? { resultKind: r.result_kind as "ok" | "error" } : {}),
+      });
       map.set(r.run_id, list);
     }
     return map;
@@ -132,8 +190,15 @@ export class PostgresStore implements Store {
     for (const l of log) await this.appendLog(agent.id, l.at, l.line);
     return agent;
   }
-  async appendLog(runId: string, at: number, line: string, detail?: string): Promise<void> {
-    await this.pool.query("INSERT INTO run_log(run_id,at,line,detail) VALUES($1,$2,$3,$4)", [runId, at, line, detail ?? null]);
+  async appendLog(runId: string, at: number, line: string, detail?: string, meta?: { verb?: LogVerb; resultKind?: "ok" | "error" }): Promise<void> {
+    await this.pool.query("INSERT INTO run_log(run_id,at,line,detail,verb,result_kind) VALUES($1,$2,$3,$4,$5,$6)", [
+      runId,
+      at,
+      line,
+      detail ?? null,
+      meta?.verb ?? null,
+      meta?.resultKind ?? null,
+    ]);
   }
 
   // ── checkpoints (run-scoped, not workspace-scoped — the generic list/get/put
@@ -214,6 +279,112 @@ export class PostgresStore implements Store {
   getSolutionBrief(id: string) { return this.get<SolutionBrief>("solution_briefs", id); }
   async putSolutionBrief(b: SolutionBrief) { await this.put("solution_briefs", b.id, b.workspaceId, b); return b; }
   deleteSolutionBrief(id: string) { return this.del("solution_briefs", id); }
+
+  // ── transitions (Momentum Rollout kanban rebuild, Phase 0 — append-only) ──
+  async createTransition(t: Transition): Promise<Transition> {
+    await this.pool.query(
+      "INSERT INTO transitions(id,workspace_id,project_id,task_id,at,data) VALUES($1,$2,$3,$4,$5,$6::jsonb) " +
+        "ON CONFLICT(id) DO UPDATE SET workspace_id=$2, project_id=$3, task_id=$4, at=$5, data=$6::jsonb",
+      [t.id, t.workspaceId, t.projectId, t.taskId, t.at, J(t)],
+    );
+    return t;
+  }
+  async listTransitionsForTask(taskId: string): Promise<Transition[]> {
+    const { rows } = await this.pool.query<{ data: Transition }>(
+      "SELECT data FROM transitions WHERE task_id=$1 ORDER BY at ASC",
+      [taskId],
+    );
+    return rows.map((r) => r.data);
+  }
+  async listTransitionsForProject(projectId: string, opts: { since?: number; limit?: number } = {}): Promise<Transition[]> {
+    const params: unknown[] = [projectId];
+    let sql = "SELECT data FROM transitions WHERE project_id=$1";
+    if (opts.since != null) { params.push(opts.since); sql += ` AND at >= $${params.length}`; }
+    sql += " ORDER BY at DESC"; // newest first, matching listAudit's convention
+    if (opts.limit != null) { params.push(opts.limit); sql += ` LIMIT $${params.length}`; }
+    const { rows } = await this.pool.query<{ data: Transition }>(sql, params);
+    return rows.map((r) => r.data);
+  }
+  async listTransitionsForWorkspace(ws: string, opts: { since?: number; limit?: number } = {}): Promise<Transition[]> {
+    const params: unknown[] = [ws];
+    let sql = "SELECT data FROM transitions WHERE workspace_id=$1";
+    if (opts.since != null) { params.push(opts.since); sql += ` AND at >= $${params.length}`; }
+    sql += " ORDER BY at DESC";
+    if (opts.limit != null) { params.push(opts.limit); sql += ` LIMIT $${params.length}`; }
+    const { rows } = await this.pool.query<{ data: Transition }>(sql, params);
+    return rows.map((r) => r.data);
+  }
+
+  // ── rules (Momentum Rollout kanban rebuild, Phase 0 — project-scoped) ─────
+  async getRule(id: string): Promise<Rule | undefined> {
+    const { rows } = await this.pool.query<{ data: Rule }>("SELECT data FROM rules WHERE id=$1", [id]);
+    return rows[0]?.data;
+  }
+  async putRule(rule: Rule): Promise<Rule> {
+    await this.pool.query(
+      "INSERT INTO rules(id,workspace_id,project_id,data) VALUES($1,$2,$3,$4::jsonb) " +
+        "ON CONFLICT(id) DO UPDATE SET workspace_id=$2, project_id=$3, data=$4::jsonb",
+      [rule.id, rule.workspaceId, rule.projectId, J(rule)],
+    );
+    return rule;
+  }
+  async deleteRule(id: string): Promise<void> { await this.pool.query("DELETE FROM rules WHERE id=$1", [id]); }
+  async listRulesForProject(projectId: string): Promise<Rule[]> {
+    const { rows } = await this.pool.query<{ data: Rule }>("SELECT data FROM rules WHERE project_id=$1", [projectId]);
+    return rows.map((r) => r.data);
+  }
+  listRulesForWorkspace(ws: string) { return this.list<Rule>("rules", ws); }
+
+  // ── proposals (Momentum Rollout kanban rebuild, Phase 0 — project-scoped) ─
+  async getProposal(id: string): Promise<Proposal | undefined> {
+    const { rows } = await this.pool.query<{ data: Proposal }>("SELECT data FROM proposals WHERE id=$1", [id]);
+    return rows[0]?.data;
+  }
+  async putProposal(proposal: Proposal): Promise<Proposal> {
+    await this.pool.query(
+      "INSERT INTO proposals(id,workspace_id,project_id,status,data) VALUES($1,$2,$3,$4,$5::jsonb) " +
+        "ON CONFLICT(id) DO UPDATE SET workspace_id=$2, project_id=$3, status=$4, data=$5::jsonb",
+      [proposal.id, proposal.workspaceId, proposal.projectId, proposal.status, J(proposal)],
+    );
+    return proposal;
+  }
+  async deleteProposal(id: string): Promise<void> { await this.pool.query("DELETE FROM proposals WHERE id=$1", [id]); }
+  async listProposalsForProject(projectId: string, opts: { status?: ProposalStatus } = {}): Promise<Proposal[]> {
+    const params: unknown[] = [projectId];
+    let sql = "SELECT data FROM proposals WHERE project_id=$1";
+    if (opts.status != null) { params.push(opts.status); sql += ` AND status=$${params.length}`; }
+    const { rows } = await this.pool.query<{ data: Proposal }>(sql, params);
+    return rows.map((r) => r.data);
+  }
+  listProposalsForWorkspace(ws: string) { return this.list<Proposal>("proposals", ws); }
+
+  // ── pending rule actions (Momentum Rollout Phase 1b, project-scoped) ──────
+  async getPendingRuleAction(id: string): Promise<PendingRuleAction | undefined> {
+    const { rows } = await this.pool.query<{ data: PendingRuleAction }>("SELECT data FROM pending_rule_actions WHERE id=$1", [id]);
+    return rows[0]?.data;
+  }
+  async putPendingRuleAction(action: PendingRuleAction): Promise<PendingRuleAction> {
+    await this.pool.query(
+      "INSERT INTO pending_rule_actions(id,workspace_id,project_id,status,ready_at,data) VALUES($1,$2,$3,$4,$5,$6::jsonb) " +
+        "ON CONFLICT(id) DO UPDATE SET workspace_id=$2, project_id=$3, status=$4, ready_at=$5, data=$6::jsonb",
+      [action.id, action.workspaceId, action.projectId, action.status, action.readyAt, J(action)],
+    );
+    return action;
+  }
+  async deletePendingRuleAction(id: string): Promise<void> {
+    await this.pool.query("DELETE FROM pending_rule_actions WHERE id=$1", [id]);
+  }
+  async listPendingActionsForProject(projectId: string, opts: { status?: PendingRuleActionStatus } = {}): Promise<PendingRuleAction[]> {
+    const params: unknown[] = [projectId];
+    let sql = "SELECT data FROM pending_rule_actions WHERE project_id=$1";
+    if (opts.status != null) { params.push(opts.status); sql += ` AND status=$${params.length}`; }
+    const { rows } = await this.pool.query<{ data: PendingRuleAction }>(sql, params);
+    return rows.map((r) => r.data);
+  }
+  async listAllPendingActions(): Promise<PendingRuleAction[]> {
+    const { rows } = await this.pool.query<{ data: PendingRuleAction }>("SELECT data FROM pending_rule_actions");
+    return rows.map((r) => r.data);
+  }
 
   listAgents(ws: string) { return this.list<Agent>("agents", ws); }
   async listAllAgents(): Promise<Agent[]> {
@@ -305,6 +476,100 @@ export class PostgresStore implements Store {
     );
   }
 
+  async getAutonomyBreaker(projectId: string): Promise<AutonomyBreaker | undefined> {
+    const { rows } = await this.pool.query<{ data: AutonomyBreaker }>(
+      "SELECT data FROM autonomy_breakers WHERE project_id=$1",
+      [projectId],
+    );
+    return rows[0]?.data;
+  }
+  async putAutonomyBreaker(breaker: AutonomyBreaker): Promise<void> {
+    await this.pool.query(
+      "INSERT INTO autonomy_breakers(project_id,data) VALUES($1,$2::jsonb) ON CONFLICT(project_id) DO UPDATE SET data=$2::jsonb",
+      [breaker.projectId, J(breaker)],
+    );
+  }
+  async deleteAutonomyBreaker(projectId: string): Promise<void> {
+    await this.pool.query("DELETE FROM autonomy_breakers WHERE project_id=$1", [projectId]);
+  }
+
+  async getRoadmapDoc(projectId: string): Promise<RoadmapDoc | undefined> {
+    const { rows } = await this.pool.query<{ data: RoadmapDoc }>("SELECT data FROM roadmap_docs WHERE project_id=$1", [projectId]);
+    return rows[0]?.data;
+  }
+  async putRoadmapDoc(doc: RoadmapDoc): Promise<RoadmapDoc> {
+    await this.pool.query(
+      "INSERT INTO roadmap_docs(project_id,workspace_id,data) VALUES($1,$2,$3::jsonb) ON CONFLICT(project_id) DO UPDATE SET workspace_id=$2, data=$3::jsonb",
+      [doc.projectId, doc.workspaceId, J(doc)],
+    );
+    return doc;
+  }
+
+  // ── roadmap proposals (Phase 25 — TASK 28, project-scoped) ────────────────
+  async getRoadmapProposal(id: string): Promise<RoadmapProposal | undefined> {
+    const { rows } = await this.pool.query<{ data: RoadmapProposal }>("SELECT data FROM roadmap_proposals WHERE id=$1", [id]);
+    return rows[0]?.data;
+  }
+  async putRoadmapProposal(proposal: RoadmapProposal): Promise<RoadmapProposal> {
+    await this.pool.query(
+      "INSERT INTO roadmap_proposals(id,workspace_id,project_id,state,data) VALUES($1,$2,$3,$4,$5::jsonb) " +
+        "ON CONFLICT(id) DO UPDATE SET workspace_id=$2, project_id=$3, state=$4, data=$5::jsonb",
+      [proposal.id, proposal.workspaceId, proposal.projectId, proposal.state, J(proposal)],
+    );
+    return proposal;
+  }
+  async deleteRoadmapProposal(id: string): Promise<void> {
+    await this.pool.query("DELETE FROM roadmap_proposals WHERE id=$1", [id]);
+  }
+  async listRoadmapProposalsForProject(projectId: string, opts: { state?: RoadmapProposalState } = {}): Promise<RoadmapProposal[]> {
+    const params: unknown[] = [projectId];
+    let sql = "SELECT data FROM roadmap_proposals WHERE project_id=$1";
+    if (opts.state != null) { params.push(opts.state); sql += ` AND state=$${params.length}`; }
+    const { rows } = await this.pool.query<{ data: RoadmapProposal }>(sql, params);
+    return rows.map((r) => r.data);
+  }
+
+  // ── roadmap line claims (Phase 26 — TASK 29, one per project+line) ────────
+  async getRoadmapLineClaim(projectId: string, lineId: string): Promise<RoadmapLineClaim | undefined> {
+    const { rows } = await this.pool.query<{ data: RoadmapLineClaim }>(
+      "SELECT data FROM roadmap_line_claims WHERE project_id=$1 AND line_id=$2",
+      [projectId, lineId],
+    );
+    return rows[0]?.data;
+  }
+  async putRoadmapLineClaim(claim: RoadmapLineClaim): Promise<RoadmapLineClaim> {
+    await this.pool.query(
+      "INSERT INTO roadmap_line_claims(project_id,line_id,workspace_id,data) VALUES($1,$2,$3,$4::jsonb) " +
+        "ON CONFLICT(project_id,line_id) DO UPDATE SET workspace_id=$3, data=$4::jsonb",
+      [claim.projectId, claim.lineId, claim.workspaceId, J(claim)],
+    );
+    return claim;
+  }
+  async listRoadmapLineClaimsForProject(projectId: string): Promise<RoadmapLineClaim[]> {
+    const { rows } = await this.pool.query<{ data: RoadmapLineClaim }>(
+      "SELECT data FROM roadmap_line_claims WHERE project_id=$1",
+      [projectId],
+    );
+    return rows.map((r) => r.data);
+  }
+
+  async getAutonomyOverride(projectId: string): Promise<AutonomyOverride | undefined> {
+    const { rows } = await this.pool.query<{ data: AutonomyOverride }>(
+      "SELECT data FROM autonomy_overrides WHERE project_id=$1",
+      [projectId],
+    );
+    return rows[0]?.data;
+  }
+  async putAutonomyOverride(override: AutonomyOverride): Promise<void> {
+    await this.pool.query(
+      "INSERT INTO autonomy_overrides(project_id,data) VALUES($1,$2::jsonb) ON CONFLICT(project_id) DO UPDATE SET data=$2::jsonb",
+      [override.projectId, J(override)],
+    );
+  }
+  async deleteAutonomyOverride(projectId: string): Promise<void> {
+    await this.pool.query("DELETE FROM autonomy_overrides WHERE project_id=$1", [projectId]);
+  }
+
   // ── command policy versions (workspace-scoped, versioned — see store.ts) ──
   async listPolicyVersions(ws: string): Promise<PolicyVersion[]> {
     const { rows } = await this.pool.query<{ data: PolicyVersion }>(
@@ -382,7 +647,7 @@ export class PostgresStore implements Store {
   }
 
   async snapshot(ws: string): Promise<Snapshot> {
-    const [runs, queue, projects, tasks, features, milestones, solutionBriefs, fleet, modules, deps] = await Promise.all([
+    const [runs, queue, projects, tasks, features, milestones, solutionBriefs, fleet, modules, deps, rules, proposals] = await Promise.all([
       this.listRuns(ws),
       this.listQueue(ws),
       this.listProjects(ws),
@@ -393,7 +658,9 @@ export class PostgresStore implements Store {
       this.listAgents(ws),
       this.listModules(ws),
       this.listDeps(ws),
+      this.listRulesForWorkspace(ws),
+      this.listProposalsForWorkspace(ws),
     ]);
-    return { runs, queue, projects, tasks, features, milestones, solutionBriefs, fleet, modules, deps, providers: PROVIDERS, serverTime: now() };
+    return { runs, queue, projects, tasks, features, milestones, solutionBriefs, fleet, modules, deps, rules, proposals, providers: PROVIDERS, serverTime: now() };
   }
 }

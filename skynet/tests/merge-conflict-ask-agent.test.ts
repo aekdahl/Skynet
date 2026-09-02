@@ -125,6 +125,11 @@ describe("a merge conflict's captured diff can resume the agent with zero typing
     expect(mergeItem.output).toContain("<<<<<<<");
     expect(mergeItem.output).toContain("version A");
     expect(mergeItem.output).toContain("version B");
+    // TASK 15 — a REAL same-file collision carries the "file_collision" tag
+    // (alongside the conflicting file itself) so a cross-project consumer can
+    // tell it apart from an ordinary `kind:"merge"` item that isn't one.
+    expect(mergeItem.flags).toContain("file_collision");
+    expect(mergeItem.flags).toContain("shared.txt");
 
     // Modify with NO typed guidance — the button the operator clicks with
     // zero typing ("Ask agent to fix" in the UI).

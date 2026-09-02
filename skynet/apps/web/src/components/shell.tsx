@@ -1,10 +1,12 @@
-import { useState, type ComponentType, type SVGProps } from "react";
+import { useEffect, useState, type ComponentType, type ReactNode, type SVGProps } from "react";
 import type { TaskRun, Project } from "@skynet/shared";
 import type { WsPhase } from "../lib/client";
+import * as api from "../lib/client";
 import { useStore, useNow } from "../lib/store";
 import {
   fmtWait,
   idleRunners,
+  openNowStatus,
   openQueue,
   readyMerges,
   runnerName,
@@ -13,6 +15,7 @@ import {
 import { StatusDot } from "./common";
 import { operatorHandle } from "../lib/firstrun";
 import { devToolsEnabled } from "../lib/dev";
+import { isTypingTarget } from "../lib/keys";
 import type { ViewName } from "../App";
 import {
   HomeIcon,
@@ -28,6 +31,7 @@ import {
   ChevronRightIcon,
   AcceptanceIcon,
   SimulationIcon,
+  SwatchIcon,
 } from "./icons";
 
 // The single source of truth for the sidebar highlight. Exactly one primary nav
@@ -38,15 +42,18 @@ import {
 type NavKey =
   | "home"
   | "queue"
+  | "decisionInbox"
   | "audit"
   | "projects"
   | "fleet"
   | "integrations"
   | "merges"
   | "roadmap"
+  | "workspaceRoadmap"
   | "settings"
   | "acceptance"
-  | "simulation";
+  | "simulation"
+  | "designTokens";
 
 function activeNav(view: ViewName): NavKey | null {
   switch (view) {
@@ -54,6 +61,8 @@ function activeNav(view: ViewName): NavKey | null {
       return "home";
     case "queue":
       return "queue";
+    case "decisionInbox":
+      return "decisionInbox";
     case "audit":
       return "audit";
     case "projects":
@@ -68,12 +77,16 @@ function activeNav(view: ViewName): NavKey | null {
       return "merges";
     case "roadmap":
       return "roadmap";
+    case "workspaceRoadmap":
+      return "workspaceRoadmap";
     case "settings":
       return "settings";
     case "acceptance":
       return "acceptance";
     case "simulation":
       return "simulation";
+    case "designTokens":
+      return "designTokens";
     // task detail has no home in the primary nav
     default:
       return null;
@@ -98,6 +111,39 @@ const wsInitials = (name: string): string =>
       .join("")
       .slice(0, 2) || "S"
   ).toUpperCase();
+
+// TASK 23 hardening — ONE fleet-level banner for "a provider key is out of
+// credits/quota", so the operator gets a single signal instead of noticing
+// it only as N duplicated per-run billing escalations. Additive: the
+// per-run escalations still exist and are still each individually
+// actionable (a run may need reassigning, not just a top-up); this is
+// visibility on top, not a replacement. Polled — no WS event exists for a
+// key-breaker trip/clear (it's in-memory on the Orchestrator, unlike the
+// durable per-project autonomy breaker TASK 19 built).
+const DEPLETED_KEYS_POLL_MS = 60_000;
+
+export function DepletedKeyBanner() {
+  const [keys, setKeys] = useState<api.DepletedKey[]>([]);
+  useEffect(() => {
+    let live = true;
+    const poll = () => api.fetchDepletedKeys().then((k) => live && setKeys(k)).catch(() => undefined);
+    poll();
+    const id = setInterval(poll, DEPLETED_KEYS_POLL_MS);
+    return () => {
+      live = false;
+      clearInterval(id);
+    };
+  }, []);
+  if (keys.length === 0) return null;
+  return (
+    <div className="depleted-keys-bar" role="status" aria-live="polite">
+      <span className="depleted-keys-dot" aria-hidden="true" />
+      {keys.length === 1
+        ? `A provider key is out of credits — ${keys[0]!.reason}. New work is paused on it until it's topped up.`
+        : `${keys.length} provider keys are out of credits/quota. New work is paused on each until they're topped up.`}
+    </div>
+  );
+}
 
 export function TitleBar() {
   const { workspaceSettings } = useStore();
@@ -214,6 +260,51 @@ function ElevateBadge() {
   return <span className="op-role-viewer"> · Viewer</span>;
 }
 
+// TASK 24 — the 4-state nav-row dot: lime (this page has live machine
+// activity), human (something is waiting on YOU here), warn (needs a look —
+// an anomaly, not a decision), track (nothing happening — the neutral
+// default). Distinct from `--warn`'s own documented "rare, singular signal"
+// rule (styles.css) — warn here is deliberately scoped to genuine anomalies
+// (Integrations' org-owned flag), not ambient status, so it stays rare too.
+type NavDot = "lime" | "human" | "warn" | "track";
+
+// Workspace secrets aren't in the live snapshot (fetched on demand — see
+// views/integrations.tsx's own `fetchSecrets` calls) — polled here the same
+// way DepletedKeyBanner polls /api/depleted-keys, so the Integrations dot
+// reflects live state without duplicating that view's own fetch-on-mount.
+const INTEGRATIONS_ATTENTION_POLL_MS = 60_000;
+function useIntegrationsAttention(): boolean {
+  const [flagged, setFlagged] = useState(false);
+  useEffect(() => {
+    let live = true;
+    const poll = () =>
+      api
+        .fetchSecrets()
+        .then(({ secrets }) => {
+          if (!live) return;
+          // Scoped to what Integrations actually manages (GitHub/Fly), and to
+          // the two real "look here" signals TASK 20 built — not orgOwned in
+          // isolation, which defaults false on every credential and would be
+          // permanently on, defeating the point of a rare warn signal.
+          setFlagged(secrets.some((s) => (s.provider === "github" || s.provider === "fly") && (!s.orgOwned || !!s.paused)));
+        })
+        .catch(() => undefined);
+    poll();
+    const id = setInterval(poll, INTEGRATIONS_ATTENTION_POLL_MS);
+    return () => {
+      live = false;
+      clearInterval(id);
+    };
+  }, []);
+  return flagged;
+}
+
+
+// Alt+1..4 → jump to that OPEN NOW row. `e.code` (layout-independent
+// "Digit1"..."Digit4"), not `e.key` — Option+1 produces "¡" on a macOS US
+// keyboard, not "1", so keying off `.key` would silently never fire there.
+const JUMP_KEY_CODE: Record<string, number> = { Digit1: 1, Digit2: 2, Digit3: 3, Digit4: 4 };
+
 export function OpSidebar({
   view,
   setView,
@@ -223,9 +314,12 @@ export function OpSidebar({
   setView: (v: ViewName) => void;
   onOpenProject: (id: string) => void;
 }) {
-  const { projects, runs, queue, workspaceSettings, readOnly } = useStore();
+  const { projects, runs, queue, fleet, workspaceSettings, readOnly } = useStore();
+  const now = useNow(15_000);
   const queueCount = openQueue(queue).length;
   const mergeCount = readyMerges(runs).length;
+  const busyCount = fleet.filter((a) => a.status === "busy").length;
+  const integrationsAttention = useIntegrationsAttention();
   // Single source of truth for the highlight — see activeNav above.
   const active = activeNav(view);
   // QA & testing surfaces (Acceptance / Simulation) are internal tooling — they
@@ -233,33 +327,48 @@ export function OpSidebar({
   // opted in on any build via localStorage `skynet.devtools=1`, or when one of
   // their views is already active (a deep link) so the highlight is never
   // orphaned. Auto-expanded when active.
-  const qaActive = active === "acceptance" || active === "simulation";
+  const qaActive = active === "acceptance" || active === "simulation" || active === "designTokens";
   const devTools = devToolsEnabled();
   const showQa = devTools || qaActive;
   const [qaOpen, setQaOpen] = useState(qaActive);
 
-  const dotColor = (p: Project) => {
-    const pa = runs.filter((a) => a.projectId === p.id);
-    if (pa.length && pa.every((a) => a.status === "done")) return "var(--faint)";
-    if (pa.some((a) => a.status === "waiting" || a.status === "review"))
-      return "var(--warn)";
-    return "var(--ok)";
-  };
+  const live = projects.filter((p) => p.status !== "done");
+  const anyLiveRun = runs.some((r) => r.status === "running");
+  const anyOpenProjectRun = live.some((p) => runs.some((r) => r.projectId === p.id && r.status === "running"));
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!e.altKey || isTypingTarget(e.target)) return;
+      const n = JUMP_KEY_CODE[e.code];
+      const target = n ? live[n - 1] : undefined;
+      if (target) {
+        e.preventDefault();
+        onOpenProject(target.id);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [live, onOpenProject]);
 
   const item = (
     label: string,
     Ic: ComponentType<SVGProps<SVGSVGElement>>,
     onClick: () => void,
     active: boolean,
-    badge?: number,
+    dot: NavDot,
+    badge?: ReactNode,
   ) => (
     <button className={"op-navitem" + (active ? " on" : "")} onClick={onClick} aria-current={active ? "page" : undefined}>
+      <span className={"op-navdot op-navdot-" + dot} aria-hidden="true" />
       <span className="ic" aria-hidden="true"><Ic /></span> {label}
-      {badge != null && badge > 0 && <span className="badge" aria-label={`${badge} pending`}>{badge}</span>}
+      {badge}
     </button>
   );
 
-  const live = projects.filter((p) => p.status !== "done");
+  const humanBadge = (n: number) => (n > 0 ? <span className="badge badge-human" aria-label={`${n} waiting on you`}>{n}</span> : null);
+  const limeOutlineBadge = (n: number) => (n > 0 ? <span className="badge badge-lime-outline" aria-label={`${n} ready to merge`}>{n}</span> : null);
+  const monoCount = (n: number) => (n > 0 ? <span className="op-navcount mono">{n}</span> : null);
+  const warnDot = (on: boolean) => (on ? <span className="op-navwarn-dot" aria-label="needs attention" title="A connected GitHub/Fly key isn't marked org-owned, or is paused" /> : null);
 
   return (
     <aside className="op-side">
@@ -269,26 +378,31 @@ export function OpSidebar({
       </div>
       <div className="op-navsec">OPERATE</div>
       <nav className="op-nav">
-        {item(
-          "Home",
-          HomeIcon,
-          () => setView("home"),
-          active === "home",
-        )}
-        {item("Inbox", InboxIcon, () => setView("queue"), active === "queue", queueCount)}
-        {item("Audit", AuditIcon, () => setView("audit"), active === "audit")}
-        {item("Projects", ProjectsIcon, () => setView("projects"), active === "projects")}
-        {item("Fleet", FleetIcon, () => setView("fleet"), active === "fleet")}
-        {item("Ready to merge", MergeIcon, () => setView("merges"), active === "merges", mergeCount)}
+        {item("Home", HomeIcon, () => setView("home"), active === "home", anyLiveRun ? "lime" : "track")}
+        {item("Inbox", InboxIcon, () => setView("queue"), active === "queue", queueCount > 0 ? "human" : "track", humanBadge(queueCount))}
+        {/* TASK 16 — the new cross-project Decision Inbox, additive alongside
+            the existing per-project Inbox above (same relationship Rail Graph
+            had to Momentum/Gravity). Same underlying open-queue count — the
+            dot is "human" exactly whenever GET /api/decisions would return
+            anything open, since `queue` (live via WS) and that endpoint's
+            join both read the same open-HitlItem set. */}
+        {item("Decisions", InboxIcon, () => setView("decisionInbox"), active === "decisionInbox", queueCount > 0 ? "human" : "track", humanBadge(queueCount))}
+        {item("Audit", AuditIcon, () => setView("audit"), active === "audit", "track")}
+        {item("Projects", ProjectsIcon, () => setView("projects"), active === "projects", anyOpenProjectRun ? "lime" : "track", monoCount(live.length))}
+        {item("Fleet", FleetIcon, () => setView("fleet"), active === "fleet", busyCount > 0 ? "lime" : "track", monoCount(busyCount))}
+        {item("Ready to merge", MergeIcon, () => setView("merges"), active === "merges", mergeCount > 0 ? "human" : "track", limeOutlineBadge(mergeCount))}
+        {/* TASK 32 — "six repos, one quarter": a workspace-wide roll-up over
+            every project's ROADMAP.md the operator already has access to. */}
+        {item("Roadmap Roll-up", RoadmapIcon, () => setView("workspaceRoadmap"), active === "workspaceRoadmap", "track")}
       </nav>
       <div className="op-navsec">CONFIGURE</div>
       <nav className="op-nav">
-        {item("Integrations", IntegrationsIcon, () => setView("integrations"), active === "integrations")}
+        {item("Integrations", IntegrationsIcon, () => setView("integrations"), active === "integrations", integrationsAttention ? "warn" : "track", warnDot(integrationsAttention))}
         {/* TEMP (pre-launch): Roadmap shown in ALL builds so it's visible on the
             deployed GCP release. Restore `devTools &&` here + re-add "roadmap" to
             DEV_ONLY_VIEWS (lib/dev) to hide it again before launch. */}
-        {item("Roadmap", RoadmapIcon, () => setView("roadmap"), active === "roadmap")}
-        {item("Settings", SettingsIcon, () => setView("settings"), active === "settings")}
+        {item("Roadmap", RoadmapIcon, () => setView("roadmap"), active === "roadmap", "track")}
+        {item("Settings", SettingsIcon, () => setView("settings"), active === "settings", "track")}
       </nav>
       {showQa && (
         <>
@@ -304,24 +418,25 @@ export function OpSidebar({
           </button>
           {(qaOpen || qaActive) && (
             <nav className="op-nav op-nav-sub">
-              {item("Acceptance", AcceptanceIcon, () => setView("acceptance"), active === "acceptance")}
-              {item("Simulation", SimulationIcon, () => setView("simulation"), active === "simulation")}
+              {item("Acceptance", AcceptanceIcon, () => setView("acceptance"), active === "acceptance", "track")}
+              {item("Simulation", SimulationIcon, () => setView("simulation"), active === "simulation", "track")}
+              {item("Design tokens", SwatchIcon, () => setView("designTokens"), active === "designTokens", "track")}
             </nav>
           )}
         </>
       )}
-      <div className="op-navsec">PROJECTS</div>
+      <div className="op-navsec">OPEN NOW</div>
       <div className="op-plist">
-        {live.map((p) => (
-          <button
-            key={p.id}
-            className="op-pitem"
-            onClick={() => onOpenProject(p.id)}
-          >
-            <span className="op-pdot" style={{ background: dotColor(p) }} aria-hidden="true" />
-            <span className="nm">{p.name}</span>
-          </button>
-        ))}
+        {live.map((p, i) => {
+          const status = openNowStatus(p, runs, queue, now);
+          return (
+            <button key={p.id} className="op-pitem" onClick={() => onOpenProject(p.id)}>
+              <span className="nm">{p.name}</span>
+              {i < 4 && <span className="op-pkey mono">⌥{i + 1}</span>}
+              <span className={"op-pstatus op-pstatus-" + status.dot}>{status.text}</span>
+            </button>
+          );
+        })}
       </div>
       <div
         className="op-side-foot"

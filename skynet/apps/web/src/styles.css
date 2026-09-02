@@ -75,6 +75,94 @@
      rules with one silent drift (a translucent accent) and one with no visible
      cue at all. */
   --input-focus-border:     var(--accent);
+
+  /* ─── "Automated Kanban" design tokens (Momentum Rollout Phase 3) ─────────
+     The exact token set from an external design handoff for the new kanban
+     board — treat these VALUES as fixed, not a starting point to improvise
+     from. Prefixed `--ak-` (distinct from the app's EXISTING `.kb-*`/task-
+     board classes above, which predate this handoff and mean something
+     different — a shared `kb-` prefix would silently collide with those).
+     Extends this SAME token system (this file, this `:root`) rather than
+     forking a second one; a handoff value that's a near-duplicate of an
+     existing neutral reuses that token below instead of adding another. */
+
+  /* Colors — dark, this board's native theme. */
+  --ak-canvas: #08090B;
+  --ak-surface-0: #0B0C0F;
+  --ak-surface-1: #0D0E11;
+  --ak-surface-2: #101319;
+  --ak-surface-3: #14161B;
+  --ak-border: #1D2027;
+  --ak-border-strong: #23262D;
+  --ak-border-subtle: #14161B;
+  --ak-hairline: #1A1D23;
+  --ak-track: #2A2F37;
+  --ak-text-primary: #ECEEF1;
+  --ak-text-secondary: #B9BEC6;
+  --ak-text-muted: #8A9099;
+  --ak-text-faint: #5E656F;
+  --ak-epic-purple: #C79BFF;
+  /* Semantic colors — HARD RULE: never use these decoratively, only for the
+     provenance/status meaning named. */
+  --ak-machine: #D3F26A; /* lime — a rule/automation did this */
+  --ak-machine-deep: #7FD16A; /* completed/closed by machine */
+  --ak-human: #6AA8FF; /* blue — a person did this */
+  --ak-warn: #F2B45C; /* amber — nothing is happening and that's a problem.
+    Deliberately its OWN token, not this file's existing --warn (#E8C64A):
+    same role, but a different fixed value from the handoff — aliasing it to
+    --warn would silently shift the app's existing caution color everywhere
+    else --warn is already used. */
+
+  /* Type — Space Grotesk is already this file's --font-ui (self-hosted below,
+     fonts.css); reused as-is rather than adding a duplicate token. JetBrains
+     Mono is a NEW mono face for this board's metadata/labels/numbers,
+     distinct from the rest of the app's --font-mono (IBM Plex Mono). */
+  --ak-font-mono: 'JetBrains Mono', monospace;
+
+  /* Spacing steps (px) — flex/grid `gap` only; no margin-based spacing
+     between siblings in any "Automated Kanban" component. */
+  --ak-sp-3: 3px;   --ak-sp-5: 5px;   --ak-sp-6: 6px;   --ak-sp-7: 7px;
+  --ak-sp-8: 8px;   --ak-sp-9: 9px;   --ak-sp-10: 10px; --ak-sp-11: 11px;
+  --ak-sp-12: 12px; --ak-sp-13: 13px; --ak-sp-14: 14px; --ak-sp-16: 16px;
+  --ak-sp-18: 18px; --ak-sp-20: 20px; --ak-sp-22: 22px; --ak-sp-24: 24px;
+  --ak-pad-screen: var(--ak-sp-18);  /* 18–20px — pick the tighter end, cards opt up to 20 as needed */
+  --ak-pad-column: var(--ak-sp-16);
+  --ak-pad-card: var(--ak-sp-12);    /* 12–13px */
+  --ak-gap-card: var(--ak-sp-12);    /* 12–13px */
+
+  /* Radii (px). */
+  --ak-radius-bar: 4px;      /* chips/bars */
+  --ak-radius-sm: 6px;       /* buttons/small chips, 5–7 */
+  --ak-radius-row: 8px;      /* list rows */
+  --ak-radius-card: 9px;     /* cards, 9–10 */
+  --ak-radius-panel: 12px;   /* panels/screens, 11–12 */
+  --ak-radius-pill: 16px;    /* pills, 14–20 */
+  --ak-radius-round: 50%;    /* avatars/nodes/rings */
+
+  /* Shadows — dark-theme soft. */
+  --ak-shadow-focus-card: 0 1px 2px rgba(0, 0, 0, .4);
+  --ak-shadow-orbit-ready: 0 8px 24px rgba(0, 0, 0, .35);
+  /* TASK 13 hardening — the card-hover "lift" shadow (distinct from the two
+     above: those are a static resting shadow and the Gravity merge-ready
+     glow, neither is a hover-elevation effect). */
+  --ak-shadow-lift: 0 6px 20px rgba(0, 0, 0, .3);
+
+  /* Focus ring + node/dot halo (lime; amber variant at a lower alpha). */
+  --ak-focus-ring: 0 0 0 2px rgba(211, 242, 106, .5);
+  --ak-halo-lime: 0 0 0 4px rgba(211, 242, 106, .15);
+  --ak-halo-amber: 0 0 0 4px rgba(211, 242, 106, .14);
+  /* TASK 19 — blue variant (--ak-human's rgb) for the autonomy dial's current-
+     notch card glow; no existing halo used the human/blue token yet. */
+  --ak-halo-blue: 0 0 0 4px rgba(106, 168, 255, .16);
+
+  /* Gravity view (TASK 11) — a physical, overshooting spring curve for
+     readiness-driven position changes. Deliberately NOT the 200-260ms linear
+     ease Momentum's column moves use (kanban.css / board.css's mb-card-enter)
+     — a card's position here is a continuous function of its readiness score,
+     not a discrete column jump, so it needs to feel like it's settling under
+     gravity, not sliding on a rail. */
+  --ak-ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --ak-spring-duration: 550ms;
 }
 * { margin: 0; padding: 0; box-sizing: border-box; }
 /* Baseline keyboard-focus ring for every interactive element — previously only
@@ -1238,6 +1326,7 @@ button.kb-done:hover { opacity: 1; }
   cursor: pointer; padding: 0; text-decoration: underline; text-underline-offset: 2px;
 }
 .kb-unreviewed-btn:hover { color: var(--text); }
+.kb-unreviewed-btn:disabled { color: var(--muted); cursor: default; text-decoration: none; }
 .kb-verdict-flag { color: var(--warn); }
 .kb-verdict-approve { color: var(--ok, var(--muted)); }
 /* Task linter v0 (assistive) — a dismissible hint, never a blocker. */
@@ -1829,6 +1918,33 @@ button.kb-done:hover { opacity: 1; }
    toolbar used to leave a huge dead gap between them at anything wider than a
    laptop. A title block, then one full-width toolbar row beneath it, reads as
    a coherent header at any width. */
+/* Breadcrumb bar (Phase 23) — replaces the old "← Back" + <h2> pair at the
+   top of every lens tab (Kanban/Rules/Roadmap/Context/Coverage/Feed/Health/
+   Archived all render underneath this same header). Tokens only, matching
+   the rest of the new-board era. */
+.pv-breadcrumb { display: flex; align-items: center; gap: var(--ak-sp-12); }
+.pv-breadcrumb-trail { display: flex; align-items: center; gap: var(--ak-sp-8); min-width: 0; }
+.pv-breadcrumb-projects {
+  background: none; border: none; padding: 0; cursor: pointer;
+  font-size: 14px; color: var(--ak-text-faint);
+}
+.pv-breadcrumb-projects:hover { color: var(--ak-text-secondary); text-decoration: underline; }
+.pv-breadcrumb-projects:focus-visible { outline: none; box-shadow: var(--ak-focus-ring); border-radius: var(--ak-radius-bar); }
+.pv-breadcrumb-sep { color: var(--ak-text-faint); font-size: 14px; }
+.pv-breadcrumb-current {
+  font-size: 14px; font-weight: 600; color: var(--ak-text-primary);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.pv-breadcrumb-chips { display: flex; align-items: center; gap: var(--ak-sp-6); flex-wrap: wrap; }
+.pv-breadcrumb-close {
+  margin-left: auto; flex-shrink: 0;
+  background: none; border: none; cursor: pointer;
+  color: var(--ak-text-faint); font-size: 14px; padding: var(--ak-sp-3) var(--ak-sp-6);
+  border-radius: var(--ak-radius-bar);
+}
+.pv-breadcrumb-close:hover { color: var(--ak-text-secondary); background: var(--ak-surface-2); }
+.pv-breadcrumb-close:focus-visible { outline: none; box-shadow: var(--ak-focus-ring); }
+
 .projview-head { display: flex; flex-direction: column; gap: 14px; }
 .projview-head-main { max-width: 720px; }
 /* Every control in this row — Governance, GitHub account, Keys, Preview app,
@@ -1937,6 +2053,22 @@ button.fleet-task-link:hover .fleet-task-cta { opacity: 1; }
 .fleet-actions .btn { padding: 6px 10px; font-size: var(--fz-12); min-height: 30px; }
 /* Reviewer-eligibility toggle: lit when on, dimmed/struck when off. */
 .fleet-reviewer.off { opacity: 0.55; text-decoration: line-through; }
+/* Answer (a real decision is pending — blue) / Unstick (stale heartbeat, no
+   pending decision — warn) — only one of the two ever shows at once, since
+   classifyRun's own "blocked" tag already forks on whether a hitl exists. */
+.fleet-answer { color: var(--info); border-color: color-mix(in oklab, var(--info), transparent 55%); }
+.fleet-answer:hover { background: color-mix(in oklab, var(--info), transparent 88%); }
+.fleet-unstick { color: var(--warn); border-color: color-mix(in oklab, var(--warn), transparent 55%); }
+.fleet-unstick:hover { background: color-mix(in oklab, var(--warn), transparent 88%); }
+
+/* Reliability readout (Phase 23) — "% merged clean" + a fixed-width bar, per
+   runner. Shared shape between the busy card's meta row and the idle row's
+   own grid column. */
+.fleet-reliability { display: inline-flex; align-items: center; gap: 6px; }
+.fleet-reliability-pct { color: var(--muted); font-size: var(--fz-11); min-width: 2.4em; text-align: right; }
+.fleet-reliability-track { width: 110px; height: 4px; border-radius: 2px; background: var(--line); overflow: hidden; }
+.fleet-reliability-fill { display: block; height: 100%; background: var(--ok); border-radius: 2px; }
+.fleet-reliability-fill.low { background: var(--danger); }
 /* Clickable card header → opens the agent detail view. */
 button.fleet-cardhead { display: flex; flex-direction: column; gap: 11px; width: 100%; padding: 0; margin: 0; border: none; background: none; font: inherit; color: inherit; text-align: left; cursor: pointer; }
 button.fleet-cardhead:hover .fleet-rn { color: var(--accent); }
@@ -1956,7 +2088,7 @@ button.fleet-cardhead:hover .fleet-caret { color: var(--accent); transform: tran
 .fleet-sub-label { font-size: var(--fz-10-5); font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--faint); margin-bottom: 8px; }
 .fleet-sub-label .mono { font-weight: 400; letter-spacing: 0; }
 .fleet-idle-roster { background: var(--panel); border: 1px solid var(--line); border-radius: 11px; overflow: hidden; }
-.fleet-idle-row { display: grid; grid-template-columns: 1fr auto auto auto auto; align-items: center; gap: 14px; padding: 9px 16px; border-bottom: 1px solid var(--line-soft); }
+.fleet-idle-row { display: grid; grid-template-columns: 1fr auto auto auto auto auto; align-items: center; gap: 14px; padding: 9px 16px; border-bottom: 1px solid var(--line-soft); }
 .fleet-idle-row:last-child { border-bottom: none; }
 .fleet-idle-row:hover { background: var(--raised); }
 .fleet-idle-name { display: flex; align-items: center; gap: 9px; min-width: 0; border: none; background: none; padding: 0; font: inherit; color: inherit; text-align: left; cursor: pointer; }
@@ -2059,39 +2191,42 @@ button.ad-hist-row:hover { border-color: var(--border); background: var(--raised
 .home { position: relative; z-index: 1; }
 .home-bar { max-width: 1180px; margin: 0 auto; padding: calc(var(--sp) * 1.6) calc(var(--sp) * 2) 0; display: flex; flex-direction: column; gap: 14px; }
 
-/* needs-you strip */
-.needs-strip { display: flex; flex-direction: column; gap: 10px; }
-.needs-clear { flex-direction: row; align-items: center; gap: 9px; font-size: var(--fz-13); color: var(--muted); background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 15px; }
-.needs-strip-head { display: flex; align-items: baseline; justify-content: space-between; }
-/* Section headline, same "pin to --accent" reasoning as .dot-waiting above. */
-.needs-strip-title { font-family: var(--font-mono); font-size: var(--fz-11); font-weight: 600; letter-spacing: 0.1em; color: var(--accent); white-space: nowrap; }
-.needs-strip-hint { color: var(--muted); font-weight: 400; letter-spacing: 0.04em; margin-left: 6px; }
-.needs-strip-all { background: none; border: none; cursor: pointer; font-family: var(--font-ui); font-size: var(--fz-12); color: var(--accent); font-weight: 500; }
-.needs-strip-all:hover { text-decoration: underline; }
-.needs-row { display: flex; gap: 12px; align-items: flex-start; overflow-x: auto; padding-bottom: 6px; scrollbar-width: thin; }
-.blocker { flex: 0 0 320px; background: var(--panel); border: 1px solid var(--line); border-radius: 11px; padding: 14px 16px; display: flex; flex-direction: column; gap: 8px; cursor: pointer; text-align: left; font-family: var(--font-ui); color: var(--text); transition: border-color var(--motion-fast), transform var(--motion-fast); }
-.blocker:hover { border-color: color-mix(in oklch, var(--accent), transparent 45%); transform: translateY(-1px); }
-.blocker:hover .blocker-cta { color: var(--accent); }
-.blocker:active { transform: scale(0.99); border-color: color-mix(in oklch, var(--accent), transparent 45%); }
-@media (prefers-reduced-motion: reduce) { .blocker:active { transform: none; } }
-.blocker-hot { border-color: color-mix(in oklch, var(--warn), transparent 55%); }
-.blocker-top { display: flex; align-items: center; gap: 10px; }
-.blocker-kind { font-family: var(--font-mono); font-size: var(--fz-11); font-weight: 600; letter-spacing: 0.1em; border: 1px solid; border-radius: 4px; padding: 2px 7px; white-space: nowrap; }
-.blocker-wait { font-size: var(--fz-13); font-weight: 600; color: var(--warn); font-variant-numeric: tabular-nums; }
-.blocker-title { font-size: var(--fz-14); font-weight: 600; color: var(--text); line-height: 1.35; }
-.blocker-meta { font-size: var(--fz-11); color: var(--muted); }
-.blocker-cta { font-size: var(--fz-12); font-weight: 500; color: var(--muted); margin-top: 2px; }
+/* ─── Home dashboard (Momentum Rollout Phase 22) ───────────────────────────
+   Same container width as .home-bar above, own top-level class so the
+   dashboard's own grid/cards aren't coupled to the greeting bar's layout. */
+.hm-greeting { font-size: var(--fz-14); color: var(--ink); line-height: 1.5; margin: 0; }
+/* The needs-you clause — the one span the greeting sentence calls out for
+   attention. --warn (not --danger): it's an ambient "worth a look" flag,
+   consistent with KIND_META's own approval/escalation coloring, not an
+   alarm. */
+.hm-needsyou { color: var(--warn); font-weight: 600; }
 
-/* conflicts banner */
-.home-conflict {
-  font-size: var(--fz-12-5); line-height: 1.55; color: var(--text);
-  border: 1px solid color-mix(in oklch, var(--danger), transparent 60%);
-  background: color-mix(in oklch, var(--danger), transparent 92%);
-  border-radius: 10px; padding: 11px 15px;
-}
-.home-conflict b { color: var(--danger); }
-.home-conflict-link { background: none; border: none; cursor: pointer; color: var(--accent); font-family: var(--font-ui); font-size: var(--fz-12-5); font-weight: 500; margin-left: 6px; }
-.home-conflict-link:hover { text-decoration: underline; }
+.hm-grid { max-width: 1180px; margin: 14px auto 0; padding: 0 calc(var(--sp) * 2); display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+.hm-card { background: var(--panel); border: 1px solid var(--line); border-top: 2px solid; border-radius: 12px; padding: 14px 16px; display: flex; flex-direction: column; gap: 6px; }
+.hm-card-label { font-family: var(--font-mono); font-size: var(--fz-11); font-weight: 600; letter-spacing: 0.06em; color: var(--muted); text-transform: uppercase; }
+.hm-card-value { font-size: var(--fz-24); font-weight: 600; letter-spacing: -0.01em; font-variant-numeric: tabular-nums; }
+.hm-card-sub { font-size: var(--fz-12); color: var(--muted); }
+
+.hm-chart-card { max-width: 1180px; margin: 14px auto 0; padding: 16px calc(var(--sp) * 2 - 4px); }
+.hm-chart { display: flex; align-items: stretch; gap: 5px; height: 130px; margin-top: 10px; }
+/* position:relative so .hm-chart-marker's `bottom:<n>%` resolves against
+   THIS column's height — never a percentage margin-bottom, which resolves
+   against width and flattens the marker series onto the baseline. */
+.hm-chart-col { position: relative; flex: 1; display: flex; flex-direction: column; height: 100%; min-width: 0; }
+.hm-chart-track { flex: 1; width: 100%; display: flex; align-items: flex-end; overflow: hidden; border-radius: 3px; background: var(--line-soft); }
+.hm-chart-bar { width: 100%; background: var(--info); border-radius: 3px 3px 0 0; transition: height var(--motion-base, 200ms ease-out); }
+.hm-chart-marker { position: absolute; left: 50%; transform: translate(-50%, 50%); width: 7px; height: 7px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 2px var(--panel); }
+.hm-chart-reading { margin-top: 10px; font-size: var(--fz-12-5); color: var(--muted); }
+
+.hm-first3 { max-width: 1180px; margin: 14px auto 0; padding: 0 calc(var(--sp) * 2) calc(var(--sp) * 2); }
+.hm-first3-list { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+.hm-first3-card { width: 100%; text-align: left; cursor: pointer; display: flex; flex-direction: column; gap: 5px; font: inherit; color: inherit; }
+.hm-first3-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.hm-first3-kind { font-family: var(--font-mono); font-size: var(--fz-11); font-weight: 600; letter-spacing: 0.06em; }
+.hm-first3-wait { font-size: var(--fz-12); color: var(--muted); }
+.hm-first3-title { font-size: var(--fz-13-5); font-weight: 600; color: var(--text); }
+.hm-first3-meta { font-size: var(--fz-11); color: var(--muted); }
+.hm-first3-footnote { margin-top: 8px; font-size: var(--fz-11); color: var(--faint); }
 
 /* lens switcher */
 .lens-switch { display: inline-flex; gap: 3px; background: var(--panel); border: 1px solid var(--line); border-radius: 9px; padding: 3px; align-self: flex-start; }
@@ -2221,15 +2356,42 @@ button.rb-proj:hover { color: var(--accent); }
 .op-avatar { width: 26px; height: 26px; border-radius: 50%; background: linear-gradient(135deg, #2A3140, #1A1F29); border: 1px solid var(--line); display: flex; align-items: center; justify-content: center; font-size: var(--fz-11); font-weight: 600; color: var(--muted); flex: none; }
 
 .op-shell { flex: 1; display: flex; min-height: 0; }
-.op-side { width: 220px; flex: none; background: var(--panel); border-right: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; }
+/* overflow-y: auto is a safety net for the icon-rail (steward-open) state
+   below — .op-plist (the section that normally scrolls) is hidden there, so
+   without this the bare nav lists had no overflow handling at all and got
+   clipped with no way to reach items below the fold on a short viewport
+   (reported live: Roadmap/Settings unreachable when minimized). Harmless at
+   the normal 220px width too: .op-plist's own flex:1/overflow-y:auto still
+   handles its own scroll first, and this outer one only ever engages as a
+   fallback if the FIXED chrome around it (nav items + footer, not the
+   project list) alone is taller than an unusually short viewport — the
+   same failure mode as the icon-rail case, just rarer. */
+.op-side { width: 220px; flex: none; background: var(--panel); border-right: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; overflow-y: auto; }
 .op-ws { display: flex; align-items: center; gap: 9px; padding: 13px 14px; border-bottom: 1px solid var(--line-soft); }
 .op-ws-logo { width: 24px; height: 24px; border-radius: 6px; background: var(--accent); color: #0B0D11; font-weight: 700; display: flex; align-items: center; justify-content: center; font-size: var(--fz-13); flex: none; }
 .op-ws-name { font-size: var(--fz-13); font-weight: 600; flex: 1; }
 .op-nav { padding: 10px 8px; display: flex; flex-direction: column; gap: 1px; }
-.op-navitem { display: flex; align-items: center; gap: 11px; padding: 8px 11px; border-radius: 7px; color: var(--muted); border: none; background: none; text-align: left; font-family: var(--font-ui); font-size: var(--fz-13); width: 100%; cursor: pointer; }
+.op-navitem { display: flex; align-items: center; gap: 9px; padding: 8px 11px; border-radius: 7px; color: var(--muted); border: none; background: none; text-align: left; font-family: var(--font-ui); font-size: var(--fz-13); width: 100%; cursor: pointer; }
 .op-navitem .ic { width: 16px; height: 16px; flex: none; display: inline-flex; align-items: center; justify-content: center; opacity: 0.85; }
-/* Inbox/Ready-to-merge nav counts — same "pin to --accent" reasoning above. */
-.op-navitem .badge { margin-left: auto; font-family: var(--font-mono); font-size: var(--fz-10); background: var(--accent); color: #0B0D11; border-radius: 9px; padding: 1px 7px; font-weight: 600; }
+/* TASK 24 — the 4-state semantic dot every OPERATE/CONFIGURE row now carries
+   (see shell.tsx's NavDot). Reuses the --ak-* hues already established for
+   "who/what did this" elsewhere (kanban.css) rather than inventing a second
+   lime/blue — track is the neutral default, deliberately dim. */
+.op-navdot { width: 6px; height: 6px; border-radius: 50%; flex: none; background: var(--ak-track); }
+.op-navdot-lime { background: var(--ak-machine); }
+.op-navdot-human { background: var(--ak-human); }
+.op-navdot-warn { background: var(--warn); }
+/* Inbox/Ready-to-merge nav counts — same "pin to --accent" reasoning above,
+   now split into real variants (TASK 24) instead of one shared look. */
+.op-navitem .badge { margin-left: auto; font-family: var(--font-mono); font-size: var(--fz-10); border-radius: 9px; padding: 1px 7px; font-weight: 600; }
+.op-navitem .badge-human { background: var(--ak-human); color: var(--ak-canvas); }
+.op-navitem .badge-lime-outline { background: none; color: var(--ak-machine); border: 1px solid var(--ak-machine); padding: 0 6px; }
+/* Projects/Fleet — a plain count, not a decision signal, so no chip. */
+.op-navcount { margin-left: auto; font-family: var(--font-mono); font-size: var(--fz-11); color: var(--faint); }
+/* Integrations — a bare dot, not a count (there's nothing to count, just a
+   flag). Same warn hue as the dot state above, slightly larger for legibility
+   as a standalone mark. */
+.op-navwarn-dot { margin-left: auto; width: 6px; height: 6px; border-radius: 50%; flex: none; background: var(--warn); }
 /* Current view (router-derived, exactly one at a time): raised bg + accent
    marker + bolder label so it reads as selected, not merely hovered. */
 .op-navitem.on { background: var(--raised); color: var(--text); font-weight: 600; box-shadow: inset 2px 0 0 var(--accent); }
@@ -2248,11 +2410,25 @@ button.rb-proj:hover { color: var(--accent); }
 .op-navsec-toggle.on { color: var(--muted); }
 .op-navsec-caret { margin-left: auto; width: 13px; height: 13px; display: inline-flex; flex: none; }
 .op-nav-sub { padding-top: 2px; padding-bottom: 2px; }
-.op-plist { padding: 0 8px; display: flex; flex-direction: column; gap: 1px; overflow-y: auto; flex: 1; }
-.op-pitem { display: flex; align-items: center; gap: 9px; padding: 6px 11px; border-radius: 6px; color: var(--muted); font-size: var(--fz-12); background: none; border: none; text-align: left; width: 100%; cursor: pointer; }
+/* TASK 24 — was PROJECTS (flex:1, pushed the footer down as it grew). Renamed
+   OPEN NOW and pinned to the bottom instead: the nav above is a fixed, small
+   set of destinations, so there's no longer a reason for this list to be the
+   thing that "absorbs" the sidebar's slack — it just sits above the footer,
+   scrolling internally (own overflow-y) if it's ever taller than the space
+   left. */
+.op-plist { padding: 0 8px; display: flex; flex-direction: column; gap: 1px; overflow-y: auto; margin-top: auto; }
+.op-pitem { display: flex; align-items: center; gap: 8px; padding: 6px 11px; border-radius: 6px; color: var(--muted); font-size: var(--fz-12); background: none; border: none; text-align: left; width: 100%; cursor: pointer; }
 .op-pitem:hover { background: var(--raised); color: var(--text); }
-.op-pdot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
 .op-pitem .nm { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* ⌥1-4 jump-key hint — only the first 4 rows carry one (shell.tsx), matching
+   the global Alt+1..4 handler that actually jumps. */
+.op-pkey { flex: none; font-size: var(--fz-10); color: var(--faint); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }
+/* WHY a project is interesting right now, not just a status dot — see
+   shell.tsx's openNowStatus for the priority (gates > stuck > runs > idle). */
+.op-pstatus { flex: none; font-family: var(--font-mono); font-size: var(--fz-11); white-space: nowrap; }
+.op-pstatus-human { color: var(--ak-human); }
+.op-pstatus-warn { color: var(--warn); }
+.op-pstatus-track { color: var(--faint); }
 .op-side-foot { margin-top: auto; display: flex; align-items: center; gap: 9px; padding: 12px 14px; border-top: 1px solid var(--line-soft); }
 .op-side-foot .who { font-size: var(--fz-12); } .op-side-foot .role { font-size: var(--fz-11); color: var(--muted); }
 .op-role-viewer { color: var(--warn); font-weight: 600; }
@@ -2293,25 +2469,6 @@ button.rb-proj:hover { color: var(--accent); }
 .gs-secondary { background: none; border: none; cursor: pointer; font-family: var(--font-ui); font-size: var(--fz-13); color: var(--muted); margin-top: 2px; }
 .gs-secondary:hover { color: var(--accent); }
 
-/* ─── First-run checklist (Home, until first merge) ──────────────────────── */
-.firstrun { border: 1px solid var(--line); border-radius: 12px; background: var(--panel); padding: 12px 14px; margin-bottom: 14px; }
-.firstrun-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 10px; }
-.firstrun-title { font-family: var(--font-mono); font-size: var(--fz-11); font-weight: 600; letter-spacing: 0.1em; color: var(--accent); }
-.firstrun-sub { font-size: var(--fz-11); color: var(--muted); }
-.firstrun-steps { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
-@media (max-width: 760px) { .firstrun-steps { grid-template-columns: 1fr 1fr; } }
-.firstrun-step { display: flex; align-items: flex-start; gap: 10px; text-align: left; background: var(--raised); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; font: inherit; }
-button.firstrun-step { cursor: pointer; }
-button.firstrun-step:hover { border-color: var(--accent); }
-.firstrun-step.current { border-color: var(--accent); box-shadow: 0 0 0 1px color-mix(in oklch, var(--accent), transparent 70%); }
-.firstrun-step.done { opacity: 0.7; }
-.firstrun-check { flex: none; width: 20px; height: 20px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-family: var(--font-mono); font-size: var(--fz-11); font-weight: 600; background: color-mix(in oklch, var(--accent), transparent 86%); color: var(--accent); }
-.firstrun-step.done .firstrun-check { background: color-mix(in oklch, var(--ok, var(--accent)), transparent 82%); color: var(--ok, var(--accent)); }
-.firstrun-step-txt { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.firstrun-step-txt b { font-size: var(--fz-12-5); font-weight: 600; }
-.firstrun-step-txt span { font-size: var(--fz-11-5); color: var(--muted); }
-.firstrun-step.done .firstrun-step-txt b { text-decoration: line-through; text-decoration-color: var(--faint); }
-.firstrun-go { margin-left: auto; align-self: center; flex: none; font-family: var(--font-ui); font-size: var(--fz-12); font-weight: 500; color: var(--accent); }
 
 /* ─── Connect / loading skeleton ─────────────────────────────────────────── */
 @media (prefers-reduced-motion: no-preference) {
@@ -2345,6 +2502,17 @@ button.firstrun-step:hover { border-color: var(--accent); }
 .reconnect-retry { margin-left: auto; background: none; border: none; cursor: pointer; font-family: var(--font-ui); font-size: var(--fz-12-5); font-weight: 600; color: var(--accent); }
 .reconnect-retry:hover { text-decoration: underline; }
 
+/* Depleted-key banner (TASK 23) — same shape as .reconnect-bar above, one
+   fleet-wide signal instead of a per-run duplicate. */
+.depleted-keys-bar {
+  display: flex; align-items: center; gap: 10px; margin-bottom: 14px;
+  padding: 9px 14px; border-radius: 9px; font-size: var(--fz-12-5); color: var(--text);
+  background: color-mix(in oklch, var(--warn), transparent 90%);
+  border: 1px solid color-mix(in oklch, var(--warn), transparent 65%);
+}
+.depleted-keys-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--warn); animation: pulse 2s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) { .depleted-keys-dot { animation: none; } }
+
 /* ─── Fleet readiness banner ─────────────────────────────────────────────── */
 .fleet-warn {
   display: flex; align-items: center; gap: 11px; width: 100%;
@@ -2358,19 +2526,6 @@ button.firstrun-step:hover { border-color: var(--accent); }
 .fleet-warn-cta { margin-left: auto; flex: none; background: none; border: none; cursor: pointer; font-family: var(--font-ui); font-size: var(--fz-13); font-weight: 600; color: var(--accent); white-space: nowrap; }
 .fleet-warn-cta:hover { text-decoration: underline; text-underline-offset: 3px; }
 
-/* ─── Parallelism nudge — a suggestion, not a warning, so it's accent-toned
-   (not --danger) and carries its own dismiss. ────────────────────────────── */
-.parallel-nudge {
-  display: flex; align-items: center; gap: 11px; width: 100%;
-  padding: 9px 12px 9px 15px; border-radius: 11px; text-align: left;
-  background: color-mix(in oklch, var(--accent), transparent 92%);
-  border: 1px solid color-mix(in oklch, var(--accent), transparent 65%);
-  margin-bottom: 10px;
-}
-.parallel-nudge-txt { font-size: var(--fz-13); color: var(--text); line-height: 1.45; }
-.parallel-nudge-cta { flex: none; background: none; border: none; cursor: pointer; font-family: var(--font-ui); font-size: var(--fz-13); font-weight: 600; color: var(--accent); white-space: nowrap; }
-.parallel-nudge-cta:hover { text-decoration: underline; text-underline-offset: 3px; }
-.parallel-nudge-x { margin-left: auto; }
 
 /* ─── Shared empty state ─────────────────────────────────────────────────── */
 .empty-state { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding: 22px 20px; border: 1px dashed var(--line); border-radius: 12px; background: color-mix(in oklch, var(--panel), transparent 30%); }
@@ -2406,6 +2561,7 @@ button.firstrun-step:hover { border-color: var(--accent); }
 .audit-diff-wrap { margin-top: 8px; }
 .audit-files { font-size: var(--fz-11); color: var(--muted); line-height: 1.5; margin: 0 0 6px; word-break: break-all; }
 .audit-meta { display: flex; align-items: center; gap: 8px; font-size: var(--fz-11); color: var(--muted); }
+.audit-actor-dot { width: 6px; height: 6px; border-radius: 50%; flex: none; }
 .audit-op { color: var(--muted); }
 .audit-sep { opacity: 0.6; }
 .audit-detail { font-size: var(--fz-13); color: var(--muted); line-height: 1.5; text-wrap: pretty; }
@@ -2620,11 +2776,30 @@ button.firstrun-step:hover { border-color: var(--accent); }
 .asst-sugg { display: flex; flex-wrap: wrap; gap: 8px; }
 .asst-chip { font-family: var(--font-ui); font-size: var(--fz-12-5); color: var(--muted); background: var(--raised); border: 1px solid var(--line); border-radius: 20px; padding: 6px 12px; cursor: pointer; }
 .asst-chip:hover { color: var(--ink); border-color: var(--faint); }
-.asst-msg { display: flex; flex-direction: column; gap: 4px; }
+/* TASK 21 — chat bubbles: operator right-aligned (human-bg/border, tail at
+   bottom-right), Steward left-aligned (surface-2, tail at bottom-left). The
+   bubble styling lives on .asst-text/.asst-md (the content element) rather
+   than restructuring the row — .asst-who stays a plain label above it. */
+.asst-msg { display: flex; flex-direction: column; gap: 4px; max-width: 88%; }
+.asst-user { align-self: flex-end; align-items: flex-end; }
+.asst-assistant { align-self: flex-start; align-items: flex-start; }
 .asst-who { font-size: var(--fz-11); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
 .asst-user .asst-who { color: var(--accent); }
-.asst-text { font-size: var(--fz-13-5); line-height: 1.5; color: var(--ink); white-space: pre-wrap; word-break: break-word; }
-.asst-user .asst-text { color: var(--muted); }
+.asst-text {
+  font-size: var(--fz-13-5); line-height: 1.5; color: var(--ink); white-space: pre-wrap; word-break: break-word;
+  padding: 9px 12px;
+}
+.asst-user .asst-text {
+  color: var(--text);
+  background: color-mix(in oklch, var(--ak-human), transparent 88%);
+  border: 1px solid color-mix(in oklch, var(--ak-human), transparent 45%);
+  border-radius: 12px 12px 4px 12px;
+}
+.asst-assistant .asst-text, .asst-assistant .asst-md {
+  background: var(--ak-surface-2);
+  border: 1px solid var(--ak-border);
+  border-radius: 12px 12px 12px 4px;
+}
 /* Assistant replies render as markdown — tighten the doc-scale spacing so it
    reads as a compact chat bubble, and drop the pre-wrap (blocks handle layout). */
 .asst-md { white-space: normal; }
@@ -2632,20 +2807,103 @@ button.firstrun-step:hover { border-color: var(--accent); }
 .asst-md .md > :first-child { margin-top: 0; }
 .asst-md .md > :last-child { margin-bottom: 0; }
 .asst-md .md p { margin: 6px 0; color: var(--ink); }
+/* Second (and later) paragraph reads as elaboration, not the headline claim —
+   dimmed to text-secondary so the first line stays the thing that's scanned. */
+.asst-md .md p:nth-of-type(n+2) { color: var(--ak-text-secondary); }
 .asst-md .md h1 { font-size: var(--fz-15); margin: 10px 0 6px; }
 .asst-md .md h2 { font-size: var(--fz-14); margin: 12px 0 6px; padding-top: 10px; }
 .asst-md .md h3 { font-size: var(--fz-13-5); margin: 10px 0 4px; }
 .asst-md .md ul, .asst-md .md ol { margin: 6px 0; padding-left: 18px; color: var(--ink); }
 .asst-md .md li { margin: 3px 0; }
 .asst-md .md hr { margin: 10px 0; }
-.asst-think { color: var(--muted); font-style: italic; }
+.asst-think { color: var(--muted); font-style: italic; padding: 9px 12px; animation: asst-think-pulse 2s ease-in-out infinite; }
+@keyframes asst-think-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .55; } }
+@media (prefers-reduced-motion: reduce) { .asst-think { animation: none; } }
 .asst-err { font-size: var(--fz-12-5); color: var(--danger); }
+
+/* TASK 21 — the dock's compact decision-trail footer (surface-0): header +
+   export, filters, a short recent-decisions list. The fuller detail (diffs,
+   rationale, archive/delete) stays on the dedicated Audit page. */
+.asst-audit-footer {
+  margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--ak-border);
+  background: var(--ak-surface-0);
+  display: flex; flex-direction: column; gap: 8px;
+}
+.asst-audit-head { display: flex; align-items: center; justify-content: space-between; }
+.asst-audit-title { font-size: 10px; letter-spacing: 0.1em; color: var(--ak-text-faint); }
+.asst-audit-export {
+  font-family: var(--ak-font-mono); font-size: 10px; color: var(--ak-text-secondary);
+  background: none; border: 1px solid var(--ak-border-strong); border-radius: var(--ak-radius-sm);
+  padding: 3px 8px; cursor: pointer;
+}
+.asst-audit-export:hover:not(:disabled) { color: var(--ak-text-primary); border-color: var(--ak-text-faint); }
+.asst-audit-export:disabled { opacity: 0.5; cursor: default; }
+.asst-audit-filters { display: flex; gap: 6px; flex-wrap: wrap; }
+.asst-audit-select {
+  font-family: var(--ak-font-mono); font-size: 10px; color: var(--ak-text-secondary);
+  background: var(--ak-surface-1); border: 1px solid var(--ak-border); border-radius: var(--ak-radius-sm);
+  padding: 3px 6px;
+}
+.asst-audit-rows { display: flex; flex-direction: column; gap: 2px; max-height: 220px; overflow-y: auto; }
+.asst-audit-empty { font-size: var(--fz-11); color: var(--ak-text-faint); padding: 6px 0; }
+.asst-audit-row {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 5px 4px; background: none; border: none; border-radius: var(--ak-radius-sm);
+  color: inherit; font: inherit; text-align: left; cursor: pointer;
+}
+.asst-audit-row:hover { background: var(--ak-surface-1); }
+.asst-audit-time { flex: none; font-size: 10px; color: var(--ak-text-faint); }
+.asst-audit-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; }
+.asst-audit-sentence { flex: 1; min-width: 0; font-size: var(--fz-11-5); color: var(--ak-text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.asst-audit-actor { flex: none; font-size: 10px; color: var(--ak-text-faint); max-width: 30%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Source-citation ghost pills — "no claim without a chip" (TASK 21). */
+.asst-sources { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 2px; }
+.asst-source-chip {
+  font-family: var(--ak-font-mono); font-size: 10px; letter-spacing: 0.04em;
+  color: var(--ak-text-faint); background: transparent;
+  border: 1px solid var(--ak-border-strong); border-radius: var(--ak-radius-pill);
+  padding: 3px 9px; text-decoration: none; cursor: pointer;
+}
+.asst-source-chip:hover { color: var(--ak-text-secondary); border-color: var(--ak-text-faint); }
 /* Confirm-before-create chip under an assistant message that proposed a task. */
 .asst-propose {
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
   margin-top: 6px; padding: 8px 10px;
   background: var(--raised); border: 1px solid var(--line); border-radius: 7px;
+  animation: asst-arrive 200ms ease-out;
 }
+@keyframes asst-arrive {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@media (prefers-reduced-motion: reduce) { .asst-propose, .asst-confirm2 { animation: none; } }
+/* The row's inner content swaps state in place (pending → done/dismissed)
+   rather than the row unmounting — .asst-propose-done fades in as the
+   nearest available "resolution" feedback for that shape. */
+.asst-propose-done { animation: asst-resolve-in 160ms ease-out; }
+@keyframes asst-resolve-in { from { opacity: 0; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .asst-propose-done { animation: none; } }
+/* TASK 21 — the exactly-2-actions confirm bubble: blue-bordered, numbered
+   rows, "do both" / "just #01" / "cancel" (a 3+ group keeps the general
+   .asst-propose-group treatment below, unchanged). */
+.asst-confirm2 {
+  display: flex; flex-direction: column; gap: 8px; margin-top: 6px;
+  padding: 10px 12px;
+  background: color-mix(in oklch, var(--ak-human), transparent 92%);
+  border: 1px solid color-mix(in oklch, var(--ak-human), transparent 55%);
+  border-radius: 10px;
+  animation: asst-arrive 200ms ease-out;
+}
+.asst-confirm2-head { font-size: 10px; letter-spacing: 0.1em; color: var(--ak-human); }
+.asst-confirm2-row { display: flex; align-items: baseline; gap: 8px; }
+.asst-confirm2-row-body { display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 1; }
+.asst-confirm2-num { flex: none; font-size: var(--fz-11); color: var(--ak-text-faint); }
+.asst-confirm2-label { font-size: var(--fz-12-5); color: var(--ink); }
+.asst-confirm2-label-resolved { color: var(--muted); }
+.asst-confirm2-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 2px; }
+.asst-confirm2-both { background: var(--ak-human); border-color: var(--ak-human); }
+
 /* A batch of proposed actions (Steward can propose several from one input). */
 .asst-propose-group { display: flex; flex-direction: column; gap: 4px; }
 .asst-propose-all { display: flex; align-items: center; gap: 10px; margin-top: 6px; }
@@ -2686,6 +2944,14 @@ button.firstrun-step:hover { border-color: var(--accent); }
 .steward-head { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--line-soft); flex: none; }
 .steward-title { font-size: var(--fz-11); letter-spacing: 0.12em; color: var(--accent); }
 .steward-scope { font-size: var(--fz-11); color: var(--muted); }
+/* Same wsPhase-driven treatment as the other 5 fleet-governance screens — a
+   disconnected dock must never read the same as a quiet one. */
+.steward-disconnect-pill {
+  font-family: var(--ak-font-mono); font-size: 10.5px; letter-spacing: .02em; color: var(--ak-warn);
+  background: color-mix(in oklch, var(--ak-warn), transparent 88%);
+  border: 1px solid color-mix(in oklch, var(--ak-warn), transparent 55%);
+  border-radius: var(--ak-radius-bar); padding: 2px 8px;
+}
 .steward-spacer { flex: 1; }
 .steward-thread { flex: 1; min-height: 0; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 2px; }
 .steward-dock .asst-input { padding: 10px 12px; border-top: 1px solid var(--line-soft); flex: none; }
@@ -2700,7 +2966,10 @@ button.firstrun-step:hover { border-color: var(--accent); }
 :root.steward-open .op-navitem { justify-content: center; gap: 0; padding: 8px 0; font-size: 0; }
 /* Icon-only rail: a touch larger since there's no adjacent label to anchor to. */
 :root.steward-open .op-navitem .ic { width: 18px; height: 18px; }
-:root.steward-open .op-navitem .badge { display: none; }
+:root.steward-open .op-navitem .badge,
+:root.steward-open .op-navdot,
+:root.steward-open .op-navcount,
+:root.steward-open .op-navwarn-dot { display: none; }
 :root.steward-open .op-navsec,
 :root.steward-open .op-navsec-caret,
 :root.steward-open .op-plist,
@@ -3250,12 +3519,31 @@ button.firstrun-step:hover { border-color: var(--accent); }
 }
 .cmdk-item.sel { background: var(--raised); }
 .cmdk-item.disabled { color: var(--faint); cursor: default; }
-.cmdk-item-icon { color: var(--muted); width: 16px; text-align: center; flex-shrink: 0; }
+.cmdk-item-icon { color: var(--muted); width: 16px; text-align: center; flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center; gap: 5px; }
 .cmdk-item-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cmdk-item-hint { font-size: var(--fz-11); color: var(--faint); }
+/* TASK 24 — a decision row's selected state is its own treatment, not the
+   generic `--raised` wash every other group uses: a fixed dark bg + a human
+   (blue) border, so it reads as "this is a live decision" even before you
+   read the row. */
+.cmdk-item-decision.sel { background: #111823; box-shadow: 0 0 0 1px var(--ak-human) inset; }
+.cmdk-kind-chip {
+  flex-shrink: 0; width: 64px; text-align: left;
+  font-family: var(--font-mono); font-size: var(--fz-10); font-weight: 600; letter-spacing: 0.05em;
+  color: var(--ak-human);
+}
+.cmdk-dot { width: 6px; height: 6px; border-radius: 50%; flex: none; }
+.cmdk-dot-lime { background: var(--ak-machine); }
+.cmdk-dot-human { background: var(--ak-human); }
+.cmdk-dot-warn { background: var(--warn); }
+/* Armed destructive action — a second Enter confirms it. Same amber the dot
+   already uses, just louder, so "this is now one keypress from happening"
+   reads unmistakably. */
+.cmdk-item.armed { background: color-mix(in oklch, var(--warn), transparent 85%); box-shadow: 0 0 0 1px var(--warn) inset; }
+.cmdk-readonly { margin-left: auto; color: var(--warn); }
 .cmdk-foot {
   display: flex; gap: 16px; padding: 9px 16px; border-top: 1px solid var(--line);
-  font-size: var(--fz-11); color: var(--faint);
+  font-size: var(--fz-11); color: var(--faint); flex-wrap: wrap;
 }
 .cmdk-foot span { display: flex; align-items: center; gap: 5px; }
 .cmdk-foot kbd { margin-right: -2px; }
@@ -3269,22 +3557,6 @@ button.firstrun-step:hover { border-color: var(--accent); }
 .clarify-answer { resize: vertical; min-height: 52px; font: inherit; width: 100%; }
 .clarify-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .clarify-hint { font-size: var(--fz-10-5); color: var(--faint); }
-/* ── Spend efficiency (Home): how much of the fleet's cost actually ships ─── */
-.spend-eff { display: flex; flex-direction: column; gap: 12px; }
-.spend-eff-head { display: flex; align-items: baseline; gap: 12px; }
-.spend-eff-headline { font-size: var(--fz-12); color: var(--muted); margin-left: auto; }
-.spend-bar { display: flex; height: 10px; border-radius: 999px; overflow: hidden; background: var(--line-soft); }
-.spend-bar-seg { height: 100%; }
-.spend-delivered { background: var(--ok, #2E9E5B); }
-.spend-inflight { background: var(--accent); }
-.spend-abandoned { background: var(--line); }
-.spend-legend { display: flex; flex-direction: column; gap: 6px; }
-.spend-legend-row { display: flex; align-items: center; gap: 8px; font-size: var(--fz-12); }
-.spend-dot { width: 8px; height: 8px; border-radius: 999px; flex: none; }
-.spend-legend-label { font-weight: 600; }
-.spend-legend-hint { color: var(--faint); font-size: var(--fz-11); }
-.spend-legend-num { margin-left: auto; color: var(--muted); font-size: var(--fz-11); }
-.spend-eff-caveat { font-size: var(--fz-11); color: var(--faint); border-left: 2px solid var(--line); padding-left: 8px; }
 .settings-saved { font-size: var(--fz-11); color: var(--ok, var(--accent)); margin-top: 6px; }
 
 /* ── Project Coverage tab: scenario coverage ─────────────────────────────── */
@@ -3407,3 +3679,4 @@ button.firstrun-step:hover { border-color: var(--accent); }
 .run-revert { color: var(--warn); }
 .run-reverted { font-size: var(--fz-10-5); color: var(--muted); border: 1px solid var(--line-soft);
   border-radius: 999px; padding: 1px 8px; }
+.fleet-auto-model-input { width: 150px; flex: none; font-size: var(--fz-12); }

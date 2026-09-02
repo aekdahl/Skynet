@@ -10,8 +10,11 @@ import {
   ApprovalLevel,
   Dependency,
   Feature,
+  GithubSignalKind,
+  GithubSignalPayload,
   HitlItem,
   Milestone,
+  LogVerb,
   Module,
   PlanStep,
   Project,
@@ -25,6 +28,7 @@ import {
   Usage,
   WorkspaceSettings,
 } from "./contracts.js";
+import { Proposal, Rule, Transition } from "./kanban.js";
 
 // ─── Connect-time snapshot ────────────────────────────────────────────────
 
@@ -50,6 +54,11 @@ export const Snapshot = z.object({
   modules: z.array(Module),
   deps: z.array(Dependency),
   providers: z.array(ProviderInfo),
+  // Momentum Rollout kanban rebuild — project-scoped in the store (Rule/
+  // Proposal have no natural workspace-wide list of their own), fanned out to
+  // the whole workspace here same as every other snapshot collection.
+  rules: z.array(Rule).default([]),
+  proposals: z.array(Proposal).default([]),
   serverTime: Timestamp, // lets clients correct for clock skew when ticking
   // The server's default approval level (SKYNET_APPROVAL_LEVEL), so the
   // create-project form can pre-select what a new project would otherwise get.
@@ -68,7 +77,15 @@ export type Snapshot = z.infer<typeof Snapshot>;
 export const ServerEvent = z.discriminatedUnion("type", [
   // task-run lifecycle
   z.object({ type: z.literal("run.started"), run: TaskRun }),
-  z.object({ type: z.literal("run.log"), runId: z.string(), at: Timestamp, line: z.string(), detail: z.string().optional() }),
+  z.object({
+    type: z.literal("run.log"),
+    runId: z.string(),
+    at: Timestamp,
+    line: z.string(),
+    detail: z.string().optional(),
+    verb: LogVerb.optional(),
+    resultKind: z.enum(["ok", "error"]).optional(),
+  }),
   // Token-level "typing" preview of the line currently being generated — NOT
   // persisted (no store write, see Hub.runLogDelta): a real `run.log` still
   // lands once the message is complete. Clients hold this in a transient
@@ -93,8 +110,28 @@ export const ServerEvent = z.discriminatedUnion("type", [
   z.object({ type: z.literal("hitl.raised"), item: HitlItem }),
   z.object({ type: z.literal("hitl.resolved"), id: z.string(), resolution: Resolution }),
 
+  // Momentum Rollout, phase 1a — a GitHub PR/review/check/deploy webhook
+  // resolved to one of our own tasks. Bus-only (see Hub.publishGithubSignal):
+  // this phase only verifies, parses, resolves, and publishes — the later
+  // rule-engine phase is what turns a signal into a persisted Transition.
+  z.object({ type: z.literal("github.signal"), taskId: z.string(), kind: GithubSignalKind, payload: GithubSignalPayload }),
+
   // derived intelligence
   z.object({ type: z.literal("conflict.detected"), moduleId: z.string(), runIds: z.array(z.string()) }),
+  // File-level companion to conflict.detected (module-level): two concurrent,
+  // unrelated runs on the same project that have both actually touched the
+  // identical path (TaskRun.modifiedFiles), not just the same architectural
+  // module. See derive/conflicts.ts's computeFileCollisions.
+  z.object({ type: z.literal("file-collision.detected"), file: z.string(), runIds: z.array(z.string()) }),
+
+  // Momentum Rollout kanban rebuild, Phase 1c — rule engine + API-surface
+  // mutations. Rule/Proposal follow the same upsert-only shape as every other
+  // collection delta below; a Transition is append-only (never updated), so
+  // it only ever gets a "created" event, never "upserted"/"deleted".
+  z.object({ type: z.literal("transition.created"), transition: Transition }),
+  z.object({ type: z.literal("rule.upserted"), rule: Rule }),
+  z.object({ type: z.literal("rule.deleted"), id: z.string() }),
+  z.object({ type: z.literal("proposal.upserted"), proposal: Proposal }),
 
   // collection CRUD deltas — keep every operator's view consistent
   z.object({ type: z.literal("project.upserted"), project: Project }),
@@ -118,6 +155,11 @@ export const ServerEvent = z.discriminatedUnion("type", [
   z.object({ type: z.literal("audit.deleted"), hitlId: z.string() }),
   z.object({ type: z.literal("audit.archived-all") }),
   z.object({ type: z.literal("audit.cleared") }),
+
+  // Autonomy breaker/override (TASK 19) — like the audit deltas above, neither
+  // is part of the snapshot; carries only identity, clients re-fetch
+  // GET /api/projects/:id/autonomy-detent on it.
+  z.object({ type: z.literal("autonomyBreaker.updated"), projectId: z.string() }),
 ]);
 export type ServerEvent = z.infer<typeof ServerEvent>;
 

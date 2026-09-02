@@ -169,6 +169,35 @@ export const config = {
   // runs. 0 disables it entirely (fully human-driven). Per-project autonomy
   // flag still gates each project.
   autonomyMs: Number(process.env.SKYNET_AUTONOMY_MS ?? 15_000),
+  // Momentum Rollout Phase 1b — the rule engine's own scheduled sweeps
+  // (mirrors the reaper/autonomy sweeps above). ruleEngineSweepMs finalizes
+  // announce-before-acting PendingRuleActions once their window elapses (kept
+  // short by default — an operator's undo window is usually short too, and a
+  // sweep only DOES anything once a pending action's readyAt has passed, so a
+  // frequent tick is cheap). stallSweepMs is the slower, separate stall-
+  // detection job (same cadence class as the worktree GC above). Both 0 disables.
+  ruleEngineSweepMs: Number(process.env.SKYNET_RULE_ENGINE_SWEEP_MS ?? 30_000),
+  stallSweepMs: Number(process.env.SKYNET_STALL_SWEEP_MS ?? 1_800_000),
+  // Stall-detection thresholds (hours): an ongoing/review task with no
+  // Transition since stallNudgeHours gets a lightweight nudge (a
+  // stall_nudge Proposal); still no signal by stallEscalateHours (measured
+  // from the SAME last-signal point, not from the nudge) escalates to a
+  // suggested_reassignment Proposal.
+  stallNudgeHours: Number(process.env.SKYNET_STALL_NUDGE_HOURS ?? 48),
+  stallEscalateHours: Number(process.env.SKYNET_STALL_ESCALATE_HOURS ?? 96),
+  // TASK 10 — pattern-spotted automation onboarding. patternDetectSweepMs is
+  // the scan cadence (cheap — a no-op scan unless a project actually has
+  // patternDetectThreshold+ matching manual moves); patternDetectWindowDays
+  // bounds how far back a pattern search looks; patternDetectThreshold is the
+  // minimum DISTINCT tasks a repeated {from,to} manual move needs before it's
+  // proposed as a rule. watchPromoteSweepMs/watchPromoteAfterMs govern a
+  // watch-state rule's "unmodified after a week → auto-promote to live" clock
+  // (see RuleEngine.sweepWatchPromotion). All 0/negative disables that sweep.
+  patternDetectSweepMs: Number(process.env.SKYNET_PATTERN_DETECT_SWEEP_MS ?? 3_600_000),
+  patternDetectWindowDays: Number(process.env.SKYNET_PATTERN_DETECT_WINDOW_DAYS ?? 30),
+  patternDetectThreshold: Number(process.env.SKYNET_PATTERN_DETECT_THRESHOLD ?? 3),
+  watchPromoteSweepMs: Number(process.env.SKYNET_WATCH_PROMOTE_SWEEP_MS ?? 3_600_000),
+  watchPromoteAfterMs: Number(process.env.SKYNET_WATCH_PROMOTE_AFTER_MS ?? 7 * 24 * 60 * 60 * 1000),
   // Budget-as-allocation pacing window (ms): with `Project.budgetPacing` on,
   // auto-pick treats the daily budget as available in proportion to how much
   // of this window has elapsed since local midnight, instead of all at once.
@@ -230,6 +259,12 @@ export const config = {
   // streak. >0 enables (default 3); 0 disables. See orchestrator.ts
   // noteAutonomyOutcome / noteAutonomyBadOutcome.
   autonomyMaxConsecutiveFailures: Number(process.env.SKYNET_AUTONOMY_MAX_CONSECUTIVE_FAILURES ?? 3),
+  // TASK 19 — "OVERRIDE — I'LL WATCH IT": how long a manual bypass of a
+  // tripped breaker lasts before automatically reverting to whatever the
+  // breaker's CURRENT trip state says (see orchestrator.ts's
+  // sweepAutonomyOverrides). Deliberately short — this is a supervised
+  // window, not a way to permanently silence the breaker. Default 2h.
+  autonomyOverrideDurationMs: Number(process.env.SKYNET_AUTONOMY_OVERRIDE_DURATION_MS ?? 2 * 60 * 60_000),
   // Self-replenishing backlog: hard backstop on the fastest possible growth
   // rate of a project's backlog from fleet-authored proposals (see
   // review-verdict.ts's ProposedTask / orchestrator.ts's
@@ -293,6 +328,10 @@ export const config = {
   // human-facing gates. `0` disables the wait entirely (all gates ping
   // immediately — old behavior).
   telegramGateAutoReviewDebounceMs: Number(process.env.SKYNET_TELEGRAM_GATE_DEBOUNCE_MS ?? 20_000),
+  // Local hour (0-23) the scheduled daily digest fires at — a fixed unprompted
+  // evening summary, distinct from the on-demand /inbox. Defaults to 18:00.
+  // Any value outside 0-23 (e.g. -1) disables it entirely.
+  telegramDigestHour: Number(process.env.SKYNET_TELEGRAM_DIGEST_HOUR ?? 18),
 
   // ── MFA (second factor on the public login) ────────────────────────────────
   // Opt-in Telegram OTP after the password. SKYNET_MFA_DISABLE is the SSH

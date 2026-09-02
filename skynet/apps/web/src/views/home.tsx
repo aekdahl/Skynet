@@ -1,26 +1,32 @@
-import { Fragment, useEffect, useRef, useState } from "react";
-import type { TaskRun, Project, ProviderInfo } from "@skynet/shared";
+import { Fragment, useEffect, useMemo, useState } from "react";
+import type { AuditRecordWithActor, Decision, TaskRun, Transition } from "@skynet/shared";
+import * as api from "../lib/client";
+import { cardVariant } from "../kanban/inbox";
 import { useStore } from "../lib/store";
 import {
   agentsForProject,
-  classifyRun,
-  conflicts,
+  fmtCost,
   fmtWait,
-  heartbeatSecs,
-  idleRunners,
   KIND_META,
-  modName,
   openQueue,
-  projectShipped,
-  providerInfo,
   providerReadiness,
+  readyFeatureMerges,
+  readyMerges,
   runnerName,
-  spendEfficiency,
-  STALE_HEARTBEAT_SEC,
-  type RunTag,
   waitedSecs,
 } from "../lib/derive";
-import { EmptyState, PrimaryButton } from "../components/empty";
+import {
+  greetingSentence,
+  handledWithoutYou,
+  mergedStats,
+  needsHumanLook,
+  overnightActivity,
+  spendVsWorkSeries,
+  spendVsWorkTrend,
+  topDecisions,
+  waitingOnYou,
+} from "../kanban/home-metrics";
+import { PrimaryButton } from "../components/empty";
 import { RepoPicker, useConnectedRepos } from "../components/repo-picker";
 import { FolderPicker } from "../components/folder-picker";
 
@@ -183,108 +189,198 @@ function GetStarted({
   );
 }
 
-// ─── First-run checklist (live until first merge) ───────────────────────────
-// A four-beat guide — create → task → assign → approve — pinned to Home while a
-// workspace is finding its feet. Each beat ticks itself off from live state as
-// the operator does it, and the whole strip retires for good once the first run
-// merges (see `merged`). The current beat is a button that jumps you to where
-// the next action happens.
-function FirstRunChecklist({
-  onOpenProject,
-  onGoInbox,
+// ─── Home shell (Momentum Rollout Phase 22 — "replace, don't layer") ───────
+// Home used to lead with a live runs board + a first-run checklist — useful
+// on day one, noise every day after. This rebuild leads with what actually
+// changed since the operator last looked: a real overnight summary, four
+// stat cards, a 14-day spend-vs-work read, and the top 3 things costing the
+// most while they wait. All the math lives in home-metrics.ts (pure,
+// DOM-free, `now` always an explicit param) — kept separate from this
+// rendering layer so it's testable, same rationale as health-metrics.ts.
+// Per-project detail (the map, dependency lines) still lives on each
+// project's own page; GetStarted (below, unchanged) still owns the
+// genuinely-empty-workspace case — this rebuild only replaces what a
+// non-empty workspace's Home showed.
+
+// Short, prose-friendly (lowercase, singular) HITL kind names for the
+// WAITING ON YOU breakdown — KIND_META's labels are UI category chips
+// ("PLAN REVIEW", "NEEDS HELP"), not built for "N of these" sentence
+// grammar, so this stays a separate small map rather than reusing them.
+const KIND_SHORT: Record<string, string> = {
+  approval: "approval",
+  question: "question",
+  plan: "plan review",
+  diff: "diff review",
+  merge: "merge conflict",
+  escalation: "escalation",
+  verifier: "check failure",
+};
+
+function waitingBreakdownText(byKind: Partial<Record<string, number>>): string {
+  const entries = Object.entries(byKind) as [string, number][];
+  if (entries.length === 0) return "nothing waiting";
+  return entries
+    .map(([k, n]) => `${n} ${KIND_SHORT[k] ?? k}${n === 1 ? "" : "s"}`)
+    .join(" · ");
+}
+
+function HomeStatCard({
+  label,
+  value,
+  sub,
+  accent,
 }: {
-  onOpenProject: (id: string) => void;
-  onGoInbox: () => void;
+  label: string;
+  value: number | string;
+  sub: string;
+  accent: string;
 }) {
-  const { projects, tasks, runs } = useStore();
-  // `run.status === "done"` alone is NOT "merged" — it also fires on a zero-diff
-  // self-completion, an operator Stop, a reaper timeout, force-done, or a GitHub
-  // PR that's merely been opened. `mergedAt` is set exactly once, only inside
-  // orchestrator's `completeMerged`, which both the local merge queue and an
-  // actual GitHub PR merge funnel through — the one accurate "code landed" signal.
-  const merged = runs.some((r) => r.mergedAt != null);
-  if (projects.length === 0 || merged) return null;
-
-  const hasTask = tasks.length > 0;
-  const assigned = runs.length > 0; // a task assigned to an agent spins up a run
-  // Actionable beats jump to a project that hasn't shipped yet (a fresh one with
-  // no tasks counts — projectShipped needs ≥1 task), else the first project.
-  const target = projects.find((p) => !projectShipped(tasks, p.id)) ?? projects[0]!;
-
-  const steps: { label: string; hint: string; done: boolean; onClick?: () => void }[] = [
-    { label: "Create a project", hint: "Name it and set the goal.", done: true },
-    { label: "Add a task", hint: "Break the goal into work an agent can pick up.", done: hasTask, onClick: () => onOpenProject(target.id) },
-    { label: "Assign it to an agent", hint: "Move a task to Ongoing to start a run.", done: assigned, onClick: () => onOpenProject(target.id) },
-    { label: "Approve the first merge", hint: "Review the finished work and merge it.", done: false, onClick: onGoInbox },
-  ];
-  const doneCount = steps.filter((s) => s.done).length;
-  const currentIdx = steps.findIndex((s) => !s.done); // first unfinished beat
-
   return (
-    <div className="firstrun" role="status" aria-label="First-run checklist">
-      <div className="firstrun-head">
-        <span className="firstrun-title">GET TO YOUR FIRST MERGE</span>
-        <span className="firstrun-sub mono">{doneCount}/{steps.length}</span>
+    <div className="hm-card" style={{ borderTopColor: accent }}>
+      <div className="hm-card-label">{label}</div>
+      <div className="hm-card-value" style={{ color: accent }}>{value}</div>
+      <div className="hm-card-sub">{sub}</div>
+    </div>
+  );
+}
+
+function SpendVsWorkChart({
+  series,
+  trend,
+}: {
+  series: ReturnType<typeof spendVsWorkSeries>;
+  trend: ReturnType<typeof spendVsWorkTrend>;
+}) {
+  const maxMerged = Math.max(1, ...series.map((d) => d.mergedCount));
+  const maxCostPerMerge = Math.max(1, ...series.map((d) => d.costPerMerge ?? 0));
+  return (
+    <div className="hm-chart-card">
+      <div className="hm-card-label" title="Bars: branches merged that day. Dot: cost per branch merged that day.">
+        Spend vs. work — last 14 days
       </div>
-      <div className="firstrun-steps">
-        {steps.map((s, i) => {
-          const current = i === currentIdx;
-          const cls =
-            "firstrun-step" + (s.done ? " done" : "") + (current ? " current" : "");
-          const inner = (
-            <>
-              <span className="firstrun-check" aria-hidden="true">{s.done ? "✓" : i + 1}</span>
-              <span className="firstrun-step-txt">
-                <b>{s.label}</b>
-                <span>{s.hint}</span>
-              </span>
-              {current && s.onClick && <span className="firstrun-go">Go →</span>}
-            </>
-          );
-          return current && s.onClick ? (
-            <button key={s.label} className={cls} onClick={s.onClick}>
-              {inner}
-            </button>
-          ) : (
-            <div key={s.label} className={cls}>
-              {inner}
+      <div className="hm-chart">
+        {series.map((d) => {
+          const barPct = d.mergedCount > 0 ? Math.max(4, Math.round((d.mergedCount / maxMerged) * 100)) : 0;
+          // Positioned via `bottom: <n>%` on a `position:relative` column
+          // (below), never a percentage `margin-bottom` — that resolves
+          // against the column's WIDTH, not height, and flattens this
+          // series onto the baseline. See home-metrics.ts's own comment on
+          // spendVsWorkSeries for why the marker and bar use independent
+          // value domains (merge count vs. cost-per-merge) sharing one
+          // column height.
+          const markerPct = d.costPerMerge != null ? Math.max(2, Math.round((d.costPerMerge / maxCostPerMerge) * 100)) : null;
+          return (
+            <div className="hm-chart-col" key={d.dayStart}>
+              <div className="hm-chart-track">
+                <div className="hm-chart-bar" style={{ height: `${barPct}%` }} title={`${d.mergedCount} merged`} />
+              </div>
+              {markerPct != null && (
+                <div
+                  className="hm-chart-marker"
+                  style={{ bottom: `${markerPct}%` }}
+                  title={`${fmtCost(d.costPerMerge!)} / merge`}
+                />
+              )}
             </div>
           );
         })}
+      </div>
+      <div className="hm-chart-reading">
+        {trend.kind === "insufficient-data"
+          ? "Not enough merged work yet to read a trend."
+          : `${trend.totalMerges} branch${trend.totalMerges === 1 ? "" : "es"} merged over 14 days, averaging ${fmtCost(trend.avgCostPerMerge)} each — cost per merge is ${trend.direction}.`}
       </div>
     </div>
   );
 }
 
-// ─── Home shell ──────────────────────────────────────────────────────────────
-// Home used to switch between four lenses (Subway / Timeline / Ledger /
-// Roster) — four takes on the same underlying runs/tasks, none of them THE
-// answer to "what's happening right now." Runs below replaces all four: one
-// live board, sorted by what needs attention first. Per-project detail
-// (the map, dependency lines) still lives on each project's own page.
+function FirstThreeThings({
+  decisions,
+  now,
+  onOpenTask,
+}: {
+  decisions: Decision[];
+  now: number;
+  onOpenTask: (id: string) => void;
+}) {
+  if (decisions.length === 0) return null;
+  return (
+    <div className="hm-first3">
+      <div className="hm-card-label">First three things</div>
+      <div className="hm-first3-list">
+        {decisions.map((d) => {
+          const variant = cardVariant(d);
+          const k = KIND_META[d.kind];
+          return (
+            <button
+              key={d.id}
+              className={
+                "di-card hm-first3-card" +
+                (variant === "escalation" ? " di-card-escalation" : "") +
+                (variant === "conflict" ? " di-card-conflict" : "")
+              }
+              onClick={() => onOpenTask(d.runId)}
+            >
+              <div className="hm-first3-top">
+                <span className="hm-first3-kind" style={{ color: k.color }}>{k.label}</span>
+                <span className="hm-first3-wait mono">{fmtWait(waitedSecs(d, now))}</span>
+              </div>
+              <div className="hm-first3-title">{d.title}</div>
+              <div className="hm-first3-meta mono">
+                {d.projectName}{d.taskTitle ? ` · ${d.taskTitle}` : ""}
+              </div>
+            </button>
+          );
+        })}
+      </div>
+      <div className="hm-first3-footnote">ordered by what's costing you most while it waits</div>
+    </div>
+  );
+}
 
 export function HomeView({
   now,
   onOpenTask,
-  onOpenAgent,
-  onOpenProject,
   onCreate,
-  onGoInbox,
   onConfigureFleet,
   onOpenSettings,
-  onAssign,
 }: {
   now: number;
   onOpenTask: (id: string) => void;
-  onOpenAgent: (id: string) => void;
-  onOpenProject: (id: string) => void;
   onCreate: (name: string, goal: string, opts?: { repo?: string; repoPath?: string }) => void;
-  onGoInbox: () => void;
   onConfigureFleet: () => void;
   onOpenSettings: () => void;
-  onAssign: () => void;
 }) {
-  const { projects, runs, queue, modules, fleet } = useStore();
+  const { projects, runs, queue, tasks, features, transitions: liveTransitions } = useStore();
+
+  // Fetch-once-then-merge-live, same pattern as BoardHealth (health.tsx):
+  // the Snapshot doesn't carry historical Decisions/audit/Transitions, and
+  // this dashboard needs real history (the audit trail's 7-day window, the
+  // spend chart's 14 days), not just what's arrived over this live session.
+  const [decisions, setDecisions] = useState<Decision[]>([]);
+  const [audit, setAudit] = useState<AuditRecordWithActor[]>([]);
+  const [fetchedTransitions, setFetchedTransitions] = useState<Transition[]>([]);
+  useEffect(() => {
+    if (projects.length === 0) return; // nothing to fetch on the empty-workspace screen
+    let live = true;
+    Promise.all([api.fetchDecisions(), api.fetchAudit(), api.fetchTransitions({ limit: 5000 })])
+      .then(([d, a, t]) => {
+        if (!live) return;
+        setDecisions(d);
+        setAudit(a);
+        setFetchedTransitions(t);
+      })
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- fetch once per mount, like BoardHealth's own effect
+  }, []);
+  const transitions = useMemo(() => {
+    const byId = new Map(fetchedTransitions.map((t) => [t.id, t]));
+    for (const t of liveTransitions) byId.set(t.id, t);
+    return [...byId.values()];
+  }, [fetchedTransitions, liveTransitions]);
 
   if (projects.length === 0)
     return (
@@ -295,358 +391,56 @@ export function HomeView({
       />
     );
 
-  const blockers = openQueue(queue).sort(
-    (a, b) => waitedSecs(b, now) - waitedSecs(a, now),
-  );
-  const conf = conflicts(runs);
-
-  const projName = (runId: string) => {
-    const a = runs.find((x) => x.id === runId);
-    return projects.find((p) => p.id === a?.projectId)?.name ?? "—";
-  };
+  const readyToMergeCount = readyMerges(runs).length + readyFeatureMerges(features).length;
+  const activity = overnightActivity(runs, queue, now);
+  const greeting = greetingSentence(activity, readyToMergeCount);
+  const waiting = waitingOnYou(openQueue(queue));
+  const handled = handledWithoutYou(audit, now);
+  const merged = mergedStats(runs, now);
+  const needsLook = needsHumanLook(queue, tasks, transitions, now);
+  const series = spendVsWorkSeries(runs, now);
+  const trend = spendVsWorkTrend(series);
+  const top3 = topDecisions(decisions);
 
   return (
     <div className="home">
-      <FirstRunChecklist onOpenProject={onOpenProject} onGoInbox={onGoInbox} />
       <div className="home-bar">
         <FleetReadinessBanner onOpenSettings={onOpenSettings} />
-        {blockers.length === 0 ? (
-          <div className="needs-strip needs-clear">
-            <span className="dot dot-running" /> No orders required — all agents
-            running autonomously.
-          </div>
-        ) : (
-          <div className="needs-strip">
-            <div className="needs-strip-head">
-              <span className="needs-strip-title">
-                ⏸ NEEDS YOU · {blockers.length}{" "}
-                <span className="needs-strip-hint">oldest first</span>
-              </span>
-              <button className="needs-strip-all" onClick={onGoInbox}>
-                Open Inbox →
-              </button>
-            </div>
-            <div className="needs-row">
-              {blockers.map((item) => {
-                const k = KIND_META[item.kind];
-                const waited = waitedSecs(item, now);
-                const a = runs.find((x) => x.id === item.runId);
-                return (
-                  <button
-                    key={item.id}
-                    className={"blocker" + (waited > 300 ? " blocker-hot" : "")}
-                    onClick={() => onOpenTask(item.runId)}
-                  >
-                    <div className="blocker-top">
-                      <span
-                        className="blocker-kind"
-                        style={{ color: k.color, borderColor: k.color }}
-                      >
-                        {k.label}
-                      </span>
-                      <span className="blocker-wait mono">{fmtWait(waited)}</span>
-                    </div>
-                    <span className="blocker-title">{item.title}</span>
-                    <div className="blocker-meta mono">
-                      {a ? runnerName(a, fleet) : item.runId} ·{" "}
-                      {projName(item.runId)}
-                    </div>
-                    <div className="blocker-cta">Review &amp; decide →</div>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        )}
-        {conf.map(([area, list]) => (
-          <div key={area} className="home-conflict">
-            ⚠ <b>{modName(modules, area)}</b> —{" "}
-            {list
-              .map((a) => runnerName(a, fleet) + " (" + a.name + ")")
-              .join(" and ")}{" "}
-            are both working here.
-            <button
-              className="home-conflict-link"
-              onClick={() => list[0] && onOpenTask(list[0].id)}
-            >
-              Review →
-            </button>
-          </div>
-        ))}
+        <p className="hm-greeting">
+          {greeting.before}
+          {greeting.needsYou && <span className="hm-needsyou">{greeting.needsYou}</span>}
+          {greeting.after}
+        </p>
       </div>
-      <RunsBoard
-        now={now}
-        onOpenTask={onOpenTask}
-        onOpenAgent={onOpenAgent}
-        onOpenProject={onOpenProject}
-        onAssign={onAssign}
-        onConfigureFleet={onConfigureFleet}
-      />
-      <SpendEfficiencyCard />
+      <div className="hm-grid">
+        <HomeStatCard
+          label="Waiting on you"
+          value={waiting.total}
+          sub={waitingBreakdownText(waiting.byKind)}
+          accent="var(--info)"
+        />
+        <HomeStatCard
+          label="Handled without you"
+          value={handled.count}
+          sub={handled.pct == null ? "no gates in the last 7d" : `${handled.pct}% of ${handled.totalGates} gates`}
+          accent="var(--ok)"
+        />
+        <HomeStatCard
+          label="Merged · 7 days"
+          value={merged.merged}
+          sub={merged.reverted > 0 ? `${merged.reverted} reverted` : "none reverted"}
+          accent="var(--muted)"
+        />
+        <HomeStatCard
+          label="Needs a human look"
+          value={needsLook.total}
+          sub={`${needsLook.escalations} escalation${needsLook.escalations === 1 ? "" : "s"} · ${needsLook.stalls} stalled`}
+          accent="var(--warn)"
+        />
+      </div>
+      <SpendVsWorkChart series={series} trend={trend} />
+      <FirstThreeThings decisions={top3} now={now} onOpenTask={onOpenTask} />
     </div>
-  );
-}
-
-const OUTCOME_META: Record<string, { label: string; hint: string; cls: string }> = {
-  delivered: { label: "Delivered", hint: "reached a merge", cls: "spend-delivered" },
-  "in-flight": { label: "In flight", hint: "still working", cls: "spend-inflight" },
-  abandoned: { label: "Didn't land", hint: "stalled, stopped, or finished without merging", cls: "spend-abandoned" },
-};
-
-/**
- * How much of what the fleet costs actually ships. Surfaced because it's the
- * one number that tells you whether the spend is working, and it was invisible
- * — a month of real spend turned out to be mostly runs that never merged.
- * Everything here derives from runs already in the snapshot (see
- * spendEfficiency); nothing new is fetched or stored.
- */
-function SpendEfficiencyCard() {
-  const { runs } = useStore();
-  const eff = spendEfficiency(runs);
-  if (eff.runs === 0) return null;
-  const usd = (n: number) => "$" + n.toFixed(2);
-  const pct = (n: number) => Math.round(n * 100) + "%";
-
-  return (
-    <section className="vw spend-eff">
-      <div className="spend-eff-head">
-        <h2 className="vw-h">Spend efficiency</h2>
-        <span className="spend-eff-headline mono">
-          {eff.totalUsd > 0 ? `${pct(eff.deliveredShare)} of ${usd(eff.totalUsd)} delivered` : "no priced runs yet"}
-        </span>
-      </div>
-      {eff.totalUsd > 0 && (
-        <div className="spend-bar" role="img" aria-label={`${pct(eff.deliveredShare)} of spend delivered`}>
-          {eff.buckets
-            .filter((b) => b.share > 0)
-            .map((b) => (
-              <div
-                key={b.outcome}
-                className={"spend-bar-seg " + OUTCOME_META[b.outcome]!.cls}
-                style={{ width: `${b.share * 100}%` }}
-                title={`${OUTCOME_META[b.outcome]!.label}: ${usd(b.costUsd)} (${pct(b.share)})`}
-              />
-            ))}
-        </div>
-      )}
-      <div className="spend-legend">
-        {eff.buckets.map((b) => (
-          <div key={b.outcome} className="spend-legend-row">
-            <span className={"spend-dot " + OUTCOME_META[b.outcome]!.cls} aria-hidden="true" />
-            <span className="spend-legend-label">{OUTCOME_META[b.outcome]!.label}</span>
-            <span className="spend-legend-hint">{OUTCOME_META[b.outcome]!.hint}</span>
-            <span className="spend-legend-num mono">
-              {b.runs} run{b.runs === 1 ? "" : "s"} · {usd(b.costUsd)}
-            </span>
-          </div>
-        ))}
-      </div>
-      {/* Honesty line: a provider that didn't price a run contributes $0 above,
-          so a low priced-share means these are a FLOOR, not a total. Better to
-          say so than to render a confident wrong number. */}
-      {eff.pricedShare < 0.99 && (
-        <div className="spend-eff-caveat">
-          Based on the {pct(eff.pricedShare)} of runs with a reported cost — the real totals are higher.
-        </div>
-      )}
-    </section>
-  );
-}
-
-// ─── Runs — the one live board (replaces Subway/Timeline/Ledger/Roster) ──────
-// Every in-flight run, plus the most recently done ones, as one table sorted
-// by what needs attention first: needs you (an open HITL — oldest-waiting
-// first), then running (most recently started first), then done (most
-// recently finished first). No per-project grouping, no separate idle-agent
-// list — idle capacity and the unassigned backlog are single-number stats,
-// not rows; drilling into a project's own page still shows that project's map.
-const DONE_CAP = 8;
-interface RunRow {
-  run: TaskRun;
-  agentId: string | null;
-  agentName: string;
-  /** The vendor the run's agent is actually on — a real mark (colored glyph)
-   *  + name, not just the fleet runner's own custom label. */
-  provider: ProviderInfo;
-  projectId: string;
-  projectName: string;
-  tag: RunTag;
-  statusLabel: string;
-  timeLabel: string;
-  sortKey: number;
-  /** No heartbeat in over STALE_HEARTBEAT_SEC — never true for a finished run
-   *  (no heartbeat concept once done). */
-  stale: boolean;
-}
-const TAG_RANK: Record<RunTag, number> = { blocked: 0, running: 1, paused: 2, done: 3 };
-
-// ─── Parallelism nudge ────────────────────────────────────────────────────
-// "idle runners + deep backlog → spin up more?" — the fleet's own idle state
-// turned into a light suggestion, not a warning: accent-toned, dismissible for
-// the session (no localStorage — it's a hint, and a fresh page load re-checks
-// the live state rather than remembering a stale dismissal). Silent whenever
-// the heuristic (derive/parallelism.ts, server-computed) isn't met.
-function ParallelismNudgeBanner({ onConfigureFleet }: { onConfigureFleet: () => void }) {
-  const { parallelismNudge } = useStore();
-  const [dismissed, setDismissed] = useState(false);
-  if (dismissed || !parallelismNudge?.shouldNudge) return null;
-  return (
-    <div className="parallel-nudge" role="status">
-      <span className="parallel-nudge-txt">
-        <b>{parallelismNudge.idleRunners} idle runners</b> and {parallelismNudge.eligibleBacklog} tasks waiting —
-        spin up more agents to work them in parallel?
-      </span>
-      <button className="parallel-nudge-cta" onClick={onConfigureFleet}>
-        Add agent →
-      </button>
-      <button className="approval-rule-x parallel-nudge-x" title="Dismiss" aria-label="Dismiss" onClick={() => setDismissed(true)}>
-        ×
-      </button>
-    </div>
-  );
-}
-
-function RunsBoard({
-  now,
-  onOpenTask,
-  onOpenAgent,
-  onOpenProject,
-  onAssign,
-  onConfigureFleet,
-}: {
-  now: number;
-  onOpenTask: (id: string) => void;
-  onOpenAgent: (id: string) => void;
-  onOpenProject: (id: string) => void;
-  onAssign: () => void;
-  onConfigureFleet: () => void;
-}) {
-  const { runs, tasks, projects, queue, fleet, readOnly, providers } = useStore();
-  const oq = openQueue(queue);
-  const idle = idleRunners(fleet, runs);
-  const backlogCount = tasks.filter(
-    (t) => !t.runId && !t.archived && (t.state === "backlog" || t.state === "triage" || t.state === "todo"),
-  ).length;
-
-  const toRow = (r: TaskRun): RunRow => {
-    const hitl = oq.find((q) => q.runId === r.id);
-    const project = projects.find((p) => p.id === r.projectId);
-    const { tag, statusLabel, timeLabel, sortKey } = classifyRun(r, hitl, now, STALE_HEARTBEAT_SEC);
-    return {
-      run: r,
-      agentId: r.agentId,
-      agentName: runnerName(r, fleet),
-      provider: providerInfo(providers, r.provider),
-      projectId: r.projectId,
-      projectName: project?.name ?? "—",
-      tag, statusLabel, timeLabel, sortKey,
-      // "running" already computes elapsed-since-START above, which keeps
-      // growing whether or not the process is actually still alive — check
-      // the heartbeat itself so a silently-hung agent (still shows "running",
-      // growing elapsed time) doesn't read as healthy.
-      stale: r.status !== "done" && heartbeatSecs(r, now) > STALE_HEARTBEAT_SEC,
-    };
-  };
-
-  const live = runs.filter((r) => r.status !== "done" && !r.archived);
-  const done = runs
-    .filter((r) => r.status === "done" && !r.archived)
-    .sort((a, b) => b.lastHeartbeatAt - a.lastHeartbeatAt)
-    .slice(0, DONE_CAP);
-  const rows = [...live, ...done]
-    .map(toRow)
-    .sort((a, b) => TAG_RANK[a.tag] - TAG_RANK[b.tag] || a.sortKey - b.sortKey);
-
-  const runningCount = rows.filter((r) => r.tag === "running").length;
-  const blockedCount = rows.filter((r) => r.tag === "blocked").length;
-  const doneCount = rows.filter((r) => r.tag === "done").length;
-
-  // Split-flap flip: remember each row's last shown status text so the CSS
-  // flip animation plays only on rows that actually changed since the last
-  // render, not on every row every time the live snapshot ticks.
-  const prevFlap = useRef<Record<string, string>>({});
-  const flips = new Set<string>();
-  rows.forEach((r) => { if (prevFlap.current[r.run.id] !== r.statusLabel) flips.add(r.run.id); });
-  useEffect(() => {
-    const next: Record<string, string> = {};
-    rows.forEach((r) => { next[r.run.id] = r.statusLabel; });
-    prevFlap.current = next;
-  });
-
-  return (
-    <section className="vw">
-      <ViewHead title="Runs" sub="Every project, one live view — sorted by what needs you first" />
-      <ParallelismNudgeBanner onConfigureFleet={onConfigureFleet} />
-      <div className="rb-card">
-        <div className="rb-stats">
-          <div className="rb-stat"><span className="rb-v">{rows.length}</span><span className="rb-k">runs</span></div>
-          <div className="rb-stat rb-running"><span className="rb-v">{runningCount}</span><span className="rb-k">running</span></div>
-          <div className="rb-stat rb-blocked"><span className="rb-v">{blockedCount}</span><span className="rb-k">needs you</span></div>
-          <div className="rb-stat rb-done"><span className="rb-v">{doneCount}</span><span className="rb-k">done</span></div>
-          {idle.length > 0 && (
-            <button className="rb-stat rb-idle" disabled={readOnly} onClick={onAssign} title="Assign work to an idle agent">
-              <span className="rb-v">{idle.length}</span><span className="rb-k">idle · assign →</span>
-            </button>
-          )}
-        </div>
-        {rows.length === 0 ? (
-          <EmptyState
-            compact
-            title="Nothing running"
-            hint="Assign a task to an agent and it shows up here."
-            cta={{ label: "Assign work →", onClick: onAssign, disabled: readOnly }}
-          />
-        ) : (
-          <div className="rb-table">
-            <div className="rb-hcell">Task</div>
-            <div className="rb-hcell">Project</div>
-            <div className="rb-hcell">Agent</div>
-            <div className="rb-hcell">Status</div>
-            <div className="rb-hcell">Time</div>
-            {rows.map((row) => (
-              <Fragment key={row.run.id}>
-                <button className="rb-cell rb-task" onClick={() => onOpenTask(row.run.id)}>
-                  {row.run.name}
-                </button>
-                <button className="rb-cell rb-proj" onClick={() => onOpenProject(row.projectId)}>
-                  {row.projectName}
-                </button>
-                <div className="rb-cell rb-agent">
-                  {row.agentId ? (
-                    <button className="rb-pill" onClick={() => onOpenAgent(row.agentId!)} title={row.provider.name}>
-                      <span className="rb-prov-glyph" style={{ color: row.provider.color }} aria-hidden="true">
-                        {row.provider.glyph}
-                      </span>
-                      {row.agentName}
-                    </button>
-                  ) : (
-                    <span className="rb-off">—</span>
-                  )}
-                </div>
-                <button className="rb-cell rb-statuscell" onClick={() => onOpenTask(row.run.id)}>
-                  <span
-                    className={
-                      "rb-chip rb-tag-" + row.tag + (flips.has(row.run.id) ? " rb-flip" : "") + (row.stale ? " rb-stale" : "")
-                    }
-                    title={row.stale ? `No heartbeat for ${fmtWait(heartbeatSecs(row.run, now))} — may be stuck` : undefined}
-                  >
-                    {row.stale && <span className="rb-stale-dot" aria-hidden="true" />}
-                    {row.statusLabel}
-                  </span>
-                </button>
-                <div className="rb-cell rb-time mono">{row.timeLabel}</div>
-              </Fragment>
-            ))}
-          </div>
-        )}
-        {backlogCount > 0 && (
-          <div className="rb-backlog-note">
-            {backlogCount} more queued, not yet assigned —{" "}
-            <button onClick={onAssign}>open a project to assign →</button>
-          </div>
-        )}
-      </div>
-    </section>
   );
 }
 

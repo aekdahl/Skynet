@@ -355,3 +355,53 @@ describe("updateTask — autoPick defaults on when eligibility first gets set", 
     expect(t.text).toBe("renamed");
   });
 });
+
+// Momentum Board (Phase 4): a human-driven move must ALSO append a Transition
+// (kanban.ts) — before this, only the rule engine's own moves recorded one,
+// so a project's Transition feed (and anything reading it, like the new
+// board's automation pill "% touched by hand") silently undercounted every
+// operator-driven move. Regression guard for that gap.
+describe("task transition guard — records a Transition for a human move", () => {
+  let store: MemoryStore;
+  let ops: Operations;
+
+  beforeEach(async () => {
+    store = new MemoryStore();
+    const hub = new Hub(store, new NullBus());
+    const orchestrator = new Orchestrator(store, hub);
+    ops = new Operations({ store, hub, orchestrator });
+    await store.putProject(project);
+  });
+
+  it("backlog → triage appends a Transition with actor 'human' and no ruleId", async () => {
+    await store.putTask(mkTask("backlog"));
+    await ops.transitionTask(DEFAULT_WORKSPACE, "t1", "triage", "op-1");
+    const transitions = await store.listTransitionsForTask("t1");
+    expect(transitions).toHaveLength(1);
+    expect(transitions[0]).toMatchObject({
+      taskId: "t1",
+      projectId: "p1",
+      from: "backlog",
+      to: "triage",
+      actor: "human",
+      actorId: "op-1",
+      ruleId: null,
+    });
+  });
+
+  it("a no-op move (same state) does NOT append a Transition", async () => {
+    await store.putTask(mkTask("triage"));
+    await ops.transitionTask(DEFAULT_WORKSPACE, "t1", "triage", "op-1");
+    expect(await store.listTransitionsForTask("t1")).toHaveLength(0);
+  });
+
+  it("multiple moves accumulate, all readable via listTransitionsForProject", async () => {
+    await store.putTask(mkTask("backlog"));
+    await ops.transitionTask(DEFAULT_WORKSPACE, "t1", "triage", "op-1");
+    await ops.transitionTask(DEFAULT_WORKSPACE, "t1", "todo", "op-1");
+    const projectTransitions = await store.listTransitionsForProject("p1");
+    // Both fire in the same test tick, so `at` may tie — order isn't asserted here
+    // (listTransitionsForProject's newest-first sort is memory.ts's own concern).
+    expect(projectTransitions.map((t) => `${t.from}->${t.to}`).sort()).toEqual(["backlog->triage", "triage->todo"]);
+  });
+});

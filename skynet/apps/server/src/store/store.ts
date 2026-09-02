@@ -6,21 +6,34 @@
 import type {
   TaskRun,
   AuditRecord,
+  AutonomyBreaker,
+  AutonomyOverride,
   Checkpoint,
   Dependency,
   Feature,
   GithubConnection,
   HitlItem,
+  LogVerb,
   Milestone,
   Module,
+  PendingRuleAction,
+  PendingRuleActionStatus,
   PolicyVersion,
   Project,
   ProjectContextEntry,
+  Proposal,
+  ProposalStatus,
   ProviderInfo,
   Agent,
+  RoadmapDoc,
+  RoadmapLineClaim,
+  RoadmapProposal,
+  RoadmapProposalState,
+  Rule,
   Snapshot,
   SolutionBrief,
   Task,
+  Transition,
   WorkspaceSettings,
 } from "@skynet/shared";
 import type { StoredServiceToken } from "../auth/service-tokens.js";
@@ -37,7 +50,7 @@ export interface Store {
   listAllRuns(): Promise<TaskRun[]>;
   getRun(id: string): Promise<TaskRun | undefined>;
   putRun(agent: TaskRun): Promise<TaskRun>;
-  appendLog(runId: string, at: number, line: string, detail?: string): Promise<void>;
+  appendLog(runId: string, at: number, line: string, detail?: string, meta?: { verb?: LogVerb; resultKind?: "ok" | "error" }): Promise<void>;
 
   // checkpoints — snapshot/restore for a run (extends fork/resume). Scoped by
   // runId rather than workspaceId: always fetched through a run whose
@@ -91,6 +104,51 @@ export interface Store {
   putSolutionBrief(brief: SolutionBrief): Promise<SolutionBrief>;
   deleteSolutionBrief(id: string): Promise<void>;
 
+  // transitions (Momentum Rollout kanban rebuild, Phase 0 — append-only move
+  // history; see @skynet/shared's Transition). Never updated in place, only
+  // created — same idiom as appendLog/recordAudit.
+  createTransition(t: Transition): Promise<Transition>;
+  listTransitionsForTask(taskId: string): Promise<Transition[]>;
+  listTransitionsForProject(projectId: string, opts?: { since?: number; limit?: number }): Promise<Transition[]>;
+  // Momentum Rollout Phase 22 (Home rebuild) — the workspace-wide read a
+  // per-project page has no need for (health.tsx fetches per-project), but a
+  // cross-project dashboard does (automation %, stalled-task count). Same
+  // since/limit + newest-first contract as listTransitionsForProject.
+  listTransitionsForWorkspace(workspaceId: string, opts?: { since?: number; limit?: number }): Promise<Transition[]>;
+
+  // rules (Momentum Rollout kanban rebuild, Phase 0 — project-scoped kanban
+  // automation; see @skynet/shared's Rule). Project-scoped only (no
+  // workspace-wide list) — a rule always belongs to exactly one project.
+  getRule(id: string): Promise<Rule | undefined>;
+  putRule(rule: Rule): Promise<Rule>;
+  deleteRule(id: string): Promise<void>;
+  listRulesForProject(projectId: string): Promise<Rule[]>;
+  // Phase 1c — the Snapshot's own workspace-wide read (a rule's entity itself
+  // stays project-scoped above; this just fans that out across the caller's
+  // whole workspace, same relationship listRuns has to a per-project filter).
+  listRulesForWorkspace(workspaceId: string): Promise<Rule[]>;
+
+  // proposals (Momentum Rollout kanban rebuild, Phase 0 — drafts / suggested
+  // subtasks / suggested rules / suggested reassignments; see @skynet/shared's
+  // Proposal). Project-scoped only, same reasoning as Rule above.
+  getProposal(id: string): Promise<Proposal | undefined>;
+  putProposal(proposal: Proposal): Promise<Proposal>;
+  deleteProposal(id: string): Promise<void>;
+  listProposalsForProject(projectId: string, opts?: { status?: ProposalStatus }): Promise<Proposal[]>;
+  // Phase 1c — workspace-wide read for the Snapshot, same reasoning as
+  // listRulesForWorkspace above.
+  listProposalsForWorkspace(workspaceId: string): Promise<Proposal[]>;
+
+  // pending rule actions (Momentum Rollout Phase 1b — the RuleEngine's
+  // announce-before-acting hold; see @skynet/shared's PendingRuleAction).
+  // `listAllPendingActions` (no scoping — like listAllRuns/listAllProjects)
+  // is what the resolver sweep scans every tick.
+  getPendingRuleAction(id: string): Promise<PendingRuleAction | undefined>;
+  putPendingRuleAction(action: PendingRuleAction): Promise<PendingRuleAction>;
+  deletePendingRuleAction(id: string): Promise<void>;
+  listPendingActionsForProject(projectId: string, opts?: { status?: PendingRuleActionStatus }): Promise<PendingRuleAction[]>;
+  listAllPendingActions(): Promise<PendingRuleAction[]>;
+
   // fleet
   listAgents(workspaceId: string): Promise<Agent[]>;
   /** Every runner across all workspaces — for maintenance sweeps (reconcile). */
@@ -129,6 +187,26 @@ export interface Store {
   getWorkspaceSettings(workspaceId: string): Promise<WorkspaceSettings | undefined>;
   putWorkspaceSettings(settings: WorkspaceSettings): Promise<void>;
 
+  // roadmap doc cache (Phase 24) — one parsed RoadmapDoc per project, keyed
+  // by projectId; a re-sync overwrites wholesale.
+  getRoadmapDoc(projectId: string): Promise<RoadmapDoc | undefined>;
+  putRoadmapDoc(doc: RoadmapDoc): Promise<RoadmapDoc>;
+
+  // roadmap proposals (Phase 25 — TASK 28). Project-scoped, same shape as
+  // the kanban `Proposal` methods above but a distinct collection — see
+  // @skynet/shared's RoadmapProposal for why these are never the same thing.
+  getRoadmapProposal(id: string): Promise<RoadmapProposal | undefined>;
+  putRoadmapProposal(proposal: RoadmapProposal): Promise<RoadmapProposal>;
+  deleteRoadmapProposal(id: string): Promise<void>;
+  listRoadmapProposalsForProject(projectId: string, opts?: { state?: RoadmapProposalState }): Promise<RoadmapProposal[]>;
+
+  // roadmap line claims (Phase 26 — TASK 29). One claim per lineId per
+  // project — "claim as mine" is idempotent (a repeat claim by the same or a
+  // different operator just replaces the row), so no delete is needed.
+  getRoadmapLineClaim(projectId: string, lineId: string): Promise<RoadmapLineClaim | undefined>;
+  putRoadmapLineClaim(claim: RoadmapLineClaim): Promise<RoadmapLineClaim>;
+  listRoadmapLineClaimsForProject(projectId: string): Promise<RoadmapLineClaim[]>;
+
   // Command policy versions — versioned, per-workspace, git-like history of the
   // command-safety classification policy. listPolicyVersions is newest-first;
   // exactly one version per workspace has `active: true`. putPolicyVersion, when
@@ -151,4 +229,17 @@ export interface Store {
   getServiceTokenByHash(tokenHash: string): Promise<StoredServiceToken | undefined>;
   listServiceTokens(workspaceId: string): Promise<StoredServiceToken[]>;
   deleteServiceToken(id: string): Promise<boolean>;
+
+  // Autonomy breaker (TASK 19) — one persisted record per project, replacing
+  // the old in-memory autonomyStreaks Map (orchestrator.ts) so a restart
+  // mid-streak doesn't reset progress. Undefined = no accumulated streak.
+  getAutonomyBreaker(projectId: string): Promise<AutonomyBreaker | undefined>;
+  putAutonomyBreaker(breaker: AutonomyBreaker): Promise<void>;
+  deleteAutonomyBreaker(projectId: string): Promise<void>;
+
+  // Autonomy override (TASK 19) — a temporary manual bypass of a tripped
+  // breaker, one per project. Undefined = no active override.
+  getAutonomyOverride(projectId: string): Promise<AutonomyOverride | undefined>;
+  putAutonomyOverride(override: AutonomyOverride): Promise<void>;
+  deleteAutonomyOverride(projectId: string): Promise<void>;
 }

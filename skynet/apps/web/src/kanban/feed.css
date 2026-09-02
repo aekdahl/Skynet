@@ -1,0 +1,136 @@
+/* ─── Activity Feed (Phase 6b — TASK 08) ────────────────────────────────────
+   Tokens only (see board.css's own header comment) — no new one-off colors.
+   480px-wide, single-column — a log reads best narrow, not stretched full-width.
+*/
+
+.feed-panel {
+  width: 480px;
+  max-width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: var(--ak-sp-16);
+}
+/* TASK 13 hardening — below 720px this fixed-width panel goes edge-to-edge
+   instead of just clamping via max-width: 100% (which kept the drawer-ish
+   padding/shape even when there's no room for it). Same pattern already
+   used elsewhere in the app for a docked panel (styles.css's
+   .steward-dock at ≤900px). */
+@media (max-width: 720px) {
+  .feed-panel { width: 100%; }
+}
+
+.feed-skel { display: flex; flex-direction: column; gap: var(--ak-sp-10); padding: var(--ak-sp-8) 0; }
+
+.feed-list { display: flex; flex-direction: column; gap: var(--ak-sp-16); }
+.feed-group { display: flex; flex-direction: column; gap: var(--ak-sp-8); }
+.feed-group-head {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--ak-text-faint);
+}
+
+.feed-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: baseline;
+  gap: var(--ak-sp-6) var(--ak-sp-10);
+  padding: var(--ak-sp-8) 0;
+  border-bottom: 1px solid var(--ak-border-subtle);
+}
+.feed-row:last-child { border-bottom: none; }
+.feed-row-sentence {
+  grid-column: 1;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--ak-text-secondary);
+}
+.feed-row-sentence strong { color: var(--ak-text-primary); font-weight: 600; }
+.feed-row-meta {
+  grid-column: 1;
+  font-size: 10.5px;
+  color: var(--ak-text-faint);
+}
+.feed-row-action { grid-column: 2; grid-row: 1 / span 2; align-self: center; }
+
+.feed-undo {
+  font-family: var(--ak-font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ak-machine);
+  background: color-mix(in oklch, var(--ak-machine), transparent 90%);
+  border: 1px solid color-mix(in oklch, var(--ak-machine), transparent 55%);
+  border-radius: var(--ak-radius-bar);
+  padding: var(--ak-sp-3) var(--ak-sp-8);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.feed-undo:hover { background: color-mix(in oklch, var(--ak-machine), transparent 80%); }
+.feed-undo:disabled { opacity: .6; cursor: default; }
+.feed-undo:focus-visible { outline: none; box-shadow: var(--ak-focus-ring); }
+
+.feed-escalate {
+  font-family: var(--ak-font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--ak-warn);
+  white-space: nowrap;
+}
+
+.feed-review {
+  font-family: var(--ak-font-mono);
+  font-size: 11px;
+  color: var(--ak-text-muted);
+  background: none;
+  border: 1px solid var(--ak-border);
+  border-radius: var(--ak-radius-bar);
+  padding: var(--ak-sp-3) var(--ak-sp-8);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: border-color var(--motion-fast), color var(--motion-fast);
+}
+/* Ghost button: border brightens toward --ak-track on hover. */
+.feed-review:hover { color: var(--ak-text-primary); border-color: var(--ak-track); }
+.feed-review:focus-visible { outline: none; box-shadow: var(--ak-focus-ring); }
+
+.feed-retry {
+  font-family: var(--ak-font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ak-warn);
+  background: color-mix(in oklch, var(--ak-warn), transparent 90%);
+  border: 1px solid color-mix(in oklch, var(--ak-warn), transparent 55%);
+  border-radius: var(--ak-radius-bar);
+  padding: var(--ak-sp-3) var(--ak-sp-8);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.feed-retry:hover { background: color-mix(in oklch, var(--ak-warn), transparent 78%); }
+.feed-retry:disabled { opacity: .6; cursor: default; }
+.feed-retry:focus-visible { outline: none; box-shadow: var(--ak-focus-ring); }
+
+/* A failed action's row — warn palette, matching .mb-stall-panel's own
+   amber-inset treatment elsewhere in this feature area. */
+.feed-row-failed {
+  background: color-mix(in oklch, var(--ak-warn), transparent 94%);
+  border-bottom-color: color-mix(in oklch, var(--ak-warn), transparent 70%);
+  padding-left: var(--ak-sp-8);
+  padding-right: var(--ak-sp-8);
+  border-radius: var(--ak-radius-sm);
+}
+.feed-row-failtext { color: var(--ak-warn); }
+
+@media (prefers-reduced-motion: reduce) {
+  .feed-review { transition: none; }
+}
+
+.feed-footer {
+  padding: var(--ak-sp-8) var(--ak-sp-10);
+  border: 1px solid var(--ak-border);
+  border-radius: var(--ak-radius-row);
+  background: var(--ak-surface-1);
+  font-size: 11px;
+  color: var(--ak-text-secondary);
+  width: fit-content;
+}
