@@ -4219,7 +4219,8 @@ export class Orchestrator {
   ): Promise<{ merged: boolean; reason?: string; blocked?: "conflict" | "checks" | "protection" }> {
     const run = await this.store.getRun(runId);
     if (!run || run.workspaceId !== workspaceId || run.pr?.state !== "open") throw new Error("No open PR for this run.");
-    const res = await githubService.mergePr(workspaceId, run.pr.repo, run.pr.number, method);
+    const cred = (await this.store.getProject(run.projectId))?.githubCredentialId ?? null;
+    const res = await githubService.mergePr(workspaceId, run.pr.repo, run.pr.number, method, cred);
     if (!res.merged) {
       const blocked = await this.classifyMergeBlock(workspaceId, run.projectId, run.pr, res.reason);
       await this.hub.runLog(runId, `merge blocked (${blocked.blocked}): ${blocked.reason}`);
@@ -4364,7 +4365,8 @@ export class Orchestrator {
   ): Promise<{ merged: boolean; reason?: string; blocked?: "conflict" | "checks" | "protection" }> {
     const feature = await this.store.getFeature(featureId);
     if (!feature || feature.workspaceId !== workspaceId || feature.pr?.state !== "open") throw new Error("No open PR for this feature.");
-    const res = await githubService.mergePr(workspaceId, feature.pr.repo, feature.pr.number, method);
+    const cred = (await this.store.getProject(feature.projectId))?.githubCredentialId ?? null;
+    const res = await githubService.mergePr(workspaceId, feature.pr.repo, feature.pr.number, method, cred);
     if (!res.merged) {
       const blocked = await this.classifyMergeBlock(workspaceId, feature.projectId, feature.pr, res.reason);
       return { merged: false, ...blocked };
