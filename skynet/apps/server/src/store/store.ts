@@ -25,6 +25,7 @@ import type {
   ProposalStatus,
   ProviderInfo,
   Agent,
+  RoadmapDoc,
   Rule,
   Snapshot,
   SolutionBrief,
@@ -177,6 +178,11 @@ export interface Store {
   // durable-Store pattern as the GitHub connection; undefined until first set.
   getWorkspaceSettings(workspaceId: string): Promise<WorkspaceSettings | undefined>;
   putWorkspaceSettings(settings: WorkspaceSettings): Promise<void>;
+
+  // roadmap doc cache (Phase 24) — one parsed RoadmapDoc per project, keyed
+  // by projectId; a re-sync overwrites wholesale.
+  getRoadmapDoc(projectId: string): Promise<RoadmapDoc | undefined>;
+  putRoadmapDoc(doc: RoadmapDoc): Promise<RoadmapDoc>;
 
   // Command policy versions — versioned, per-workspace, git-like history of the
   // command-safety classification policy. listPolicyVersions is newest-first;

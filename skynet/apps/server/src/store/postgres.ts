@@ -28,6 +28,7 @@ import type {
   ProposalStatus,
   ProviderInfo,
   Agent,
+  RoadmapDoc,
   Rule,
   Snapshot,
   SolutionBrief,
@@ -81,6 +82,9 @@ CREATE INDEX IF NOT EXISTS service_tokens_ws   ON service_tokens(workspace_id);
 -- old in-memory autonomyStreaks Map so a restart mid-streak doesn't reset it.
 CREATE TABLE IF NOT EXISTS autonomy_breakers  (project_id text PRIMARY KEY, data jsonb NOT NULL);
 CREATE TABLE IF NOT EXISTS autonomy_overrides (project_id text PRIMARY KEY, data jsonb NOT NULL);
+-- Roadmap doc cache (Phase 24) — one parsed RoadmapDoc per project, replaced
+-- wholesale on every sync.
+CREATE TABLE IF NOT EXISTS roadmap_docs (project_id text PRIMARY KEY, workspace_id text NOT NULL, data jsonb NOT NULL);
 CREATE INDEX IF NOT EXISTS runs_ws   ON runs(workspace_id);
 CREATE INDEX IF NOT EXISTS checkpoints_run ON checkpoints(run_id);
 CREATE INDEX IF NOT EXISTS hitl_ws     ON hitl_queue(workspace_id);
@@ -466,6 +470,18 @@ export class PostgresStore implements Store {
   }
   async deleteAutonomyBreaker(projectId: string): Promise<void> {
     await this.pool.query("DELETE FROM autonomy_breakers WHERE project_id=$1", [projectId]);
+  }
+
+  async getRoadmapDoc(projectId: string): Promise<RoadmapDoc | undefined> {
+    const { rows } = await this.pool.query<{ data: RoadmapDoc }>("SELECT data FROM roadmap_docs WHERE project_id=$1", [projectId]);
+    return rows[0]?.data;
+  }
+  async putRoadmapDoc(doc: RoadmapDoc): Promise<RoadmapDoc> {
+    await this.pool.query(
+      "INSERT INTO roadmap_docs(project_id,workspace_id,data) VALUES($1,$2,$3::jsonb) ON CONFLICT(project_id) DO UPDATE SET workspace_id=$2, data=$3::jsonb",
+      [doc.projectId, doc.workspaceId, J(doc)],
+    );
+    return doc;
   }
 
   async getAutonomyOverride(projectId: string): Promise<AutonomyOverride | undefined> {
