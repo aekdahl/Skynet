@@ -875,6 +875,24 @@ function FleetAutomationSection() {
               />
               <span className="fleet-auto-max-hint mono">min · 0 = never</span>
             </label>
+            {/* Pre-work exploration has no run or agent to inherit a model
+                from, so it used to be hardcoded — and hardcoded to Opus, which
+                kept an expensive model in the loop no matter what the fleet was
+                set to. Free-text like every other model field: the catalog is
+                advisory, so a model released after this build still works. */}
+            <label className="fleet-auto-max">
+              <span className="fleet-auto-max-label">Exploration model</span>
+              <input
+                className="qx-input fleet-auto-model-input mono"
+                value={settings.exploreModel}
+                disabled={busy}
+                placeholder="sonnet-5"
+                onChange={(e) => setSettings({ ...settings, exploreModel: e.target.value })}
+                onBlur={(e) => void save({ exploreModel: e.target.value.trim() || "sonnet-5" })}
+                onKeyDown={commitOnEnter}
+              />
+              <span className="fleet-auto-max-hint mono">reads the repo to ground a draft plan — doesn't need your best model</span>
+            </label>
             <label
               className="proj-autonomy"
               title="Give agents a real browser (a Playwright/Chrome MCP server) so they can reproduce a bug, verify a UI change, or read live docs. Browser actions still gate for approval. Off by default. Works for Claude, Codex, Gemini, Cursor, and Copilot runners; not Hermes."
