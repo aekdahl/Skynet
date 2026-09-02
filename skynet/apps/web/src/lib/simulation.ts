@@ -998,6 +998,27 @@ export const JOURNEYS: Journey[] = [
     },
   },
   {
+    id: "audit-export",
+    name: "Audit trail — export NDJSON",
+    desc: "Operator downloads the decision audit trail (the Steward dock's footer 'export CSV' link) — an authenticated fetch, offline-safe (no actual browser download triggered here).",
+    run: async () => {
+      const steps: Step[] = [];
+      const tag = uid();
+      const pname = `Sim: audit export ${tag}`;
+      await api.createProject({ name: pname, goal: "" });
+      let s = await settle((sn) => sn.projects.some((x) => x.name === pname));
+      const p = s.projects.find((x) => x.name === pname);
+      if (!p) return [step("project created", false)];
+      // A real decision to make sure the export isn't trivially empty.
+      await api.updateProject(p.id, { status: "paused" });
+      const body = await api.exportAudit();
+      steps.push(step("export returns NDJSON text", typeof body === "string"));
+      const lines = body.trim().length ? body.trim().split("\n") : [];
+      steps.push(step("every line parses as JSON", lines.every((l) => { try { JSON.parse(l); return true; } catch { return false; } })));
+      return steps;
+    },
+  },
+  {
     id: "provider-key-removal",
     name: "Remove a provider key — vendor reverts",
     desc: "Operator removes a stored provider key; the vendor flips back to unavailable (unless an env var still supplies it).",

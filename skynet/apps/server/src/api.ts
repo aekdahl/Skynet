@@ -737,8 +737,9 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
 
   // Streaming Steward chat: the reply is written as text/plain deltas so the dock
   // renders it live, then a final control frame — a RS (\x1e) sentinel followed by
-  // {reply, action, projectId} — carries the CLEAN reply (trailing action JSON
-  // stripped) and any confirm-first action. The sentinel never occurs in prose.
+  // {reply, actions, projectId, sources} — carries the CLEAN reply (trailing
+  // action/sources JSON stripped), any confirm-first actions, and any source
+  // citations (TASK 21). The sentinel never occurs in prose.
   app.post<{ Body: { question?: string; history?: ChatTurn[]; projectId?: string } }>(
     "/api/steward/chat/stream",
     async (req, reply) => {
@@ -767,7 +768,7 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
       raw.flushHeaders();
       try {
         const gen = ops.stewardChatStream(ws(req), question, history, focus);
-        let result: { reply: string; actions: unknown; projectId: string | null } | undefined;
+        let result: { reply: string; actions: unknown; projectId: string | null; sources: unknown } | undefined;
         for (;;) {
           const { value, done } = await gen.next();
           if (done) {
@@ -977,6 +978,7 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     try {
       return await ops.executeStewardAction(ws(req), req.params.id, body.data.action, req.principal!.operatorId, {
         dryRun: body.data.dryRun,
+        onlyIndices: body.data.onlyIndices,
       });
     } catch (err) {
       return fail(reply, err);

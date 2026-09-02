@@ -2495,6 +2495,7 @@ button.firstrun-step:hover { border-color: var(--accent); }
 .audit-diff-wrap { margin-top: 8px; }
 .audit-files { font-size: var(--fz-11); color: var(--muted); line-height: 1.5; margin: 0 0 6px; word-break: break-all; }
 .audit-meta { display: flex; align-items: center; gap: 8px; font-size: var(--fz-11); color: var(--muted); }
+.audit-actor-dot { width: 6px; height: 6px; border-radius: 50%; flex: none; }
 .audit-op { color: var(--muted); }
 .audit-sep { opacity: 0.6; }
 .audit-detail { font-size: var(--fz-13); color: var(--muted); line-height: 1.5; text-wrap: pretty; }
@@ -2709,11 +2710,30 @@ button.firstrun-step:hover { border-color: var(--accent); }
 .asst-sugg { display: flex; flex-wrap: wrap; gap: 8px; }
 .asst-chip { font-family: var(--font-ui); font-size: var(--fz-12-5); color: var(--muted); background: var(--raised); border: 1px solid var(--line); border-radius: 20px; padding: 6px 12px; cursor: pointer; }
 .asst-chip:hover { color: var(--ink); border-color: var(--faint); }
-.asst-msg { display: flex; flex-direction: column; gap: 4px; }
+/* TASK 21 — chat bubbles: operator right-aligned (human-bg/border, tail at
+   bottom-right), Steward left-aligned (surface-2, tail at bottom-left). The
+   bubble styling lives on .asst-text/.asst-md (the content element) rather
+   than restructuring the row — .asst-who stays a plain label above it. */
+.asst-msg { display: flex; flex-direction: column; gap: 4px; max-width: 88%; }
+.asst-user { align-self: flex-end; align-items: flex-end; }
+.asst-assistant { align-self: flex-start; align-items: flex-start; }
 .asst-who { font-size: var(--fz-11); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
 .asst-user .asst-who { color: var(--accent); }
-.asst-text { font-size: var(--fz-13-5); line-height: 1.5; color: var(--ink); white-space: pre-wrap; word-break: break-word; }
-.asst-user .asst-text { color: var(--muted); }
+.asst-text {
+  font-size: var(--fz-13-5); line-height: 1.5; color: var(--ink); white-space: pre-wrap; word-break: break-word;
+  padding: 9px 12px;
+}
+.asst-user .asst-text {
+  color: var(--text);
+  background: color-mix(in oklch, var(--ak-human), transparent 88%);
+  border: 1px solid color-mix(in oklch, var(--ak-human), transparent 45%);
+  border-radius: 12px 12px 4px 12px;
+}
+.asst-assistant .asst-text, .asst-assistant .asst-md {
+  background: var(--ak-surface-2);
+  border: 1px solid var(--ak-border);
+  border-radius: 12px 12px 12px 4px;
+}
 /* Assistant replies render as markdown — tighten the doc-scale spacing so it
    reads as a compact chat bubble, and drop the pre-wrap (blocks handle layout). */
 .asst-md { white-space: normal; }
@@ -2721,20 +2741,88 @@ button.firstrun-step:hover { border-color: var(--accent); }
 .asst-md .md > :first-child { margin-top: 0; }
 .asst-md .md > :last-child { margin-bottom: 0; }
 .asst-md .md p { margin: 6px 0; color: var(--ink); }
+/* Second (and later) paragraph reads as elaboration, not the headline claim —
+   dimmed to text-secondary so the first line stays the thing that's scanned. */
+.asst-md .md p:nth-of-type(n+2) { color: var(--ak-text-secondary); }
 .asst-md .md h1 { font-size: var(--fz-15); margin: 10px 0 6px; }
 .asst-md .md h2 { font-size: var(--fz-14); margin: 12px 0 6px; padding-top: 10px; }
 .asst-md .md h3 { font-size: var(--fz-13-5); margin: 10px 0 4px; }
 .asst-md .md ul, .asst-md .md ol { margin: 6px 0; padding-left: 18px; color: var(--ink); }
 .asst-md .md li { margin: 3px 0; }
 .asst-md .md hr { margin: 10px 0; }
-.asst-think { color: var(--muted); font-style: italic; }
+.asst-think { color: var(--muted); font-style: italic; padding: 9px 12px; }
 .asst-err { font-size: var(--fz-12-5); color: var(--danger); }
+
+/* TASK 21 — the dock's compact decision-trail footer (surface-0): header +
+   export, filters, a short recent-decisions list. The fuller detail (diffs,
+   rationale, archive/delete) stays on the dedicated Audit page. */
+.asst-audit-footer {
+  margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--ak-border);
+  background: var(--ak-surface-0);
+  display: flex; flex-direction: column; gap: 8px;
+}
+.asst-audit-head { display: flex; align-items: center; justify-content: space-between; }
+.asst-audit-title { font-size: 10px; letter-spacing: 0.1em; color: var(--ak-text-faint); }
+.asst-audit-export {
+  font-family: var(--ak-font-mono); font-size: 10px; color: var(--ak-text-secondary);
+  background: none; border: 1px solid var(--ak-border-strong); border-radius: var(--ak-radius-sm);
+  padding: 3px 8px; cursor: pointer;
+}
+.asst-audit-export:hover:not(:disabled) { color: var(--ak-text-primary); border-color: var(--ak-text-faint); }
+.asst-audit-export:disabled { opacity: 0.5; cursor: default; }
+.asst-audit-filters { display: flex; gap: 6px; flex-wrap: wrap; }
+.asst-audit-select {
+  font-family: var(--ak-font-mono); font-size: 10px; color: var(--ak-text-secondary);
+  background: var(--ak-surface-1); border: 1px solid var(--ak-border); border-radius: var(--ak-radius-sm);
+  padding: 3px 6px;
+}
+.asst-audit-rows { display: flex; flex-direction: column; gap: 2px; max-height: 220px; overflow-y: auto; }
+.asst-audit-empty { font-size: var(--fz-11); color: var(--ak-text-faint); padding: 6px 0; }
+.asst-audit-row {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 5px 4px; background: none; border: none; border-radius: var(--ak-radius-sm);
+  color: inherit; font: inherit; text-align: left; cursor: pointer;
+}
+.asst-audit-row:hover { background: var(--ak-surface-1); }
+.asst-audit-time { flex: none; font-size: 10px; color: var(--ak-text-faint); }
+.asst-audit-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; }
+.asst-audit-sentence { flex: 1; min-width: 0; font-size: var(--fz-11-5); color: var(--ak-text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.asst-audit-actor { flex: none; font-size: 10px; color: var(--ak-text-faint); max-width: 30%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Source-citation ghost pills — "no claim without a chip" (TASK 21). */
+.asst-sources { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 2px; }
+.asst-source-chip {
+  font-family: var(--ak-font-mono); font-size: 10px; letter-spacing: 0.04em;
+  color: var(--ak-text-faint); background: transparent;
+  border: 1px solid var(--ak-border-strong); border-radius: var(--ak-radius-pill);
+  padding: 3px 9px; text-decoration: none; cursor: pointer;
+}
+.asst-source-chip:hover { color: var(--ak-text-secondary); border-color: var(--ak-text-faint); }
 /* Confirm-before-create chip under an assistant message that proposed a task. */
 .asst-propose {
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
   margin-top: 6px; padding: 8px 10px;
   background: var(--raised); border: 1px solid var(--line); border-radius: 7px;
 }
+/* TASK 21 — the exactly-2-actions confirm bubble: blue-bordered, numbered
+   rows, "do both" / "just #01" / "cancel" (a 3+ group keeps the general
+   .asst-propose-group treatment below, unchanged). */
+.asst-confirm2 {
+  display: flex; flex-direction: column; gap: 8px; margin-top: 6px;
+  padding: 10px 12px;
+  background: color-mix(in oklch, var(--ak-human), transparent 92%);
+  border: 1px solid color-mix(in oklch, var(--ak-human), transparent 55%);
+  border-radius: 10px;
+}
+.asst-confirm2-head { font-size: 10px; letter-spacing: 0.1em; color: var(--ak-human); }
+.asst-confirm2-row { display: flex; align-items: baseline; gap: 8px; }
+.asst-confirm2-row-body { display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 1; }
+.asst-confirm2-num { flex: none; font-size: var(--fz-11); color: var(--ak-text-faint); }
+.asst-confirm2-label { font-size: var(--fz-12-5); color: var(--ink); }
+.asst-confirm2-label-resolved { color: var(--muted); }
+.asst-confirm2-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 2px; }
+.asst-confirm2-both { background: var(--ak-human); border-color: var(--ak-human); }
+
 /* A batch of proposed actions (Steward can propose several from one input). */
 .asst-propose-group { display: flex; flex-direction: column; gap: 4px; }
 .asst-propose-all { display: flex; align-items: center; gap: 10px; margin-top: 6px; }

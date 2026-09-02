@@ -15,8 +15,8 @@
 // Either way the answer stays grounded — the model is told never to invent repo
 // content or project state.
 
-import type { Agent, Feature, HitlItem, Milestone, Project, Task, TaskAssignment, TaskRun } from "@skynet/shared";
-import { ProjectStatus, TaskState } from "@skynet/shared";
+import type { Agent, Feature, HitlItem, Milestone, Project, SourceRef, Task, TaskAssignment, TaskRun } from "@skynet/shared";
+import { ProjectStatus, SourceRef as SourceRefSchema, TaskState } from "@skynet/shared";
 import {
   ASSISTANT_MODEL,
   oneShotRepoAssistant,
@@ -105,7 +105,9 @@ const SYSTEM =
   "You do NOT need to check first whether a task is already running, already done, or affordable today — the server resolves that per task and reports honestly what it started, queued and skipped. Do not pre-filter the list yourself or promise in your reply that everything will run; say what you're asking for and let the result speak. " +
   "Never propose one of these speculatively from a discussion — starting agents spends real money, so it takes an explicit ask, unlike add_task which merely writes work down.\n" +
   "Notes on request_review: only propose this for a task whose state is 'review' — it forces a fresh review pass by another agent right now, instead of waiting for one to become free on its own. It can fail with an honest reason (already reviewed, or no other agent free to review right now) rather than always succeeding.\n" +
-  "Notes on resync_source: use when the operator asks to re-sync, refresh, or catch up GitHub issues/tasks — it pulls new or edited GitHub issues and repo-file checklist items into tasks, and pushes any task status change that never made it back (e.g. from before \"Sync to source\" was turned on). Whole-project, no fields; fails with an honest reason if the project isn't GitHub-bound.";
+  "Notes on resync_source: use when the operator asks to re-sync, refresh, or catch up GitHub issues/tasks — it pulls new or edited GitHub issues and repo-file checklist items into tasks, and pushes any task status change that never made it back (e.g. from before \"Sync to source\" was turned on). Whole-project, no fields; fails with an honest reason if the project isn't GitHub-bound.\n" +
+  'SOURCES: when your answer states a fact about a SPECIFIC run, its commit, or the project\'s autonomy breaker, add that same trailing JSON object\'s "sources" key — a list of {"kind":"run","runId":"<id>"} | {"kind":"commit","runId":"<id>"} | {"kind":"breaker","projectId":"<id>"} — one per specific claim, so the operator can click through and check it themselves. Use the runId from ACTIVE RUNS above and the projectId from PROJECT STATUS\'s own ID line — never invent either. Skip "sources" entirely for a general answer with nothing specific to point at (most turns). If you\'re also proposing actions, "sources" and "proposeActions" are keys of the SAME trailing object, ' +
+  'e.g. a reply ending in {"sources":[{"kind":"run","runId":"r-abc123"}]} with no proposeActions, or {"proposeActions":[…],"sources":[{"kind":"breaker","projectId":"p-xyz"}]} when both apply.';
 
 /**
  * Prefetch a bounded snapshot of a project's repo — the top-level file list plus
@@ -598,24 +600,39 @@ function lastTopLevelObject(s: string): { json: string; start: number } | null {
   return null;
 }
 
+/** TASK 21 — pull a validated `SourceRef[]` off the SAME trailing object
+ *  splitProposedAction already parses (its own "sources" key, alongside or
+ *  instead of proposeActions) — dropping anything that doesn't validate
+ *  (an invented kind, a missing id) rather than throwing, same defensiveness
+ *  validateProjectAction already applies to actions. */
+function extractSources(obj: Record<string, unknown>): SourceRef[] {
+  if (!Array.isArray(obj?.sources)) return [];
+  return (obj.sources as unknown[]).flatMap((s) => {
+    const parsed = SourceRefSchema.safeParse(s);
+    return parsed.success ? [parsed.data] : [];
+  });
+}
+
 /**
- * PURE: split an assistant answer into its human `reply` and a validated LIST of
- * confirm-first actions (0..N). The model appends a final-line
- * `{"proposeActions": [<action>, …]}` only when the operator asked to change
- * something; we strip it from the shown reply and validate each action against the
- * project context. The list is capped at {@link MAX_STEWARD_ACTIONS} — when the
- * model proposed MORE than that, the reply is annotated so the operator knows to
- * ask it to continue ("ran out of loops"). A legacy single `proposeAction` object
- * is still accepted (treated as a one-item list).
+ * PURE: split an assistant answer into its human `reply`, a validated LIST of
+ * confirm-first actions (0..N), and a validated LIST of source citations
+ * (0..N, TASK 21). The model appends a final-line JSON object — either or
+ * both of `"proposeActions"` and `"sources"` — only when relevant; we strip
+ * it from the shown reply, validate each action against the project context,
+ * and validate each source against the SourceRef shape. The action list is
+ * capped at {@link MAX_STEWARD_ACTIONS} — when the model proposed MORE than
+ * that, the reply is annotated so the operator knows to ask it to continue
+ * ("ran out of loops"). A legacy single `proposeAction` object is still
+ * accepted (treated as a one-item list).
  */
 export function splitProposedAction(
   text: string,
   ctx: ProjectActionContext,
-): { reply: string; actions: AssistantAction[] } {
+): { reply: string; actions: AssistantAction[]; sources: SourceRef[] } {
   const trimmed = (text ?? "").trim();
   const body = trimmed.replace(/\n?```\s*$/, "").trimEnd();
   const found = lastTopLevelObject(body);
-  if (!found) return { reply: trimmed, actions: [] };
+  if (!found) return { reply: trimmed, actions: [], sources: [] };
   try {
     const obj = JSON.parse(found.json) as Record<string, unknown>;
     // Prefer a `proposeActions` list; fall back to a single `proposeAction`.
@@ -624,6 +641,7 @@ export function splitProposedAction(
       : obj && typeof obj === "object" && "proposeAction" in obj
         ? [obj.proposeAction]
         : null;
+    const sources = obj && typeof obj === "object" ? extractSources(obj) : [];
     if (rawList) {
       const validated = rawList
         .map((a) => validateProjectAction(a, ctx))
@@ -642,12 +660,19 @@ export function splitProposedAction(
       if (overflow) {
         reply += `\n\n(That's the first ${MAX_STEWARD_ACTIONS} — I ran out of action slots for one go. Ask me to continue for the rest.)`;
       }
-      return { reply, actions };
+      return { reply, actions, sources };
+    }
+    // No actions, but the trailing object is still a recognized tag (sources
+    // only) — strip it from the shown reply the same way, so a bare
+    // {"sources":[...]} tail never leaks into the prose.
+    if (sources.length > 0) {
+      const stripped = body.slice(0, found.start).replace(/```[a-zA-Z]*\s*$/, "").trim();
+      return { reply: stripped || trimmed, actions: [], sources };
     }
   } catch {
     /* not a JSON tail — the whole answer is the reply */
   }
-  return { reply: trimmed, actions: [] };
+  return { reply: trimmed, actions: [], sources: [] };
 }
 
 export function statusContext(
@@ -674,6 +699,9 @@ export function statusContext(
   };
   const lines: string[] = [
     `PROJECT: ${project.name}`,
+    // TASK 21 — the id a {"kind":"breaker","projectId":...} source citation
+    // needs (see the SOURCES instruction in SYSTEM); wasn't printed before.
+    `ID: ${project.id}`,
     `GOAL: ${project.goal?.trim() || "(none set yet)"}`,
     `REPO: ${project.repo ?? project.repoPath ?? "(not connected)"}`,
     `AUTONOMY: ${project.autonomy ? "on (agents may self-advance tasks)" : "off (human-driven)"}`,
@@ -752,9 +780,12 @@ export function statusContext(
   }
   const active = runs.filter((r) => r.status !== "done" && !r.archived);
   if (active.length) {
-    lines.push("ACTIVE RUNS:");
+    // TASK 21 — the run id is what a `{"kind":"run","runId":...}` source
+    // citation needs; it wasn't surfaced here before (name/status/branch
+    // only), so Steward had no real id to cite even when it wanted to.
+    lines.push("ACTIVE RUNS (cite by [runId] in a source citation, see SOURCES below):");
     for (const r of active.slice(0, 10)) {
-      lines.push(`  ${r.name} — ${r.status} · ${Math.round(r.progress * 100)}% · ${r.branch}`);
+      lines.push(`  [${r.id}] ${r.name} — ${r.status} · ${Math.round(r.progress * 100)}% · ${r.branch}`);
     }
   }
   return lines.join("\n");
@@ -863,7 +894,7 @@ export async function prepareStewardCall(
 export async function askSteward(
   store: Store,
   opts: { workspaceId: string; project: Project; question: string; history?: ChatTurn[] },
-): Promise<{ reply: string; actions: AssistantAction[] }> {
+): Promise<{ reply: string; actions: AssistantAction[]; sources: SourceRef[] }> {
   const c = await prepareStewardCall(store, opts);
   const answer = c.repo
     ? await oneShotRepoAssistant({ prompt: c.prompt, cwd: c.cwd!, model: ASSISTANT_MODEL, apiKey: c.apiKey })
@@ -1012,7 +1043,7 @@ export async function* askStewardWorkspaceStream(
 export async function* askStewardStream(
   store: Store,
   opts: { workspaceId: string; project: Project; question: string; history?: ChatTurn[] },
-): AsyncGenerator<string, { reply: string; actions: AssistantAction[] }> {
+): AsyncGenerator<string, { reply: string; actions: AssistantAction[]; sources: SourceRef[] }> {
   const c = await prepareStewardCall(store, opts);
   let full = "";
   const gen = c.repo

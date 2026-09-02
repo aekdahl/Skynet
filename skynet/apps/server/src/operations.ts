@@ -13,6 +13,7 @@
 import type {
   TaskRun,
   AuditRecord,
+  AuditRecordWithActor,
   AutonomyDetentState,
   AutonomyOverride,
   AcceptSubtaskRequest,
@@ -49,6 +50,7 @@ import type {
   ProviderInfo,
   ResolveRequest,
   Resolution,
+  SourceRef,
   Rule,
   SavePolicyVersionRequest,
   Agent,
@@ -113,6 +115,7 @@ import { prioritizeColumn, suggestAnyAgentEligible } from "./steward/organize.js
 import { extractText } from "./steward/extract.js";
 import { commitLocalRepoFile } from "./local-repo-write.js";
 import { generateSignedComplianceReport } from "./compliance/index.js";
+import { classifyApprover } from "./compliance/report.js";
 import type { CapturedDiff, Hub } from "./hub.js";
 import { CLARIFICATION_ANSWERED_MARKER, NoCapacityError, NothingToReviewError, RunnerNotConfiguredError, TaskAlreadyAssignedError, type Orchestrator } from "./orchestrator.js";
 import { resolveExecutable } from "./steward/execution.js";
@@ -311,7 +314,7 @@ export class Operations {
     question: string,
     history?: ChatTurn[],
     focusProjectId?: string,
-  ): Promise<{ reply: string; actions: AssistantAction[]; projectId: string | null }> {
+  ): Promise<{ reply: string; actions: AssistantAction[]; projectId: string | null; sources: SourceRef[] }> {
     // An explicit page focus wins; otherwise resolve the project from the
     // conversation so the workspace dock can act on it, not just report on it.
     let project = focusProjectId ? await this.store.getProject(focusProjectId) : null;
@@ -322,11 +325,11 @@ export class Operations {
       project = id ? projects.find((p) => p.id === id) ?? null : null;
     }
     if (project) {
-      const { reply, actions } = await answerProjectQuestion(this.store, { workspaceId, project, question, history });
-      return { reply, actions, projectId: project.id };
+      const { reply, actions, sources } = await answerProjectQuestion(this.store, { workspaceId, project, question, history });
+      return { reply, actions, projectId: project.id, sources };
     }
     const { reply, actions } = await askStewardWorkspace(this.store, { workspaceId, question, history });
-    return { reply, actions, projectId: null };
+    return { reply, actions, projectId: null, sources: [] };
   }
 
   /** Streaming form of {@link stewardChat} — yields the reply as text deltas, then
@@ -337,7 +340,7 @@ export class Operations {
     question: string,
     history?: ChatTurn[],
     focusProjectId?: string,
-  ): AsyncGenerator<string, { reply: string; actions: AssistantAction[]; projectId: string | null }> {
+  ): AsyncGenerator<string, { reply: string; actions: AssistantAction[]; projectId: string | null; sources: SourceRef[] }> {
     let project = focusProjectId ? await this.store.getProject(focusProjectId) : null;
     if (project && project.workspaceId !== workspaceId) project = null;
     if (!project) {
@@ -346,11 +349,11 @@ export class Operations {
       project = id ? projects.find((p) => p.id === id) ?? null : null;
     }
     if (project) {
-      const { reply, actions } = yield* askStewardStream(this.store, { workspaceId, project, question, history });
-      return { reply, actions, projectId: project.id };
+      const { reply, actions, sources } = yield* askStewardStream(this.store, { workspaceId, project, question, history });
+      return { reply, actions, projectId: project.id, sources };
     }
     const { reply, actions } = yield* askStewardWorkspaceStream(this.store, { workspaceId, question, history });
-    return { reply, actions, projectId: null };
+    return { reply, actions, projectId: null, sources: [] };
   }
 
   // ── reads (workspace-scoped) ──────────────────────────────────────────────
@@ -471,8 +474,16 @@ export class Operations {
     if (!item || item.workspaceId !== ws) throw new NotFoundError("HITL item");
     return item;
   }
-  listAudit(ws: string): Promise<AuditRecord[]> {
-    return this.store.listAudit(ws);
+  /** GET /api/audit's rows — the stored trail plus `actorType` (TASK 21),
+   *  computed at response time via classifyApprover (compliance/report.ts) —
+   *  the SAME classifier the evidence pack uses, not a second one. Joins in
+   *  each record's task (by runId) so an "autonomy" operatorId resolves to
+   *  the real reviewing agent/reason, same as classifyApprover already does
+   *  for the compliance report. */
+  async listAudit(ws: string): Promise<AuditRecordWithActor[]> {
+    const [records, tasks] = await Promise.all([this.store.listAudit(ws), this.store.listTasks(ws)]);
+    const taskByRunId = new Map(tasks.filter((t) => t.runId).map((t) => [t.runId as string, t]));
+    return records.map((r) => ({ ...r, actorType: classifyApprover(r.operatorId, taskByRunId.get(r.runId)).approverType }));
   }
 
   // ── audit maintenance (archive/restore + delete, per-record and bulk) ─────
@@ -2089,10 +2100,24 @@ export class Operations {
     projectId: string,
     action: StewardExecutionAction,
     operatorId: string,
-    opts: { dryRun?: boolean } = {},
+    opts: { dryRun?: boolean; onlyIndices?: number[] } = {},
   ): Promise<StewardActionOutcome> {
     const project = await this.getProject(ws, projectId); // throws NotFoundError
     const dryRun = opts.dryRun ?? false;
+    // TASK 21 — "JUST #01"-style partial acceptance: `queue_tasks`,
+    // `start_feature`, and `process_backlog` each resolve a BATCH of tasks
+    // and previously ran all-or-nothing (no way to act on only some of them).
+    // `onlyIndices` narrows that batch, BEFORE resolveExecutable runs, to the
+    // 0-indexed positions the caller picked — same ordering the caller's own
+    // dry-run preview showed, so "#01" in the UI is exactly index 0 here.
+    // Filtering before resolveExecutable (not after) means the excluded list
+    // only ever reports on what was actually requested — an unselected item
+    // is simply never considered, not misreported as "excluded".
+    const onlyIndices = opts.onlyIndices;
+    const pick = <T,>(items: T[]): T[] =>
+      onlyIndices && onlyIndices.length > 0
+        ? onlyIndices.map((i) => items[i]).filter((x): x is T => x !== undefined)
+        : items;
     // `operatorId` isn't consumed yet — each started/queued task's own
     // record (its run, or its state change) is today's audit trail; kept in
     // the signature since S11/S12 (Telegram/MCP callers) already have one
@@ -2135,13 +2160,14 @@ export class Operations {
 
       case "queue_tasks": {
         const all = await this.store.listTasks(ws);
-        const found = action.taskIds
+        const taskIds = pick(action.taskIds);
+        const found = taskIds
           .map((id) => all.find((t) => t.id === id && t.projectId === projectId))
           .filter((t): t is Task => !!t);
         // An id that doesn't resolve (wrong project, or doesn't exist) never
         // silently drops — reported the same way an in-scope but unstartable
         // task is, so the caller's count always adds up.
-        const unknown = action.taskIds.filter((id) => !found.some((t) => t.id === id));
+        const unknown = taskIds.filter((id) => !found.some((t) => t.id === id));
         const runs = await this.store.listRuns(ws);
         const { eligible, excluded } = resolveExecutable(project, found, runs, { atMs: now() });
         const allExcluded = [...excluded, ...unknown.map((taskId) => ({ taskId, reason: "not-in-scope" as const }))];
@@ -2154,7 +2180,7 @@ export class Operations {
         const feature = await this.store.getFeature(action.featureId);
         if (!feature || feature.workspaceId !== ws || feature.projectId !== projectId) throw new NotFoundError("Feature");
         const all = await this.store.listTasks(ws);
-        const tasks = all.filter((t) => t.featureId === feature.id);
+        const tasks = pick(all.filter((t) => t.featureId === feature.id));
         const runs = await this.store.listRuns(ws);
         const { eligible, excluded } = resolveExecutable(project, tasks, runs, {
           feasibleOnly: action.feasibleOnly,
@@ -2207,8 +2233,8 @@ export class Operations {
 
       case "process_backlog": {
         const all = await this.store.listTasks(ws);
-        const tasks = all.filter(
-          (t) => t.projectId === projectId && (t.state === "backlog" || t.state === "triage" || t.state === "todo"),
+        const tasks = pick(
+          all.filter((t) => t.projectId === projectId && (t.state === "backlog" || t.state === "triage" || t.state === "todo")),
         );
         const runs = await this.store.listRuns(ws);
         const { eligible, excluded } = resolveExecutable(project, tasks, runs, {

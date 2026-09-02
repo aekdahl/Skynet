@@ -1319,17 +1319,28 @@ function ProjectGovernance({
   project,
   onApprovalLevelChange,
   onChange,
+  autoOpenAutonomy = false,
+  onAutonomyOpenConsumed,
 }: {
   project: Project;
   onApprovalLevelChange: (level: string) => void;
   onChange: (patch: Partial<Project>) => void;
+  // TASK 21 — a breaker-event source chip's target: force this <details> menu
+  // open (it's collapsed by default) and hand the dial its own auto-open
+  // signal, so a click actually lands on the open dial, not a collapsed menu.
+  autoOpenAutonomy?: boolean;
+  onAutonomyOpenConsumed?: () => void;
 }) {
   const LEVEL_LABEL: Record<string, string> = { manual: "Manual", assisted: "Assisted", trusted: "Trusted", full: "Full autonomy" };
   const level = project.approvalLevel ?? "trusted";
   const danger = level === "full";
   const summary = project.autonomy ? LEVEL_LABEL[level] : `${LEVEL_LABEL[level]} · Autonomy off`;
+  const detailsRef = useRef<HTMLDetailsElement>(null);
+  useEffect(() => {
+    if (autoOpenAutonomy && detailsRef.current) detailsRef.current.open = true;
+  }, [autoOpenAutonomy]);
   return (
-    <details className={"proj-keys" + (danger ? " proj-governance-danger" : "")}>
+    <details ref={detailsRef} className={"proj-keys" + (danger ? " proj-governance-danger" : "")}>
       <summary
         className="proj-keys-summary"
         title="How agents run unattended on this project: how much of their own commands auto-approve, whether the board triages/reviews on its own, spend limits, and review rigor."
@@ -1339,7 +1350,7 @@ function ProjectGovernance({
         <span className="proj-keys-value">{summary}</span>
       </summary>
       <div className="proj-keys-menu proj-governance-menu">
-        <AutonomyDialButton project={project} />
+        <AutonomyDialButton project={project} autoOpen={autoOpenAutonomy} onAutoOpenConsumed={onAutonomyOpenConsumed} />
         <label
           className={"proj-approval" + (danger ? " proj-approval-danger" : "")}
           title="How much an agent may run commands without asking. Diff review needs a human unless Autonomy lets another fleet agent LLM-review and merge it — Full autonomy skips even that: every run's own diff merges immediately, no second opinion."
@@ -1577,6 +1588,8 @@ export function ProjectView({
   onBack,
   autoCompose = false,
   onComposeConsumed,
+  autoOpenAutonomy = false,
+  onAutonomyOpenConsumed,
 }: {
   project: Project;
   now: number;
@@ -1586,6 +1599,10 @@ export function ProjectView({
   // Set right after Create project → open the task composer focused on land.
   autoCompose?: boolean;
   onComposeConsumed?: () => void;
+  // TASK 21 — set by a `#/project/<id>/autonomy` deep link (a breaker-event
+  // source chip) → pre-opens the Governance menu's autonomy dial on land.
+  autoOpenAutonomy?: boolean;
+  onAutonomyOpenConsumed?: () => void;
 }) {
   const {
     runs,
@@ -1973,6 +1990,8 @@ export function ProjectView({
               project={project}
               onApprovalLevelChange={(v) => void onApprovalLevelChange(v)}
               onChange={(patch) => updateProject(project.id, patch)}
+              autoOpenAutonomy={autoOpenAutonomy}
+              onAutonomyOpenConsumed={onAutonomyOpenConsumed}
             />
             <ProjectGithubAccount project={project} onChange={(id) => updateProject(project.id, { githubCredentialId: id })} />
             <ProjectFlyAccount project={project} onChange={(id) => updateProject(project.id, { flyCredentialId: id })} />

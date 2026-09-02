@@ -85,6 +85,13 @@ export function App() {
   // task composer focused, so the operator's next move (add a task) is one keystroke
   // away. Cleared once consumed so re-visiting the project doesn't re-open it.
   const [composeProjectId, setComposeProjectId] = useState<string | null>(null);
+  // TASK 21 — a breaker-event source chip's target: `#/project/<id>/autonomy`
+  // pre-opens TASK 19's autonomy dial modal, same consume-once pattern as
+  // composeProjectId above (the modal's own open/close state takes over
+  // once it's mounted).
+  const [autonomyOpenProjectId, setAutonomyOpenProjectId] = useState<string | null>(
+    () => (route0?.autonomyOpen && route0.projectId ? route0.projectId : null),
+  );
   const [selIdx, setSelIdx] = useState(0);
   const [onboarded, setOnboarded] = useState(isOnboarded);
   // Re-run setup on demand (from Settings), even after it's been completed/skipped.
@@ -176,6 +183,7 @@ export function App() {
       if (r.projectId !== undefined) setProjectId(r.projectId);
       if (r.runId !== undefined) setRunId(r.runId);
       if (r.agentId !== undefined) setAgentId(r.agentId);
+      if (r.autonomyOpen && r.projectId) setAutonomyOpenProjectId(r.projectId);
     };
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
@@ -337,6 +345,8 @@ export function App() {
                 onBack={() => setView(fromP)}
                 autoCompose={composeProjectId === project.id}
                 onComposeConsumed={() => setComposeProjectId(null)}
+                autoOpenAutonomy={autonomyOpenProjectId === project.id}
+                onAutonomyOpenConsumed={() => setAutonomyOpenProjectId(null)}
               />
             )}
             {store.loaded && view === "project" && !project && (
@@ -407,6 +417,7 @@ export function App() {
           onClose={() => setStewardOpen(false)}
           seedText={stewardSeed?.text}
           seedNonce={stewardSeed?.nonce}
+          onOpenTask={openTask}
         />
       )}
       {store.loaded && !stewardOpen && (

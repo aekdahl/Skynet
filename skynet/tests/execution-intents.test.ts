@@ -200,6 +200,47 @@ describe("Operations.executeStewardAction", () => {
     expect(outcome.excluded).toEqual([{ taskId: "nope", reason: "not-in-scope" }]);
   });
 
+  // TASK 21 — "JUST #01"-style partial acceptance: `onlyIndices` narrows a
+  // composite action's own batch to specific 0-indexed positions BEFORE
+  // resolveExecutable runs, so the untouched items are never even considered
+  // (not misreported as "excluded").
+  it("queue_tasks with onlyIndices:[0] queues only the first taskId, leaving the second alone", async () => {
+    const { store, ops } = setup();
+    await store.putProject(mkProject());
+    await store.putTask(mkTask({ id: "t1", state: "backlog" }));
+    await store.putTask(mkTask({ id: "t2", state: "backlog" }));
+
+    const outcome = await ops.executeStewardAction(
+      DEFAULT_WORKSPACE, "p1",
+      { kind: "queue_tasks", taskIds: ["t1", "t2"] },
+      "op1",
+      { onlyIndices: [0] },
+    );
+    expect(outcome.queued).toEqual(["t1"]);
+    expect(outcome.excluded).toEqual([]); // t2 was never requested — not "excluded", just not asked for
+    expect((await store.getTask("t1"))?.state).toBe("todo");
+    expect((await store.getTask("t2"))?.state).toBe("backlog"); // untouched
+  });
+
+  it("start_feature(queue) with onlyIndices:[1] queues only the second eligible task", async () => {
+    const { store, ops } = setup();
+    await store.putProject(mkProject());
+    await store.putFeature(mkFeature());
+    await store.putTask(mkTask({ id: "todo1", featureId: "f1", state: "todo", order: 0, assignment: { mode: "any", agentIds: [] } }));
+    await store.putTask(mkTask({ id: "todo2", featureId: "f1", state: "todo", order: 1, assignment: { mode: "any", agentIds: [] } }));
+
+    const outcome = await ops.executeStewardAction(
+      DEFAULT_WORKSPACE, "p1",
+      { kind: "start_feature", featureId: "f1", execMode: "queue", feasibleOnly: true },
+      "op1",
+      { onlyIndices: [1] },
+    );
+    expect(outcome.queued).toEqual(["todo2"]);
+    expect(outcome.excluded).toEqual([]);
+    expect((await store.getTask("todo1"))?.state).toBe("todo"); // untouched — still just "todo", never queued (autoPick still false)
+    expect((await store.getTask("todo1"))?.autoPick).toBe(false);
+  });
+
   it("start_feature(queue) on a feature with a done + an ongoing + two todo tasks touches ONLY the two todo tasks", async () => {
     const { store, ops } = setup();
     await store.putProject(mkProject());

@@ -1458,6 +1458,19 @@ export type AuditRecord = z.infer<typeof AuditRecord>;
 export const ComplianceApproverType = z.enum(["human", "policy", "agent-review"]);
 export type ComplianceApproverType = z.infer<typeof ComplianceApproverType>;
 
+// TASK 21 — GET /api/audit's own row shape: the stored AuditRecord plus
+// `actorType`, computed at RESPONSE time from `operatorId`
+// (apps/server/src/compliance/report.ts's classifyApprover, reused — not a
+// second classifier) — no schema change to the persisted record itself, this
+// is a read-time projection. Reuses ComplianceApproverType rather than a
+// second lime/blue/amber enum, since it's the exact same three-way split.
+// Optional for back-compat with a server that predates this field (same
+// convention as AuditRecord's own `archived`/`hash` above) — a caller missing
+// it can always recompute the SAME value client-side via the bare
+// `classifyOperatorId` (compliance.ts), which needs only `operatorId`.
+export const AuditRecordWithActor = AuditRecord.extend({ actorType: ComplianceApproverType.optional() });
+export type AuditRecordWithActor = z.infer<typeof AuditRecordWithActor>;
+
 export const ComplianceReportEntry = z.object({
   hitlId: z.string(),
   runId: z.string(),
@@ -1899,6 +1912,26 @@ export type MoveTaskRequest = z.infer<typeof MoveTaskRequest>;
 export const ReorderTaskRequest = z.object({ beforeId: z.string().nullable() });
 export type ReorderTaskRequest = z.infer<typeof ReorderTaskRequest>;
 
+// ─── Steward source citations (TASK 21) ────────────────────────────────────
+// "No claim without a chip": Steward's reply protocol already lets the model
+// append a trailing `{"proposeActions": [...]}` tag (see assistant.ts's
+// splitProposedAction) — this extends the SAME trailing object with an
+// optional `"sources"` list naming what backs up a specific claim in the
+// reply. The SHAPE lives here (server-validated on the way out of
+// splitProposedAction); resolving a ref into an actual href/label is a
+// client concern (apps/web/src/lib/source-chips.ts) — it already has
+// TASK 17's run-detail route (`#/agent/<runId>`) and the project/run data
+// (repo, branch, PR url) needed for a commit link, all without a second
+// server round-trip. `commit` reuses `runId` — the commit in question is
+// "whatever landed for this run" (its PR, or its branch pre-merge), not a
+// bare sha Steward has no reliable way to know.
+export const SourceRef = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("run"), runId: z.string() }),
+  z.object({ kind: z.literal("commit"), runId: z.string() }),
+  z.object({ kind: z.literal("breaker"), projectId: z.string() }),
+]);
+export type SourceRef = z.infer<typeof SourceRef>;
+
 // ─── Execution intents (S10): start/queue composites ───────────────────────
 // The strict request contract for POST /api/projects/:id/steward/actions —
 // distinct from (and narrower than) Steward's own free-form AssistantAction
@@ -1933,6 +1966,11 @@ export const ExecuteStewardActionRequest = z.object({
   // Resolve feasibility and report what WOULD happen — never mutates
   // anything. What S11's confirm chip and S12's MCP `dryRun` param render.
   dryRun: z.boolean().optional(),
+  // TASK 21 — "JUST #01"-style partial acceptance: 0-indexed positions into
+  // the action's own batch (`queue_tasks.taskIds`, or the feature's/backlog's
+  // resolved task list, in the SAME order a dry-run preview already showed)
+  // to act on. Omitted/empty = every item in the batch, today's behavior.
+  onlyIndices: z.array(z.number().int().nonnegative()).optional(),
 });
 export type ExecuteStewardActionRequest = z.infer<typeof ExecuteStewardActionRequest>;
 
