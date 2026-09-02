@@ -1,9 +1,19 @@
 import { useEffect, useRef, useState } from "react";
-import type { ProviderId, ProviderInfo, Agent, SecretMeta, TaskRun } from "@skynet/shared";
+import type { ProviderId, ProviderInfo, Agent, HitlItem, SecretMeta, TaskRun } from "@skynet/shared";
 import { endpointLabel, vendorForBaseUrl } from "@skynet/shared";
 import { useStore } from "../lib/store";
 import * as api from "../lib/client";
-import { computeUsageRollup, fmtCost, fmtNum, providerInfo, providerReadiness, runnerIdleLabel, type UsageRollup } from "../lib/derive";
+import {
+  classifyRun,
+  computeUsageRollup,
+  fmtCost,
+  fmtNum,
+  providerInfo,
+  providerReadiness,
+  runnerIdleLabel,
+  STALE_HEARTBEAT_SEC,
+  type UsageRollup,
+} from "../lib/derive";
 import { PrimaryButton } from "../components/empty";
 import { useConfirm } from "../components/confirm";
 import { toast } from "../components/toast";
@@ -366,6 +376,51 @@ interface AgentActions {
   onDuplicate: (r: Agent) => void;
   onToggleReviewer: (r: Agent) => void;
   onRetire: (r: Agent) => void;
+  // Deep-links straight to the run carrying the open gate (blocked, a real
+  // decision is pending) — same navigation as opening its activity, just a
+  // named, one-click affordance for the specific situation.
+  onAnswer: (runId: string) => void;
+  // Blocked with NO pending decision (stale heartbeat, nothing to answer) —
+  // the only real remediation available today is freeing the runner so a
+  // human (or the autonomy loop) can pick up fresh; see classifyRun's own
+  // "stuck in X — no pending decision" branch.
+  onUnstick: (r: Agent, runId: string) => void;
+  // An idle agent has no live run to attach a chat message to (sendAgentMessage/
+  // streamAgentMessage both operate on a RUN id) — Steward is the app's real
+  // conversational surface for "what should this agent do", same event this
+  // project already dispatches for a backlog task's "💬 Discuss" button.
+  onMessage: (r: Agent) => void;
+}
+
+/** "% merged clean" (Phase 23) — of this agent's FINISHED runs, how many
+ *  actually landed a clean merge (mergedAt set, never reverted). No new
+ *  collection: grouped straight from the already-loaded TaskRun list by
+ *  agentId. null = no finished runs yet, rendered as "—" rather than a
+ *  misleading 0%/100%. */
+function reliabilityOf(agentId: string, runs: TaskRun[]): { pct: number | null; finished: number } {
+  const finished = runs.filter((r) => r.agentId === agentId && r.status === "done");
+  if (finished.length === 0) return { pct: null, finished: 0 };
+  const clean = finished.filter((r) => r.mergedAt != null && !r.merge?.revertedAt);
+  return { pct: Math.round((clean.length / finished.length) * 100), finished: finished.length };
+}
+
+function ReliabilityReadout({ agentId, runs }: { agentId: string; runs: TaskRun[] }) {
+  const { pct, finished } = reliabilityOf(agentId, runs);
+  const title =
+    pct == null
+      ? "No finished runs yet"
+      : `${pct}% merged clean across ${finished} finished run${finished === 1 ? "" : "s"}`;
+  return (
+    <span className="fleet-reliability" title={title}>
+      <span className="fleet-reliability-pct mono">{pct == null ? "—" : `${pct}%`}</span>
+      <span className="fleet-reliability-track">
+        <span
+          className={"fleet-reliability-fill" + (pct != null && pct < 50 ? " low" : "")}
+          style={{ width: `${pct ?? 0}%` }}
+        />
+      </span>
+    </span>
+  );
 }
 
 // "—" for genuinely no cost data (no runs, or none reported one yet) — never
@@ -407,6 +462,9 @@ function AgentCard({
   p,
   count,
   costRoll,
+  runs,
+  hitl,
+  now,
   actions,
   endpoint,
   informMode,
@@ -424,6 +482,13 @@ function AgentCard({
   // Vendor-reported cost/tokens summed across this agent's runs — see
   // computeUsageRollup (lib/derive.ts). Undefined = no runs yet.
   costRoll: UsageRollup | undefined;
+  // Full run list, for the reliability readout (grouped by agentId itself).
+  runs: TaskRun[];
+  // The busy run's open gate, if any — see classifyRun. Present → "Answer";
+  // absent while the run itself reads as blocked (stale heartbeat, nothing
+  // pending) → "Unstick".
+  hitl: HitlItem | undefined;
+  now: number;
   actions: AgentActions;
   // Mass inform (roadmap "Mass inform") — only meaningful here since only a
   // BUSY agent has a live run to attach a note to; the idle AgentRow below
@@ -434,6 +499,7 @@ function AgentCard({
   onToggleInform?: () => void;
 }) {
   const cost = costOf(costRoll);
+  const { tag } = classifyRun(busy, hitl, now, STALE_HEARTBEAT_SEC);
   return (
     <div className="fleet-card fleet-busy">
       {informMode && (
@@ -463,6 +529,7 @@ function AgentCard({
           <span className="fleet-cost mono" title={cost.title}>
             {cost.label}
           </span>
+          <ReliabilityReadout agentId={r.id} runs={runs} />
         </div>
       </button>
       <button className="fleet-task fleet-task-link" onClick={() => actions.onOpenTask(busy.id)} title="Open this agent's live activity">
@@ -473,6 +540,25 @@ function AgentCard({
         <div className="fleet-task-fill" style={{ width: `${Math.round(busy.progress * 100)}%` }} />
       </div>
       <div className="fleet-actions">
+        {tag === "blocked" && (
+          hitl ? (
+            <button
+              className="btn btn-ghost fleet-answer"
+              title="A decision is waiting on this run — open it."
+              onClick={() => actions.onAnswer(busy.id)}
+            >
+              Answer
+            </button>
+          ) : (
+            <button
+              className="btn btn-ghost fleet-unstick"
+              title="No heartbeat in a while and nothing pending — stop it so a human (or the autonomy loop) can pick up fresh."
+              onClick={() => actions.onUnstick(r, busy.id)}
+            >
+              Unstick
+            </button>
+          )
+        )}
         <button
           className={"btn btn-ghost fleet-reviewer" + (r.canReview === false ? " off" : "")}
           title={
@@ -512,6 +598,7 @@ function AgentRow({
   p,
   count,
   costRoll,
+  runs,
   now,
   endpoint,
   actions,
@@ -521,6 +608,8 @@ function AgentRow({
   endpoint: string | null;
   count: number;
   costRoll: UsageRollup | undefined;
+  // Full run list, for the reliability readout (grouped by agentId itself).
+  runs: TaskRun[];
   now: number;
   actions: AgentActions;
 }) {
@@ -533,9 +622,10 @@ function AgentRow({
           {p.glyph}
         </span>
         <span className="fleet-rn mono">{r.name}</span>
-        {/* Inside the name, NOT a sibling: the row is a fixed 5-column grid
-            (name/tasks/cost/time/actions), so an extra top-level child lands in
-            an implicit sixth cell and wraps the actions onto their own line. */}
+        {/* Inside the name, NOT a sibling: the row is a fixed grid
+            (name/tasks/cost/reliability/time/actions), so an extra top-level
+            child lands in an implicit extra cell and wraps the actions onto
+            their own line. */}
         <EndpointChip endpoint={endpoint} />
       </button>
       <span className="fleet-idle-tasks mono">
@@ -544,6 +634,7 @@ function AgentRow({
       <span className="fleet-idle-cost mono" title={cost.title}>
         {cost.label}
       </span>
+      <ReliabilityReadout agentId={r.id} runs={runs} />
       <span className={"fleet-idle-time mono" + (stale ? " stale" : "")}>idle {runnerIdleLabel(r, now)}</span>
       <span className="fleet-idle-actions">
         <button
@@ -556,6 +647,9 @@ function AgentRow({
         </button>
         <button className="icon-btn" title="Configure" onClick={() => actions.onConfigure(r)}>
           ⚙
+        </button>
+        <button className="icon-btn" title="Message — ask Steward what this idle agent should pick up" onClick={() => actions.onMessage(r)}>
+          💬
         </button>
         <button className="icon-btn" title="Duplicate" onClick={() => actions.onDuplicate(r)}>
           ⧉
@@ -575,7 +669,7 @@ export function FleetView({
   onOpenTask: (id: string) => void;
   onOpenAgent: (id: string) => void;
 }) {
-  const { fleet, runs, providers, workspaceSettings, createAgent, updateAgent, deleteAgent, informRuns } =
+  const { fleet, runs, queue, providers, workspaceSettings, createAgent, updateAgent, deleteAgent, informRuns, stopAgent } =
     useStore();
   const confirm = useConfirm();
   // Mass inform (roadmap "Mass inform"): pick a set of BUSY agents (only a
@@ -613,6 +707,8 @@ export function FleetView({
 
   const busyOf = (r: Agent) =>
     runs.find((a) => a.status !== "done" && a.agentId === r.id);
+  // The busy run's own open gate, if any — see classifyRun (Answer vs Unstick).
+  const hitlOf = (runId: string) => queue.find((q) => q.runId === runId && !q.resolvedAt);
 
   const actions: AgentActions = {
     onOpenAgent,
@@ -639,6 +735,22 @@ export function FleetView({
       )
         deleteAgent(r.id);
     },
+    onAnswer: onOpenTask,
+    onUnstick: async (r, runId) => {
+      if (
+        await confirm({
+          title: "Unstick this run?",
+          body: `“${r.name}” hasn't reported in a while and there's no decision waiting on it. Stopping frees the runner so it (or another agent) can pick up fresh — the work isn't lost.`,
+          confirmLabel: "Stop & free the runner",
+          danger: true,
+        })
+      )
+        void stopAgent(runId);
+    },
+    onMessage: (r) =>
+      window.dispatchEvent(
+        new CustomEvent("skynet:open-steward", { detail: { text: `What should ${r.name} pick up next?` } }),
+      ),
   };
 
   // Group the fleet by label. Named groups sort alphabetically; the "Ungrouped"
@@ -795,6 +907,9 @@ export function FleetView({
                           p={providerInfo(providers, r.provider)}
                           count={taskCountOf(r)}
                           costRoll={usageByAgent[r.id]}
+                          runs={runs}
+                          hitl={hitlOf(busyOf(r)!.id)}
+                          now={now}
                           endpoint={endpointOf(r)}
                           actions={actions}
                           informMode={informMode}
@@ -843,6 +958,7 @@ export function FleetView({
                         p={providerInfo(providers, r.provider)}
                         count={taskCountOf(r)}
                         costRoll={usageByAgent[r.id]}
+                        runs={runs}
                         now={now}
                         endpoint={endpointOf(r)}
                         actions={actions}
