@@ -442,6 +442,10 @@ export const KIND_META: Record<HitlKind, { label: string; color: string }> = {
   merge: { label: "MERGE CONFLICT", color: "var(--danger)" },
   escalation: { label: "NEEDS HELP", color: "var(--danger)" },
   verifier: { label: "CHECKS FAILED", color: "var(--danger)" },
+  // TASK 30 — the rich card lives in kanban/inbox.tsx; a roadmap_edit item
+  // reaching the legacy per-project queue.tsx (untouched by this task) just
+  // needs a non-crashing, sensible-enough label/color, not the full anatomy.
+  roadmap_edit: { label: "ROADMAP EDIT", color: "var(--info)" },
 };
 
 /** A `stuck-review` escalation (orchestrator.ts's reapStuckReviews) means the

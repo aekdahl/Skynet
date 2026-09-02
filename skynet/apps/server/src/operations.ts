@@ -56,6 +56,8 @@ import type {
   RoadmapLineClaim,
   RoadmapProposal,
   ProposeRoadmapChangeRequest,
+  RoadmapEditResolveRequest,
+  RoadmapConflictResolveRequest,
   SourceRef,
   Rule,
   SavePolicyVersionRequest,
@@ -495,12 +497,16 @@ export class Operations {
     const decisions: Decision[] = [];
     for (const item of queue) {
       if (item.resolution !== null) continue; // only open decisions belong on this list
-      // An open HITL always has a real run (HitlItem.runId is required, never
-      // null) — skip defensively rather than throw if the run/project it
-      // pointed to was since deleted, so one dangling item can't 500 the list.
+      // Every OTHER kind has a real run behind it (HitlItem.runId is
+      // required, never null) — a `roadmap_edit` item is the one exception
+      // (TASK 30: no TaskRun behind a roadmap proposal), resolved via its
+      // own `projectId` instead of through a run. Skip defensively rather
+      // than throw if the run/project a normal item pointed to was since
+      // deleted, so one dangling item can't 500 the list.
       const run = runById.get(item.runId);
-      const project = run ? projectById.get(run.projectId) : undefined;
-      if (!run || !project) continue;
+      const project = item.kind === "roadmap_edit" && item.projectId ? projectById.get(item.projectId) : run ? projectById.get(run.projectId) : undefined;
+      if (!project) continue;
+      if (item.kind !== "roadmap_edit" && !run) continue;
       // TASK 19 — weight by the project's composed autonomy detent: a
       // higher notch means less human attention is already in the loop, so
       // an open decision idling there costs more, not less.
@@ -509,7 +515,7 @@ export class Operations {
         ...item,
         projectId: project.id,
         projectName: project.name,
-        taskTitle: taskByRunId.get(item.runId)?.text ?? null,
+        taskTitle: run ? (taskByRunId.get(item.runId)?.text ?? null) : null,
         costOfWaiting: (nowTs - item.raisedAt) * weight,
       });
     }
@@ -810,6 +816,21 @@ export class Operations {
   async resolveHitl(ws: string, hitlId: string, input: ResolveRequest, operatorId: string): Promise<HitlItem> {
     const item = await this.store.getHitl(hitlId);
     if (!item || item.workspaceId !== ws) throw new NotFoundError("HITL item");
+    // TASK 30 — a roadmap_edit gate has no live agent/run behind it, so it
+    // never goes through orchestrator.deliver() (which assumes one) — this
+    // branches off before any of that machinery, straight to the real
+    // commit path (Operations.applyRoadmapProposal). A held_conflict pair's
+    // richer choose/write_own actions don't fit ResolveRequest's shape at
+    // all — those go through the dedicated resolveRoadmapConflict instead,
+    // never here (see the web card's/Telegram's own action wiring).
+    if (item.kind === "roadmap_edit") {
+      if (input.action !== "approve" && input.action !== "reject") {
+        throw new Error(
+          `A roadmap proposal can only be approved or rejected here (got "${input.action}") — a held_conflict pair resolves via a different action.`,
+        );
+      }
+      return await this.resolveRoadmapEditHitl(ws, item, input.action, operatorId);
+    }
     // A catastrophic command can NEVER be approved, even if an operator
     // fat-fingers "approve" on the gate — re-validate the command against the
     // denylist server-side and refuse before recording any decision. GATE-risk
@@ -3301,6 +3322,12 @@ export class Operations {
     for (const proposal of open) {
       if (proposalIsStale(proposal, doc)) {
         await this.store.putRoadmapProposal({ ...proposal, state: "superseded" });
+        // TASK 30 — a human's own direct commit already overtook this;
+        // whatever open roadmap_edit card was asking someone to approve it
+        // must go too, or it'd sit there un-actionable forever (the repo
+        // already moved on, so approving it now would throw
+        // RoadmapProposalStaleError anyway).
+        await this.dismissRoadmapEditHitlFor(doc.workspaceId, proposal.id, "system");
       }
     }
   }
@@ -3383,7 +3410,15 @@ export class Operations {
 
     const openExisting = findOpenProposalForSection(existingForProject, input.section);
     if (!openExisting) {
-      return await this.store.putRoadmapProposal(incomingAsProposal);
+      // TASK 30 — every genuinely agent-initiated proposal (this method's
+      // only caller path) becomes a governed Inbox decision. An operator's
+      // OWN direct Steward-dock request never reaches this method at all —
+      // it commits straight via updateProjectRoadmap, a completely separate
+      // path — so no actor check is needed here: reaching this line IS the
+      // "agent-initiated" signal.
+      const saved = await this.store.putRoadmapProposal(incomingAsProposal);
+      await this.raiseRoadmapEditHitl(saved);
+      return saved;
     }
 
     // Rule 4 — an incompatible overlap with the section's existing open
@@ -3395,12 +3430,93 @@ export class Operations {
       const heldExisting: RoadmapProposal = { ...openExisting, state: "held_conflict", conflictsWith: [...new Set([...openExisting.conflictsWith, incomingAsProposal.id])] };
       const heldIncoming: RoadmapProposal = { ...incomingAsProposal, state: "held_conflict", conflictsWith: [...new Set([...incomingAsProposal.conflictsWith, openExisting.id])] };
       await this.store.putRoadmapProposal(heldExisting);
-      return await this.store.putRoadmapProposal(heldIncoming);
+      const saved = await this.store.putRoadmapProposal(heldIncoming);
+      // The plain "approve this" card `openExisting` already had (raised the
+      // moment IT went open) no longer applies — it's now half of a
+      // conflict, not a solo approve. Dismiss it and raise ONE new card for
+      // the pair, anchored on the incoming side; the card renders the
+      // CONFLICT variant by live-fetching this proposal and seeing
+      // `state: "held_conflict"`, then follows `conflictsWith` to fetch the
+      // other side too — never a second, duplicate card for the same pair.
+      await this.dismissRoadmapEditHitlFor(ws, openExisting.id, "system");
+      await this.raiseRoadmapEditHitl(saved);
+      return saved;
     }
 
     // Rule 1 — compatible: join into the existing open proposal, same row.
+    // No HITL change — the card already raised for `openExisting.id` stays
+    // anchored on the SAME id (joinProposal never changes it) and the web
+    // card live-fetches the proposal, so the merged diff/reasoning/impact
+    // show up automatically without a second raise (which would just spam
+    // Telegram for what the operator already has an open card for).
     const joined = joinProposal(openExisting, input);
     return await this.store.putRoadmapProposal(joined);
+  }
+
+  /**
+   * Raise a fresh `roadmap_edit` HITL anchored on `proposal` — TASK 30's
+   * Inbox integration. `runId` carries an inert `roadmap:<id>` placeholder
+   * (see HitlItem's own doc comment on why: no TaskRun exists behind a
+   * roadmap proposal) and this is NEVER routed through
+   * Orchestrator.deliver() — see `resolveHitl`'s roadmap_edit branch below,
+   * which resolves it directly instead. `title`/`why` are a snapshot for
+   * Telegram (which can't live-fetch); the web Inbox card ignores them and
+   * always fetches the live proposal by `roadmapProposalId` instead, so a
+   * later Rule 1 join or Rule 3 supersede is reflected there for free.
+   * `flags` carries "has_deletion" — computed once here — the one signal
+   * Telegram's compact card needs to withhold its approve button for.
+   */
+  private async raiseRoadmapEditHitl(proposal: RoadmapProposal): Promise<void> {
+    await this.hub.raiseHitl({
+      id: this.uid("q-roadmap"),
+      workspaceId: proposal.workspaceId,
+      runId: `roadmap:${proposal.id}`,
+      projectId: proposal.projectId,
+      roadmapProposalId: proposal.id,
+      kind: "roadmap_edit",
+      title: proposal.headline,
+      why: proposal.reasoning,
+      risk: proposal.diff.removed.length > 0 ? "medium" : "low",
+      raisedAt: now(),
+      expiresAt: null,
+      resolvedAt: null,
+      resolution: null,
+      rationale: null,
+      command: null,
+      options: null,
+      recommended: null,
+      steps: null,
+      diff: null,
+      output: null,
+      flags: proposal.diff.removed.length > 0 ? ["has_deletion"] : [],
+      sourceBranchOverride: null,
+    });
+  }
+
+  /**
+   * Dismiss whatever still-open `roadmap_edit` HITL is anchored on
+   * `proposalId` — Rule 3's supersede, or Rule 4 replacing a plain-open card
+   * with a fresh conflict one, both need this so a proposal that's moved on
+   * never leaves a stale, unanswerable card sitting in the Inbox pointing at
+   * dead work. Same "detach → dismiss any open gate" discipline as
+   * Orchestrator.retireRun; best-effort no-op when there isn't one (a
+   * proposal created via a join never got its own card).
+   */
+  private async dismissRoadmapEditHitlFor(ws: string, proposalId: string, by: string): Promise<void> {
+    const open = (await this.store.listQueue(ws)).find(
+      (q) => q.kind === "roadmap_edit" && q.roadmapProposalId === proposalId && !q.resolvedAt,
+    );
+    if (!open) return;
+    await this.hub.resolveHitl(open.id, {
+      action: "dismiss",
+      optionIndex: null,
+      guidance: null,
+      targetBranch: null,
+      memoryNote: null,
+      resetWork: false,
+      by,
+      at: now(),
+    });
   }
 
   /**
@@ -3427,6 +3543,22 @@ export class Operations {
    * exact same notch packages/shared/src/autonomy.ts's `ownDiffAutoMerge`
    * already uses for an agent's own code diff).
    */
+  /**
+   * A live read of one roadmap proposal — TASK 30's Inbox/conflict card
+   * NEVER trusts the snapshot fields on its own HITL item (title/why only,
+   * a Telegram-only concession — see raiseRoadmapEditHitl); it fetches this
+   * instead, so a Rule 1 join, Rule 3 supersede, or Rule 4 conflict that
+   * happened after the card was raised is reflected the moment the operator
+   * opens it, not whatever was true when the gate first fired.
+   */
+  async getRoadmapProposal(ws: string, projectId: string, proposalId: string): Promise<RoadmapProposal> {
+    const project = await this.store.getProject(projectId);
+    if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
+    const proposal = await this.store.getRoadmapProposal(proposalId);
+    if (!proposal || proposal.projectId !== projectId) throw new NotFoundError("Roadmap proposal");
+    return proposal;
+  }
+
   async applyRoadmapProposal(ws: string, projectId: string, proposalId: string, opts: { operatorId?: string } = {}): Promise<{ proposal: RoadmapProposal; committed: boolean; sha?: string }> {
     const project = await this.store.getProject(projectId);
     if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
@@ -3556,6 +3688,88 @@ export class Operations {
     if (!project.repoPath) return [];
     const path = project.roadmapPath ?? ROADMAP_PATHS[0]!;
     return roadmapHistory(project.repoPath, path, opts.limit);
+  }
+
+  /**
+   * The plain (non-conflict) roadmap_edit HITL's approve/reject — TASK 30.
+   * "Approve & commit" runs the real TASK 28 attribution path
+   * (applyRoadmapProposal, human-authored + agent Co-authored-by); reject
+   * just marks the proposal rejected. Either way the HITL resolves via
+   * Hub.resolveHitl directly — never Operations.resolveHitl's generic
+   * wrapper (that's this method's OWN caller) and never
+   * Orchestrator.deliver() (no live agent to deliver to).
+   */
+  private async resolveRoadmapEditHitl(ws: string, item: HitlItem, action: "approve" | "reject", operatorId: string): Promise<HitlItem> {
+    if (!item.projectId || !item.roadmapProposalId) throw new NotFoundError("Roadmap proposal");
+    if (action === "approve") {
+      await this.applyRoadmapProposal(ws, item.projectId, item.roadmapProposalId, { operatorId });
+    } else {
+      const proposal = await this.store.getRoadmapProposal(item.roadmapProposalId);
+      if (!proposal || proposal.projectId !== item.projectId) throw new NotFoundError("Roadmap proposal");
+      if (proposal.state !== "open") throw new RoadmapProposalNotOpenError(proposal.state);
+      await this.store.putRoadmapProposal({ ...proposal, state: "rejected" });
+    }
+    const resolution: Resolution = {
+      action,
+      optionIndex: null,
+      guidance: null,
+      targetBranch: null,
+      memoryNote: null,
+      resetWork: false,
+      by: operatorId,
+      at: now(),
+    };
+    const resolved = await this.hub.resolveHitl(item.id, resolution);
+    return resolved ?? item;
+  }
+
+  /**
+   * A held_conflict roadmap_edit HITL's resolution — TASK 30's conflict
+   * card. "choose" applies the picked proposal's diff (flipped back to
+   * "open" first: applyRoadmapProposal only accepts an open proposal, and
+   * Rule 4 leaves BOTH sides `held_conflict`) and rejects the other side;
+   * "write_own" rejects both, freeing the section for a human's own edit —
+   * today that means the existing Steward-dock/Roadmap-tab manual-edit path
+   * (updateProjectRoadmap), until TASK 29's inline SOURCE editor lands as
+   * the card's real destination.
+   */
+  async resolveRoadmapConflict(ws: string, hitlId: string, input: RoadmapConflictResolveRequest, operatorId: string): Promise<HitlItem> {
+    const item = await this.store.getHitl(hitlId);
+    if (!item || item.workspaceId !== ws) throw new NotFoundError("HITL item");
+    if (item.kind !== "roadmap_edit" || !item.projectId || !item.roadmapProposalId) throw new NotFoundError("Roadmap conflict");
+    const anchor = await this.store.getRoadmapProposal(item.roadmapProposalId);
+    if (!anchor || anchor.projectId !== item.projectId) throw new NotFoundError("Roadmap proposal");
+    if (anchor.state !== "held_conflict") throw new RoadmapProposalNotOpenError(anchor.state);
+    const other = anchor.conflictsWith[0] ? await this.store.getRoadmapProposal(anchor.conflictsWith[0]) : undefined;
+
+    let action: "approve" | "reject";
+    if (input.action === "write_own") {
+      await this.store.putRoadmapProposal({ ...anchor, state: "rejected" });
+      if (other) await this.store.putRoadmapProposal({ ...other, state: "rejected" });
+      action = "reject";
+    } else {
+      const pair = [anchor, other].filter((p): p is RoadmapProposal => !!p);
+      const chosen = pair.find((p) => p.id === input.chosenProposalId);
+      if (!chosen) throw new NotFoundError("Roadmap proposal");
+      const rejected = pair.find((p) => p.id !== input.chosenProposalId);
+      if (rejected) await this.store.putRoadmapProposal({ ...rejected, state: "rejected" });
+      await this.store.putRoadmapProposal({ ...chosen, state: "open" });
+      await this.applyRoadmapProposal(ws, item.projectId, chosen.id, { operatorId });
+      action = "approve";
+    }
+
+    const resolution: Resolution = {
+      action,
+      optionIndex: null,
+      guidance: null,
+      targetBranch: null,
+      memoryNote: null,
+      resetWork: false,
+      by: operatorId,
+      at: now(),
+    };
+    const resolved = await this.hub.resolveHitl(item.id, resolution);
+    return resolved ?? item;
   }
 
   // ── fleet ──────────────────────────────────────────────────────────────

@@ -49,6 +49,8 @@ import {
   type RoadmapDoc,
   type RoadmapLineClaim,
   type RoadmapProposal,
+  type HitlItem,
+  type RoadmapConflictResolveRequest,
 } from "@skynet/shared";
 import { parseStewardStream, type StewardReply } from "./steward-stream";
 import { toast } from "../components/toast";
@@ -562,6 +564,21 @@ export interface RoadmapHistoryEntry {
 export function fetchRoadmapHistory(projectId: string, opts?: { limit?: number }) {
   const qs = opts?.limit != null ? `?limit=${opts.limit}` : "";
   return req<RoadmapHistoryEntry[]>("GET", `/api/projects/${projectId}/roadmap/history${qs}`);
+}
+
+// ── roadmap proposal governance (TASK 30) ────────────────────────────────
+// A roadmap_edit HITL's plain approve/reject rides the existing resolveHitl
+// above (Operations.resolveHitl branches on kind itself) — no dedicated
+// function for it. The Inbox/conflict card fetches the LIVE proposal here
+// rather than trusting the HITL's own (Telegram-only) title/why snapshot, so
+// a Rule 1 join or Rule 3 supersede that happens after the card was raised
+// shows up the moment it's opened.
+export function fetchRoadmapProposal(projectId: string, proposalId: string) {
+  return req<RoadmapProposal>("GET", `/api/projects/${projectId}/roadmap-proposals/${proposalId}`);
+}
+
+export function resolveRoadmapConflict(hitlId: string, body: RoadmapConflictResolveRequest) {
+  return req<HitlItem>("POST", `/api/hitl/${hitlId}/roadmap-conflict-resolve`, body);
 }
 
 // ─── Momentum Board (Phase 4) — transitions ─────────────────────────────────

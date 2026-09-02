@@ -31,6 +31,7 @@ import {
   UpdateMilestoneRequest,
   UpdateProjectRequest,
   UpdateProjectRoadmapRequest,
+  RoadmapConflictResolveRequest,
   UpdateWorkspaceSettingsRequest,
   UpdateRunnerRequest,
   UpdateRuleRequest,
@@ -110,12 +111,10 @@ function fail(reply: FastifyReply, err: unknown): FastifyReply {
   // The request was well-formed, but the model couldn't produce a valid draft
   // even after a retry — semantically unprocessable, not a malformed request.
   if (err instanceof CrystallizeParseError) return reply.code(422).send({ error: err.message });
-  // A roadmap-proposal apply that Rule 2/the autonomy gate refuses — well-formed
-  // request, policy says no right now (only reachable from an internal/autonomous
-  // caller in practice, since this route always supplies operatorId — kept mapped
-  // defensively rather than falling through to a misleading 400).
+  // Rule 2 / the autonomy-detent gate on an autonomous roadmap-proposal
+  // apply — policy refusals, same family as CommandDeniedError above.
   if (err instanceof RoadmapProposalNeedsHumanApprovalError || err instanceof RoadmapProposalAutonomyGateError) {
-    return reply.code(422).send({ error: err.message });
+    return reply.code(403).send({ error: err.message });
   }
   if (
     err instanceof RoadmapProposalNotOpenError ||
@@ -1464,6 +1463,30 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     const limit = req.query.limit ? Number(req.query.limit) : undefined;
     try {
       return await ops.getRoadmapHistory(ws(req), req.params.id, { limit });
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
+  // ── roadmap proposal governance (TASK 30) ────────────────────────────────
+  // The plain approve/reject action rides the existing generic
+  // POST /api/hitl/:id/resolve (Operations.resolveHitl branches on
+  // kind === "roadmap_edit" itself — see that method) — no new route needed
+  // for it. Only the two genuinely different shapes get their own route: a
+  // live read (the Inbox/conflict card never trusts a frozen HITL snapshot)
+  // and the held_conflict pair's choose/write_own action.
+  app.get<{ Params: { id: string; pid: string } }>("/api/projects/:id/roadmap-proposals/:pid", async (req, reply) => {
+    try {
+      return await ops.getRoadmapProposal(ws(req), req.params.id, req.params.pid);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+  app.post<{ Params: { id: string } }>("/api/hitl/:id/roadmap-conflict-resolve", async (req, reply) => {
+    const body = RoadmapConflictResolveRequest.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+    try {
+      return await ops.resolveRoadmapConflict(ws(req), req.params.id, body.data, req.principal!.operatorId);
     } catch (err) {
       return fail(reply, err);
     }

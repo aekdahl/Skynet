@@ -44,7 +44,7 @@ export type PlanStepState = z.infer<typeof PlanStepState>;
 // already approved and the merge itself succeeded — the merge commit is undone
 // (MergeEngine.process's bounce) pending this decision: approve retries the
 // merge+check, reject/modify bounces the agent to revise with the check output.
-export const HitlKind = z.enum(["approval", "question", "plan", "diff", "merge", "escalation", "verifier"]);
+export const HitlKind = z.enum(["approval", "question", "plan", "diff", "merge", "escalation", "verifier", "roadmap_edit"]);
 export type HitlKind = z.infer<typeof HitlKind>;
 
 /** Default single-tenant workspace until real provisioning lands. */
@@ -1397,6 +1397,20 @@ export const HitlItem = z.object({
   // retry — same as `agent.branch` already does today). Null for every HITL
   // today — additive, no behavior change to existing records.
   sourceBranchOverride: z.string().nullable().default(null),
+  // `roadmap_edit` only (TASK 30) — a roadmap proposal has no TaskRun behind
+  // it (it's raised at the fleet-agent level, not tied to one task run), so
+  // `runId` above carries an inert `roadmap:<proposalId>` placeholder for
+  // this kind instead of a real run id — never matches an actual TaskRun,
+  // and deliberately never routed through Orchestrator.deliver() (see
+  // Operations.resolveRoadmapEditHitl), which assumes a live run/handle
+  // behind every item it's handed. `projectId` is the one place this kind's
+  // project is actually reachable from (Operations.listDecisions falls back
+  // to it instead of resolving through a run); `roadmapProposalId` is the
+  // live-fetch key the card renders from (GET .../roadmap-proposals/:id) —
+  // the card never trusts a frozen snapshot, so a Rule 1 join or a Rule 3
+  // supersede that happens after this was raised is picked up for free.
+  projectId: z.string().nullable().default(null),
+  roadmapProposalId: z.string().nullable().default(null),
 });
 export type HitlItem = z.infer<typeof HitlItem>;
 
@@ -1677,6 +1691,24 @@ export const ResolveRequest = z.object({
   resetWork: z.boolean().optional(),
 });
 export type ResolveRequest = z.infer<typeof ResolveRequest>;
+
+// A plain (non-conflict) roadmap_edit HITL's two actions — deliberately its
+// OWN request type rather than reusing ResolveRequest's full action set
+// (option/reassign/push/modify don't apply to a proposal with no live agent
+// behind it; see Operations.resolveRoadmapEditHitl).
+export const RoadmapEditResolveRequest = z.object({ action: z.enum(["approve", "reject"]) });
+export type RoadmapEditResolveRequest = z.infer<typeof RoadmapEditResolveRequest>;
+
+// A held_conflict roadmap_edit HITL's three actions: pick one side
+// (chosenProposalId — the OTHER proposal in the pair is rejected), or reject
+// both and write it yourself (the card's "WRITE MY OWN" — degrades to the
+// existing Steward-dock/Roadmap-tab manual edit path until TASK 29's inline
+// SOURCE editor lands; see Operations.resolveRoadmapConflict).
+export const RoadmapConflictResolveRequest = z.discriminatedUnion("action", [
+  z.object({ action: z.literal("choose"), chosenProposalId: z.string() }),
+  z.object({ action: z.literal("write_own") }),
+]);
+export type RoadmapConflictResolveRequest = z.infer<typeof RoadmapConflictResolveRequest>;
 
 export const ChatRequest = z.object({ text: z.string().min(1) });
 
