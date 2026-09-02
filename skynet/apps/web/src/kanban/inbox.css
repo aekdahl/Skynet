@@ -1,0 +1,363 @@
+/* ─── Decision Inbox (Phase 13 — Fleet Governance Rollout, TASK 16) ──────────
+   Tokens only (see board.css's own header comment) — no new one-off colors or
+   spacing values outside the --ak-* scale.
+*/
+
+.di-wrap { display: flex; flex-direction: column; gap: var(--ak-sp-16); }
+
+/* ── top bar ── */
+.di-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--ak-sp-12);
+}
+.di-brand { display: flex; align-items: center; gap: var(--ak-sp-8); }
+.di-logo {
+  display: flex; align-items: center; justify-content: center;
+  width: 24px; height: 24px;
+  border-radius: var(--ak-radius-sm);
+  background: var(--ak-machine);
+  color: var(--ak-canvas);
+  font-weight: 700; font-size: 13px;
+}
+.di-brand-name { font-weight: 600; font-size: 15px; color: var(--ak-text-primary); }
+
+.di-pills { display: flex; align-items: center; gap: var(--ak-sp-8); flex-wrap: wrap; }
+.di-pill {
+  display: inline-flex; align-items: center; gap: var(--ak-sp-6);
+  font-family: var(--ak-font-mono);
+  font-size: 10.5px; font-weight: 600; letter-spacing: .03em;
+  padding: var(--ak-sp-5) var(--ak-sp-12);
+  border-radius: var(--ak-radius-pill);
+  border: 1px solid transparent;
+}
+.di-pill-human {
+  color: var(--ak-human);
+  background: color-mix(in oklch, var(--ak-human), transparent 88%);
+  border-color: color-mix(in oklch, var(--ak-human), transparent 55%);
+}
+.di-pill-dot {
+  width: 6px; height: 6px; border-radius: var(--ak-radius-round);
+  background: var(--ak-human);
+  animation: di-pulse 2s ease-in-out infinite;
+}
+@keyframes di-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: .5; transform: scale(1.3); }
+}
+@media (prefers-reduced-motion: reduce) { .di-pill-dot { animation: none; } }
+.di-pill-machine {
+  color: var(--ak-machine);
+  background: color-mix(in oklch, var(--ak-machine), transparent 88%);
+  border-color: color-mix(in oklch, var(--ak-machine), transparent 55%);
+}
+/* A disconnected fleet must never read the same as a quiet one — its own
+   warn-colored pill, never just the absence of the machine pill above. */
+.di-pill-warn {
+  color: var(--ak-warn);
+  background: color-mix(in oklch, var(--ak-warn), transparent 88%);
+  border-color: color-mix(in oklch, var(--ak-warn), transparent 55%);
+}
+.di-pill-ghost {
+  color: var(--ak-text-faint);
+  background: var(--ak-surface-1);
+  border-color: var(--ak-border-subtle);
+  font: inherit;
+  cursor: pointer;
+}
+.di-pill-ghost:hover, .di-pill-ghost:focus-visible { color: var(--ak-text-secondary); }
+
+/* ── shortcut map overlay ── */
+.di-shortcuts-backdrop {
+  position: fixed; inset: 0;
+  background: color-mix(in oklch, var(--ak-canvas), transparent 25%);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 60;
+}
+.di-shortcuts-modal {
+  width: min(420px, 92vw);
+  max-height: 80vh;
+  overflow-y: auto;
+  padding: var(--ak-sp-16);
+  border: 1px solid var(--ak-border);
+  border-radius: var(--ak-radius-panel);
+  background: var(--ak-surface-1);
+}
+.di-shortcuts-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: var(--ak-sp-12); }
+.di-shortcuts-head h3 { margin: 0; font-size: 14px; color: var(--ak-text-primary); }
+.di-shortcuts-list { display: flex; flex-direction: column; gap: var(--ak-sp-10); margin: 0; }
+.di-shortcuts-row { display: flex; align-items: baseline; gap: var(--ak-sp-12); }
+.di-shortcuts-row dt { flex: none; min-width: 56px; margin: 0; }
+.di-shortcuts-row dt kbd {
+  font-family: var(--ak-font-mono);
+  background: var(--ak-surface-2);
+  border: 1px solid var(--ak-border);
+  border-radius: var(--ak-radius-bar);
+  padding: 2px 6px;
+  font-size: 11px;
+}
+.di-shortcuts-row dd { margin: 0; font-size: 12.5px; color: var(--ak-text-secondary); }
+
+/* ── body grid ── */
+.di-grid {
+  display: grid;
+  grid-template-columns: 1fr 372px;
+  gap: 1px;
+  background: var(--ak-hairline);
+}
+.di-left, .di-side { background: var(--ak-canvas); padding-right: var(--ak-sp-16); }
+.di-side { padding-left: var(--ak-sp-16); padding-right: 0; }
+
+.di-section-row { display: flex; align-items: center; justify-content: space-between; gap: var(--ak-sp-12); padding: var(--ak-sp-8) 0; }
+.di-section-rule {
+  font-family: var(--ak-font-mono);
+  font-size: 11px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase;
+  color: var(--ak-text-faint);
+  margin: 0;
+}
+.di-section-rule-lime { color: var(--ak-machine); margin-top: var(--ak-sp-20); padding: var(--ak-sp-8) 0; }
+
+.di-group-toggle {
+  display: flex; align-items: center; gap: var(--ak-sp-6);
+  font-size: 12px; color: var(--ak-text-muted); cursor: pointer;
+}
+
+.di-hintbar {
+  display: flex; align-items: center; gap: var(--ak-sp-14);
+  font-size: 11px; color: var(--ak-text-faint);
+  padding: var(--ak-sp-6) var(--ak-sp-10);
+  border: 1px solid var(--ak-border-subtle);
+  border-radius: var(--ak-radius-row);
+  background: var(--ak-surface-1);
+  margin-bottom: var(--ak-sp-8);
+}
+.di-hintbar kbd {
+  font-family: var(--ak-font-mono);
+  background: var(--ak-surface-2);
+  border: 1px solid var(--ak-border);
+  border-radius: var(--ak-radius-bar);
+  padding: 1px 5px;
+  font-size: 10px;
+}
+.di-hintbar-dismiss { margin-left: auto; background: none; border: none; color: var(--ak-text-faint); cursor: pointer; }
+
+.di-skel { display: flex; flex-direction: column; gap: var(--ak-sp-10); padding: var(--ak-sp-8) 0; }
+
+.di-empty {
+  padding: var(--ak-sp-24) var(--ak-sp-12);
+  text-align: center;
+  color: var(--ak-text-secondary);
+}
+.di-empty p { margin: 0; }
+.di-empty-sub { margin-top: var(--ak-sp-6) !important; font-size: 12.5px; color: var(--ak-text-faint); }
+
+.di-group { margin-bottom: var(--ak-sp-8); }
+.di-group-head {
+  font-family: var(--ak-font-mono);
+  font-size: 11px; font-weight: 600; color: var(--ak-text-muted);
+  margin: var(--ak-sp-8) 0;
+}
+.di-cards { display: flex; flex-direction: column; gap: var(--ak-sp-11); }
+
+/* ── decision card ── */
+.di-card {
+  display: flex; flex-direction: column; gap: var(--ak-sp-8);
+  padding: var(--ak-sp-12) var(--ak-pad-card);
+  border: 1px solid var(--ak-border);
+  border-radius: var(--ak-radius-card);
+  background: var(--ak-surface-1);
+  /* Literal 160ms, not --motion-fast (already "120ms ease-out" as ONE token —
+     appending another " ease-out" after it made this whole declaration
+     invalid CSS, silently dropped, so .leaving used to snap instantly
+     instead of collapsing. Found auditing this exact rule. */
+  transition: height 160ms ease-out, opacity 160ms ease-out, margin 160ms ease-out, padding 160ms ease-out;
+  /* Gate arrival: a genuinely NEW decision (a fresh `item.id`, so a fresh
+     mount — React keys `.di-cards`' map by id) slides+fades in once. Cards
+     that just re-render (selection, idle-timer tick) never re-mount, so this
+     never replays for them. */
+  animation: di-arrive 200ms ease-out;
+}
+@keyframes di-arrive {
+  from { opacity: 0; transform: translateY(-6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.di-card.sel { border-color: color-mix(in oklch, var(--ak-human), transparent 45%); }
+.di-card.leaving {
+  opacity: 0;
+  height: 0 !important;
+  padding-top: 0; padding-bottom: 0;
+  margin-bottom: calc(-1 * var(--ak-sp-11));
+  overflow: hidden;
+  pointer-events: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .di-card { transition: none; animation: none; }
+}
+.di-card-escalation { border-left: 3px solid var(--ak-warn); background: color-mix(in oklch, var(--ak-warn), transparent 94%); }
+.di-card-conflict { border-left: 3px solid var(--ak-warn); background: color-mix(in oklch, var(--ak-warn), transparent 94%); }
+
+.di-card-head { display: flex; align-items: center; gap: var(--ak-sp-10); flex-wrap: wrap; }
+.di-kind-label { font-size: 9.5px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--ak-human); }
+.di-card-conflict .di-kind-label, .di-card-escalation .di-kind-label { color: var(--ak-warn); }
+.di-meta { font-size: 11px; color: var(--ak-text-muted); }
+.di-idle { margin-left: auto; font-family: var(--ak-font-mono); font-size: 11px; color: var(--ak-text-faint); }
+.di-idle.urgent { color: var(--ak-warn); font-weight: 600; }
+
+.di-verdict { margin: 0; font-size: 14.5px; font-weight: 500; line-height: 1.4; color: var(--ak-text-primary); }
+
+.di-evidence { display: flex; flex-direction: column; gap: var(--ak-sp-6); }
+.di-code {
+  margin: 0;
+  font-size: 12px;
+  padding: var(--ak-sp-8) var(--ak-sp-10);
+  border-radius: var(--ak-radius-sm);
+  background: var(--ak-surface-0);
+  border: 1px solid var(--ak-border-subtle);
+  color: var(--ak-text-secondary);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 160px;
+  overflow-y: auto;
+}
+.di-code-output { color: var(--ak-warn); }
+.di-consequence { margin: 0; font-size: 12.5px; color: var(--ak-warn); }
+
+.di-option { display: flex; align-items: center; gap: var(--ak-sp-8); padding: var(--ak-sp-6) var(--ak-sp-8); border-radius: var(--ak-radius-sm); background: var(--ak-surface-0); }
+.di-option.rec { border: 1px solid color-mix(in oklch, var(--ak-machine), transparent 55%); }
+.di-option-letter { font-weight: 700; color: var(--ak-text-faint); }
+.di-option-text { flex: 1; font-size: 12.5px; color: var(--ak-text-secondary); }
+.di-option-rec { font-size: 10px; color: var(--ak-machine); text-transform: uppercase; }
+
+.di-meta-strip { display: flex; gap: var(--ak-sp-10); font-size: 11px; color: var(--ak-text-faint); }
+.di-file-chip {
+  display: inline-block;
+  font-size: 11px;
+  color: var(--ak-warn);
+  background: color-mix(in oklch, var(--ak-warn), transparent 90%);
+  border: 1px solid color-mix(in oklch, var(--ak-warn), transparent 55%);
+  border-radius: var(--ak-radius-pill);
+  padding: var(--ak-sp-3) var(--ak-sp-10);
+  margin-right: var(--ak-sp-6);
+}
+.di-escalation-read { margin: 0; font-size: 12.5px; color: var(--ak-text-secondary); font-style: italic; }
+.di-burn { margin: 0; font-size: 11px; color: var(--ak-text-faint); }
+.di-steps { margin: 0; padding-left: var(--ak-sp-18); font-size: 12.5px; color: var(--ak-text-secondary); }
+
+/* ── actions ── */
+.di-actions { display: flex; flex-wrap: wrap; gap: var(--ak-sp-8); margin-top: var(--ak-sp-4); }
+.di-btn {
+  font-family: var(--ak-font-mono);
+  font-size: 11px; font-weight: 600; letter-spacing: .02em;
+  padding: var(--ak-sp-6) var(--ak-sp-12);
+  border-radius: var(--ak-radius-bar);
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: background-color var(--motion-fast, 120ms);
+}
+.di-btn-primary { color: var(--ak-canvas); background: var(--ak-human); }
+.di-btn-primary:hover { background: color-mix(in oklch, var(--ak-human), white 15%); }
+.di-btn-secondary {
+  color: var(--ak-text-secondary);
+  background: var(--ak-surface-2);
+  border-color: var(--ak-border);
+}
+.di-btn-secondary:hover { background: var(--ak-surface-3); }
+.di-btn-ghost { color: var(--ak-text-faint); background: none; }
+.di-btn-ghost:hover { color: var(--ak-text-secondary); }
+@media (prefers-reduced-motion: reduce) { .di-btn { transition: none; } }
+
+.di-takeover { display: flex; gap: var(--ak-sp-6); flex: 1; min-width: 220px; }
+.di-input {
+  flex: 1;
+  font-size: 12px;
+  padding: var(--ak-sp-6) var(--ak-sp-8);
+  border-radius: var(--ak-radius-sm);
+  border: 1px solid var(--ak-border);
+  background: var(--ak-surface-0);
+  color: var(--ak-text-primary);
+}
+
+.di-footnote { margin: 0; font-size: 10.5px; color: var(--ak-text-faint); }
+.di-open-link {
+  align-self: flex-start;
+  background: none; border: none; padding: 0;
+  font-size: 11px; color: var(--ak-text-faint);
+  cursor: pointer;
+}
+.di-open-link:hover { color: var(--ak-human); }
+
+.di-audit-link { font-size: 12.5px; color: var(--ak-text-secondary); }
+.di-link-btn { background: none; border: none; padding: 0; color: var(--ak-human); font-size: 12.5px; cursor: pointer; text-decoration: underline; }
+
+/* ── right rail ── */
+.di-side { display: flex; flex-direction: column; gap: var(--ak-sp-16); }
+.di-side-card {
+  display: flex; flex-direction: column; gap: var(--ak-sp-8);
+  padding: var(--ak-pad-card);
+  border: 1px solid var(--ak-border-subtle);
+  border-radius: var(--ak-radius-panel);
+  background: var(--ak-surface-0);
+}
+.di-side-head {
+  font-family: var(--ak-font-mono);
+  font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
+  color: var(--ak-text-faint);
+  margin: 0;
+}
+.di-side-empty { margin: 0; font-size: 12px; color: var(--ak-text-faint); }
+.di-side-hint { margin: 0; font-size: 11px; color: var(--ak-text-faint); }
+
+.di-fleet-list, .di-autonomy-list { list-style: none; display: flex; flex-direction: column; gap: var(--ak-sp-6); }
+.di-fleet-row { display: flex; align-items: center; gap: var(--ak-sp-8); }
+.di-dot { width: 7px; height: 7px; border-radius: var(--ak-radius-round); flex: none; }
+.di-dot-busy { background: var(--ak-machine); animation: di-pulse 2s ease-in-out infinite; }
+.di-dot-idle { background: var(--ak-track); }
+@media (prefers-reduced-motion: reduce) { .di-dot-busy { animation: none; } }
+.di-fleet-name { font-size: 12px; color: var(--ak-text-secondary); flex: none; }
+.di-fleet-model { font-size: 10.5px; color: var(--ak-text-faint); }
+.di-fleet-activity { margin-left: auto; font-size: 11px; color: var(--ak-text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 140px; }
+/* The run's CURRENT plan step — the one live, changing fact on this row. */
+.di-fleet-activity-live { animation: di-pulse-text 2s ease-in-out infinite; }
+@keyframes di-pulse-text { 0%, 100% { opacity: 1; } 50% { opacity: .6; } }
+@media (prefers-reduced-motion: reduce) { .di-fleet-activity-live { animation: none; } }
+
+.di-autonomy-row { display: flex; align-items: center; gap: var(--ak-sp-8); }
+.di-autonomy-name { font-size: 12px; color: var(--ak-text-secondary); flex: none; max-width: 100px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.di-notches { display: flex; gap: 2px; }
+.di-notch { width: 8px; height: 4px; border-radius: var(--ak-radius-bar); background: var(--ak-track); }
+.di-notch.on { background: var(--ak-human); }
+.di-autonomy-label { margin-left: auto; font-size: 10.5px; color: var(--ak-text-faint); }
+
+.di-spend-num { margin: 0; font-family: var(--ak-font-mono); font-size: 24px; font-weight: 700; color: var(--ak-text-primary); }
+
+/* ── responsive: right rail collapses to a header strip below ~1080px ──
+   The React side swaps in the <details> markup itself (see inbox.tsx's
+   useViewportWidth) — this just lays out that strip and pulls it above the
+   card list via `order`, since DOM order stays "left, then side" either way. */
+@media (max-width: 1080px) {
+  .di-grid { grid-template-columns: 1fr; }
+  .di-side-strip {
+    order: -1;
+    background: var(--ak-surface-0);
+    border: 1px solid var(--ak-border-subtle);
+    border-radius: var(--ak-radius-panel);
+    padding: 0 var(--ak-pad-card);
+  }
+  .di-side-strip-summary {
+    cursor: pointer;
+    list-style: none;
+    padding: var(--ak-sp-10) 0;
+    font-family: var(--ak-font-mono);
+    font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
+    color: var(--ak-text-faint);
+  }
+  .di-side-strip-summary::-webkit-details-marker { display: none; }
+  .di-side-strip-summary::before { content: "▸ "; }
+  .di-side-strip[open] .di-side-strip-summary::before { content: "▾ "; }
+  .di-side-strip-body {
+    display: flex; flex-direction: column; gap: var(--ak-sp-12);
+    padding-bottom: var(--ak-sp-12);
+  }
+}

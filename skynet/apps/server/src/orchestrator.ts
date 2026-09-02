@@ -1792,6 +1792,22 @@ export class Orchestrator {
     return `${workspaceId}:${credentialId ?? provider}`;
   }
 
+  /** Every provider key currently marked depleted (out of credits/quota) for a
+   *  workspace — the ONE fleet-level source a "provider key needs attention"
+   *  banner reads, so an operator sees a single signal instead of the
+   *  per-run billing escalation `tripKeyBreaker` ALSO still raises (kept,
+   *  unchanged — each affected run still needs its own resume/reassign
+   *  decision once the key's topped up; this is additive visibility, not a
+   *  replacement for that). */
+  listDepletedKeys(workspaceId: string): { credentialId: string; reason: string; at: number }[] {
+    const prefix = `${workspaceId}:`;
+    const out: { credentialId: string; reason: string; at: number }[] = [];
+    for (const [key, v] of this.depletedKeys) {
+      if (key.startsWith(prefix)) out.push({ credentialId: key.slice(prefix.length), reason: v.reason, at: v.at });
+    }
+    return out;
+  }
+
   /**
    * Trip the key-health breaker for a run that failed on a billing wall (out of
    * credits/quota). Marks the credential depleted — so `providerUsable` refuses

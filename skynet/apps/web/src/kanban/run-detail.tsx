@@ -65,7 +65,7 @@ export function RunDetailView({
   onBack: () => void;
   backLabel: string;
 }) {
-  const { runs, projects, fleet, queue, pauseAgent, resumeAgent, stopAgent } = useStore();
+  const { runs, projects, fleet, queue, pauseAgent, resumeAgent, stopAgent, wsPhase } = useStore();
   const confirm = useConfirm();
   const project = projects.find((p) => p.id === agent.projectId);
   const gate = hitlFor(queue, agent.id);
@@ -88,6 +88,11 @@ export function RunDetailView({
   };
 
   const bullets = APPROVAL_BULLETS[project?.approvalLevel ?? "trusted"];
+  // Below run-detail.css's 1000px breakpoint the plan column becomes an
+  // off-canvas drawer (CSS-only positioning) — this just tracks open/closed.
+  // Harmless above the breakpoint: the CSS drawer rules only apply under it,
+  // so toggling this has no visual effect on a wide viewport.
+  const [planOpen, setPlanOpen] = useState(false);
 
   return (
     <div className="vw rd-run-detail">
@@ -101,9 +106,12 @@ export function RunDetailView({
             run #{agent.id.slice(-6)} · {agent.name}
           </span>
           {n > 0 && (
-            <span className="rd-step-chip">
+            <button type="button" className="rd-step-chip" onClick={() => setPlanOpen(true)} title="Open the full plan">
               STEP {Math.min(i + 1, n)} OF {n} · {curStep(agent)}
-            </span>
+            </button>
+          )}
+          {wsPhase !== "open" && (
+            <span className="rd-disconnect-pill" role="status">⚠ RECONNECTING</span>
           )}
         </div>
         <div className="rd-meta-row">
@@ -150,7 +158,12 @@ export function RunDetailView({
       </div>
 
       <div className="rd-grid">
-        <div className="rd-col rd-plan-col">
+        {/* Below the 1000px breakpoint this same column becomes an off-canvas
+            drawer (run-detail.css) — the backdrop only renders/is visible
+            there (display:none above it), so it's inert on a wide viewport. */}
+        {planOpen && <div className="rd-plan-backdrop" role="presentation" onClick={() => setPlanOpen(false)} />}
+        <div className={"rd-col rd-plan-col" + (planOpen ? " rd-plan-col-open" : "")}>
+          <button type="button" className="rd-plan-close" onClick={() => setPlanOpen(false)} aria-label="Close the plan">✕</button>
           <div className="rd-panel-title">THE PLAN IT'S FOLLOWING</div>
           <div className="rd-plan-list">
             {agent.plan.length === 0 && <div className="rd-empty">No plan yet — the agent hasn't reported its steps.</div>}
@@ -205,7 +218,7 @@ export function RunDetailView({
           </div>
           {collisions.length > 0 && (
             <div className="rd-collisions">
-              <div className="rd-collisions-title">FILE COLLISIONS</div>
+              <div className="rd-collisions-title" aria-live="polite">FILE COLLISIONS · {collisions.length}</div>
               {collisions.map((f) => (
                 <div key={f} className="rd-collision-row">
                   {f}

@@ -146,7 +146,7 @@
   margin: 0;
 }
 .rv-uncertainty {
-  border-left: 2px solid var(--ak-warn);
+  border-left: 3px solid var(--ak-warn);
   padding-left: var(--ak-sp-10);
   display: flex;
   flex-direction: column;
@@ -182,6 +182,13 @@
   font-size: 13px;
   text-align: left;
   cursor: pointer;
+  /* Gate arrival — a freshly-listed diff group (a new run's own first render)
+     slides+fades in once, same treatment as the Decision Inbox's cards. */
+  animation: rv-arrive 200ms ease-out;
+}
+@keyframes rv-arrive {
+  from { opacity: 0; transform: translateY(-6px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 .rv-group:hover {
   border-color: var(--ak-border-strong);
@@ -195,8 +202,11 @@
   margin-left: auto;
 }
 .rv-group-contended {
-  border-color: var(--ak-warn);
+  border-left: 3px solid var(--ak-warn);
   background: rgba(242, 180, 92, 0.08);
+}
+@media (prefers-reduced-motion: reduce) {
+  .rv-group { animation: none; }
 }
 .rv-group-contended-note {
   color: var(--ak-warn);
@@ -286,13 +296,14 @@
   padding: var(--ak-sp-7) var(--ak-sp-8);
   border-radius: var(--ak-radius-row);
   font-size: 12.5px;
+  border: 1px solid transparent;
 }
 .rv-queue-human {
   background: var(--ak-surface-2);
-  border: 1px solid var(--ak-human);
+  border-left: 3px solid var(--ak-human);
 }
 .rv-queue-auto {
-  border: 1px solid transparent;
+  border-color: transparent;
 }
 .rv-queue-pos {
   font: 11px var(--ak-font-mono);
@@ -328,4 +339,20 @@
   .rv-grid {
     grid-template-columns: 1fr;
   }
+  /* The risk read must land above the diff, never below — DOM order is
+     main-col (diff) then side-col (risk), so this reorders visually. */
+  .rv-side-col { order: -1; }
+}
+
+/* Disconnect pill — same wsPhase-driven treatment as the Decision Inbox's
+   header pill (inbox.tsx/.css) and Run Detail's (run-detail.css). */
+.rv-disconnect-pill {
+  margin-left: var(--ak-sp-8);
+  font: 10.5px var(--ak-font-mono);
+  letter-spacing: 0.02em;
+  color: var(--ak-warn);
+  background: color-mix(in oklch, var(--ak-warn), transparent 88%);
+  border: 1px solid color-mix(in oklch, var(--ak-warn), transparent 55%);
+  border-radius: var(--ak-radius-bar);
+  padding: 2px var(--ak-sp-8);
 }

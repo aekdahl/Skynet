@@ -23,7 +23,7 @@
   0%, 100% { translate: 0 0; }
   50% { translate: 0 -5px; }
 }
-.ak-pulse-dot { animation: ak-pulse 2.1s infinite; }
+.ak-pulse-dot { animation: ak-pulse 2s infinite; }
 .ak-sweep-bar {
   background-image: repeating-linear-gradient(90deg, var(--ak-machine) 0 40px, transparent 40px 80px);
   background-size: 120px 100%;

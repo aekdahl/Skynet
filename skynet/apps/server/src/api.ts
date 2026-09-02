@@ -337,6 +337,17 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     }
   });
 
+  // TASK 23 hardening — the ONE fleet-level source for "a provider key needs
+  // attention", so the web app can show a single banner instead of leaving
+  // the operator to notice N duplicated per-run billing escalations.
+  app.get("/api/depleted-keys", async (req, reply) => {
+    try {
+      return ops.listDepletedKeys(ws(req));
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
   app.post<{ Params: { id: string } }>("/api/hitl/:id/resolve", async (req, reply) => {
     const body = ResolveRequest.safeParse(req.body);
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() });

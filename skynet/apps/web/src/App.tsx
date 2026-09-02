@@ -5,7 +5,7 @@ import { setDesktopBadge, focusDesktopWindow } from "./lib/desktop"; // [desktop
 import { openQueue, hitlFor } from "./lib/derive";
 import { parseHash, toHash } from "./lib/routing"; // [w7] deep links
 import { gateView } from "./lib/dev"; // dev-only pages hidden from release builds
-import { TitleBar, OpSidebar, OpStatusBar, ConnectingShell } from "./components/shell";
+import { TitleBar, OpSidebar, OpStatusBar, ConnectingShell, DepletedKeyBanner } from "./components/shell";
 import { StewardDock } from "./components/steward-dock";
 import { CommandPalette } from "./components/command-palette";
 import { useTweaks } from "./components/tweaks";
@@ -30,10 +30,12 @@ import { SimulationView } from "./views/simulation";
 import { RoadmapView } from "./views/roadmap";
 import { AgentDetailView } from "./views/agent-detail";
 import { DesignTokensPreview } from "./views/design-tokens-preview";
+import { DecisionInboxView } from "./kanban/inbox";
 
 export type ViewName =
   | "home"
   | "queue"
+  | "decisionInbox"
   | "audit"
   | "projects"
   | "fleet"
@@ -53,6 +55,7 @@ const VIEW_LABEL: Record<string, string> = {
   projects: "Projects",
   fleet: "Fleet",
   queue: "Inbox",
+  decisionInbox: "Decisions",
   audit: "Audit",
   integrations: "Integrations",
   merges: "Ready to merge",
@@ -304,6 +307,7 @@ export function App() {
                 </button>
               </div>
             )}
+            <DepletedKeyBanner />
             {store.loaded && view === "home" && (
               <HomeView
                 now={now}
@@ -362,6 +366,9 @@ export function App() {
             )}
             {store.loaded && view === "queue" && (
               <QueueView selectedIdx={selIdx} onSelectIdx={setSelIdx} onOpen={openTask} now={now} />
+            )}
+            {store.loaded && view === "decisionInbox" && (
+              <DecisionInboxView onOpenTask={openTask} onOpenAudit={() => setView("audit")} now={now} />
             )}
             {store.loaded && view === "audit" && (
               <AuditView now={now} onOpenTask={openTask} />

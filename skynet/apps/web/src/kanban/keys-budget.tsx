@@ -19,6 +19,7 @@ import { computeUsageRollup, fmtCost, providerInfo, type UsageRollup } from "../
 import * as api from "../lib/client";
 import { useStore, useNow } from "../lib/store";
 import { SafetyRailsCard } from "./rules";
+import { toast } from "../components/toast";
 
 // UI-only warn line drawn on the budget meter — 80% of the daily budget. Not
 // a new backend concept: purely a visual marker so an operator sees the
@@ -97,6 +98,10 @@ function ProviderKeysCard({ project, runs }: { project: Project; runs: TaskRun[]
   const toggleOrgOwned = async (id: string, current: boolean) => {
     try {
       await api.setCredentialOrgOwned(id, !current);
+    } catch (e) {
+      // Previously silent — a rejection (already-resolved, network blip)
+      // left the checkbox re-synced with zero feedback about WHY it reverted.
+      toast(e instanceof Error ? e.message : "Couldn't update that.");
     } finally {
       reload();
     }
@@ -287,11 +292,14 @@ function DailyBudgetCard({ project, runs }: { project: Project; runs: TaskRun[] 
 
 // ── Top-level panel ──────────────────────────────────────────────────────────
 export function KeysBudgetPanel({ project, runs }: { project: Project; runs: TaskRun[] }) {
-  const { updateProject } = useStore();
+  const { updateProject, wsPhase } = useStore();
   return (
     <div className="kbb-wrap">
       <div className="kbb-header">
-        <h2 className="kbb-title">Boundaries · {project.name}</h2>
+        <h2 className="kbb-title">
+          Boundaries · {project.name}
+          {wsPhase !== "open" && <span className="kbb-disconnect-pill" role="status">⚠ RECONNECTING</span>}
+        </h2>
         <p className="kbb-sub">one-time setup · changes are written to the audit trail</p>
       </div>
       <ProviderKeysCard project={project} runs={runs} />

@@ -682,7 +682,15 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     return {
       ...state,
       resolveHitl: async (id, action, extra) => {
-        await api.resolveHitl(id, { action, ...extra });
+        // TASK 16 (Decision Inbox) needs failure feedback — resolveHitl had no
+        // error handling anywhere in the app before this (an already-resolved
+        // gate, a network blip) became a silent unhandled rejection. Matches
+        // the try/catch+toast idiom every other mutation here already uses.
+        try {
+          await api.resolveHitl(id, { action, ...extra });
+        } catch (e) {
+          toast(serverMessage(e, "Couldn't resolve that decision."));
+        }
       },
       sendAgentMessage: async (id, text) => {
         const { reply } = await api.sendAgentMessage(id, text);
@@ -794,7 +802,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         }
       },
       removeApprovalRule: async (projectId, ruleId) => {
-        await api.removeApprovalRule(projectId, ruleId);
+        try {
+          await api.removeApprovalRule(projectId, ruleId);
+        } catch (e) {
+          if (e instanceof api.ApiError) toast(serverMessage(e, "Couldn't remove that pattern."));
+          else throw e;
+        }
       },
       deleteProject: async (id) => {
         await api.deleteProject(id);

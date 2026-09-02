@@ -47,7 +47,7 @@ export function ReviewMergeView({
   onBack: () => void;
   backLabel: string;
 }) {
-  const { runs, tasks, projects, resolveHitl, queue, readOnly } = useStore();
+  const { runs, tasks, projects, resolveHitl, queue, readOnly, wsPhase } = useStore();
   const item = hitlFor(queue, agent.id);
   const task = tasks.find((t) => t.runId === agent.id);
   const project = projects.find((p) => p.id === agent.projectId);
@@ -105,7 +105,10 @@ export function ReviewMergeView({
     <div className="vw rv-review-merge">
       <button className="rv-back" onClick={onBack}>← {backLabel}</button>
       <div className="rv-header">
-        <div className="rv-title">{agent.name}</div>
+        <div className="rv-title">
+          {agent.name}
+          {wsPhase !== "open" && <span className="rv-disconnect-pill" role="status">⚠ RECONNECTING</span>}
+        </div>
         <div className="rv-meta-row">
           <span>run #{agent.id.slice(-6)}</span>
           <span className="rv-meta-sep">·</span>
@@ -164,7 +167,12 @@ export function ReviewMergeView({
             <div className="rv-empty">No walkthrough was drafted for this diff.</div>
           )}
 
-          <div className="rv-panel-title rv-groups-title">DIFF · GROUPED BY INTENT, NOT BY FILE</div>
+          <div className="rv-panel-title rv-groups-title">
+            DIFF · GROUPED BY INTENT, NOT BY FILE
+            {collisions.length > 0 && (
+              <span aria-live="polite"> · {collisions.length} file{collisions.length === 1 ? "" : "s"} also being edited elsewhere</span>
+            )}
+          </div>
           <div className="rv-groups">
             {groups.length === 0 && (
               <div className="rv-empty">Couldn't group this diff — see the raw changes below.</div>

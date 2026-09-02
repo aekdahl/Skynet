@@ -37,8 +37,10 @@
 }
 .kbb-key-row-warn { border-color: color-mix(in oklch, var(--ak-warn), transparent 65%); }
 .kbb-dot { width: 7px; height: 7px; border-radius: var(--ak-radius-round); flex: none; }
-.kbb-dot-active { background: var(--ak-machine); box-shadow: var(--ak-halo-lime); }
+.kbb-dot-active { background: var(--ak-machine); box-shadow: var(--ak-halo-lime); animation: kbb-pulse 2s ease-in-out infinite; }
 .kbb-dot-paused { background: var(--ak-warn); box-shadow: var(--ak-halo-amber); }
+@keyframes kbb-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .5; } }
+@media (prefers-reduced-motion: reduce) { .kbb-dot-active { animation: none; } }
 .kbb-key-glyph { font-family: var(--ak-font-mono); flex: none; }
 .kbb-key-label { color: var(--ak-text-primary); font-size: 13px; }
 .kbb-key-fp { color: var(--ak-text-faint); font-size: 11px; }
@@ -56,7 +58,17 @@
 
 /* ── Chip rows (allowlist / always-gated) ────────────────────────────────── */
 .kbb-chip-row { display: flex; align-items: center; gap: var(--ak-sp-8); flex-wrap: wrap; }
-.kbb-chip { display: inline-flex; align-items: center; gap: var(--ak-sp-5); font-family: var(--ak-font-mono); }
+.kbb-chip {
+  display: inline-flex; align-items: center; gap: var(--ak-sp-5); font-family: var(--ak-font-mono);
+  /* A freshly-added pattern (a fresh key — the chip list is keyed by rule id)
+     arrives the same way a Decision Inbox card does. */
+  animation: kbb-chip-arrive 200ms ease-out;
+}
+@keyframes kbb-chip-arrive {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@media (prefers-reduced-motion: reduce) { .kbb-chip { animation: none; } }
 .kbb-chip-remove { border: none; background: none; color: inherit; cursor: pointer; font-size: 12px; line-height: 1; padding: 0; }
 .kbb-chip-remove:focus-visible { outline: none; box-shadow: var(--ak-focus-ring); }
 .kbb-chip-add-wrap {
@@ -108,3 +120,22 @@
 .kbb-budget-row-runs { color: var(--ak-text-faint); font-size: 11px; }
 
 .kbb-cap-sentence { margin: 0; font-size: 12px; line-height: 1.6; color: var(--ak-text-muted); }
+
+/* Disconnect pill — same wsPhase-driven treatment as the other 5 screens. */
+.kbb-disconnect-pill {
+  font: 10.5px var(--ak-font-mono); letter-spacing: .02em; color: var(--ak-warn);
+  background: color-mix(in oklch, var(--ak-warn), transparent 88%);
+  border: 1px solid color-mix(in oklch, var(--ak-warn), transparent 55%);
+  border-radius: var(--ak-radius-bar); padding: 2px var(--ak-sp-8);
+}
+
+/* This panel is inline page content, not a floating drawer — "full-screen
+   sheet" here means: stop constraining it at all and let every fixed-width
+   input grow, rather than sitting artificially narrow inside its own card. */
+@media (max-width: 720px) {
+  .kbb-wrap { max-width: 100%; }
+  .kbb-card { padding: var(--ak-sp-10); }
+  .kbb-budget-input, .kbb-chip-add-input { width: auto; flex: 1; min-width: 60px; }
+  .kbb-key-row { gap: var(--ak-sp-6); }
+  .kbb-key-spend { margin-left: 0; }
+}

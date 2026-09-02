@@ -310,6 +310,11 @@ const ALLOW = new Set<string>([
   // secrets-audit.test.ts's "SecretService orgOwned" suite and
   // approval-rules-ops.test.ts respectively.
   "setCredentialOrgOwned", "addApprovalRule",
+  // TASK 23 hardening — the fleet-level depleted-key banner (App.tsx's
+  // DepletedKeyBanner) polls this directly on a fixed interval, not from a
+  // journey-driven user action. Server-side covered by
+  // orchestrator-depleted-keys.test.ts.
+  "fetchDepletedKeys",
 ]);
 
 describe("client API coverage", () => {
