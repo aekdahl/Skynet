@@ -11,7 +11,7 @@ import { execFile } from "node:child_process";
 import { createSign } from "node:crypto";
 import { promisify } from "node:util";
 import type { GithubInstallation, GithubRepo } from "@skynet/shared";
-import type { GitProvider, GithubIssue, MergeResult, PrRef, PrStatus } from "./types.js";
+import type { GitCommitAttribution, GitProvider, GithubIssue, MergeResult, PrRef, PrStatus } from "./types.js";
 import { gitBin } from "../git-bin.js";
 
 const exec = promisify(execFile);
@@ -222,11 +222,17 @@ export class GitHubProvider implements GitProvider {
     }
   }
 
-  async putFile(token: string, repo: string, path: string, content: string, sha: string, message: string): Promise<void> {
+  async putFile(token: string, repo: string, path: string, content: string, sha: string, message: string, attribution?: GitCommitAttribution): Promise<void> {
+    const trailer = attribution?.coAuthor ? `\n\nCo-authored-by: ${attribution.coAuthor.name} <${attribution.coAuthor.email}>` : "";
     await this.api(token, "PUT", `/repos/${repo}/contents/${path.replace(/^\/+/, "")}`, {
-      message,
+      message: `${message}${trailer}`,
       content: Buffer.from(content, "utf8").toString("base64"),
       sha,
+      // Contents API accepts an explicit author/committer identity per commit
+      // (docs.github.com/rest/repos/contents) — the approving human when set,
+      // else GitHub falls back to the token's own account, unchanged behavior
+      // for every caller that doesn't pass attribution.
+      ...(attribution ? { author: { name: attribution.authorName, email: attribution.authorEmail } } : {}),
     });
   }
 

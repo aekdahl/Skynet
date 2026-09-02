@@ -29,6 +29,8 @@ import type {
   ProviderInfo,
   Agent,
   RoadmapDoc,
+  RoadmapProposal,
+  RoadmapProposalState,
   Rule,
   Snapshot,
   SolutionBrief,
@@ -85,6 +87,11 @@ CREATE TABLE IF NOT EXISTS autonomy_overrides (project_id text PRIMARY KEY, data
 -- Roadmap doc cache (Phase 24) — one parsed RoadmapDoc per project, replaced
 -- wholesale on every sync.
 CREATE TABLE IF NOT EXISTS roadmap_docs (project_id text PRIMARY KEY, workspace_id text NOT NULL, data jsonb NOT NULL);
+-- Roadmap proposal governance (Phase 25 -- TASK 28) -- an agent's proposed
+-- edit to a project's roadmap doc; project-scoped like proposals above but
+-- a distinct collection (see @skynet/shared's RoadmapProposal).
+CREATE TABLE IF NOT EXISTS roadmap_proposals (id text PRIMARY KEY, workspace_id text NOT NULL, project_id text NOT NULL, state text NOT NULL, data jsonb NOT NULL);
+CREATE INDEX IF NOT EXISTS roadmap_proposals_project ON roadmap_proposals(project_id, state);
 CREATE INDEX IF NOT EXISTS runs_ws   ON runs(workspace_id);
 CREATE INDEX IF NOT EXISTS checkpoints_run ON checkpoints(run_id);
 CREATE INDEX IF NOT EXISTS hitl_ws     ON hitl_queue(workspace_id);
@@ -482,6 +489,30 @@ export class PostgresStore implements Store {
       [doc.projectId, doc.workspaceId, J(doc)],
     );
     return doc;
+  }
+
+  // ── roadmap proposals (Phase 25 — TASK 28, project-scoped) ────────────────
+  async getRoadmapProposal(id: string): Promise<RoadmapProposal | undefined> {
+    const { rows } = await this.pool.query<{ data: RoadmapProposal }>("SELECT data FROM roadmap_proposals WHERE id=$1", [id]);
+    return rows[0]?.data;
+  }
+  async putRoadmapProposal(proposal: RoadmapProposal): Promise<RoadmapProposal> {
+    await this.pool.query(
+      "INSERT INTO roadmap_proposals(id,workspace_id,project_id,state,data) VALUES($1,$2,$3,$4,$5::jsonb) " +
+        "ON CONFLICT(id) DO UPDATE SET workspace_id=$2, project_id=$3, state=$4, data=$5::jsonb",
+      [proposal.id, proposal.workspaceId, proposal.projectId, proposal.state, J(proposal)],
+    );
+    return proposal;
+  }
+  async deleteRoadmapProposal(id: string): Promise<void> {
+    await this.pool.query("DELETE FROM roadmap_proposals WHERE id=$1", [id]);
+  }
+  async listRoadmapProposalsForProject(projectId: string, opts: { state?: RoadmapProposalState } = {}): Promise<RoadmapProposal[]> {
+    const params: unknown[] = [projectId];
+    let sql = "SELECT data FROM roadmap_proposals WHERE project_id=$1";
+    if (opts.state != null) { params.push(opts.state); sql += ` AND state=$${params.length}`; }
+    const { rows } = await this.pool.query<{ data: RoadmapProposal }>(sql, params);
+    return rows.map((r) => r.data);
   }
 
   async getAutonomyOverride(projectId: string): Promise<AutonomyOverride | undefined> {

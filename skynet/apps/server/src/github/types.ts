@@ -112,8 +112,20 @@ export interface GitProvider {
    *  Returns null if the file/repo is absent. */
   getFile(token: string, repo: string, path: string): Promise<{ content: string; sha: string } | null>;
   /** Commit an updated file (single-file commit via the Contents API). `sha` is
-   *  the blob sha from getFile — GitHub rejects a stale sha, so edits are safe. */
-  putFile(token: string, repo: string, path: string, content: string, sha: string, message: string): Promise<void>;
+   *  the blob sha from getFile — GitHub rejects a stale sha, so edits are safe.
+   *  `attribution` (TASK 28's roadmap-proposal apply path only — every other
+   *  caller omits it) sets the commit's author to a real operator identity and
+   *  appends a `Co-authored-by:` trailer for the proposing agent. */
+  putFile(token: string, repo: string, path: string, content: string, sha: string, message: string, attribution?: GitCommitAttribution): Promise<void>;
+}
+
+/** See GitProvider.putFile's own doc comment. Deliberately NOT the same type
+ *  as local-repo-write.ts's `CommitAttribution` — same shape, but the two
+ *  files own their write paths independently (Contents-API vs local git). */
+export interface GitCommitAttribution {
+  authorName: string;
+  authorEmail: string;
+  coAuthor?: { name: string; email: string };
 }
 
 /** A GitHub issue, trimmed to what task import needs. */

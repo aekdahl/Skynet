@@ -25,6 +25,8 @@ import type {
   ProviderInfo,
   Agent,
   RoadmapDoc,
+  RoadmapProposal,
+  RoadmapProposalState,
   Rule,
   Snapshot,
   SolutionBrief,
@@ -61,6 +63,7 @@ export class MemoryStore implements Store {
   protected github = new Map<string, GithubConnection>(); // keyed by workspaceId
   protected workspaceSettings = new Map<string, WorkspaceSettings>(); // keyed by workspaceId
   protected roadmapDocs = new Map<string, RoadmapDoc>(); // keyed by projectId
+  protected roadmapProposals = new Map<string, RoadmapProposal>();
   protected policyVersions = new Map<string, PolicyVersion>(); // keyed by id
   protected githubTokens = new Map<string, string>(); // workspaceId → sealed PAT ciphertext
   protected serviceTokens = new Map<string, StoredServiceToken>(); // keyed by id (holds a hash, never the raw token)
@@ -230,6 +233,15 @@ export class MemoryStore implements Store {
 
   async getRoadmapDoc(projectId: string) { return this.roadmapDocs.get(projectId); }
   async putRoadmapDoc(doc: RoadmapDoc) { this.roadmapDocs.set(doc.projectId, doc); this.persist(); return doc; }
+
+  async getRoadmapProposal(id: string) { return this.roadmapProposals.get(id); }
+  async putRoadmapProposal(proposal: RoadmapProposal) { this.roadmapProposals.set(proposal.id, proposal); this.persist(); return proposal; }
+  async deleteRoadmapProposal(id: string) { this.roadmapProposals.delete(id); this.persist(); }
+  async listRoadmapProposalsForProject(projectId: string, opts: { state?: RoadmapProposalState } = {}) {
+    let list = [...this.roadmapProposals.values()].filter((p) => p.projectId === projectId);
+    if (opts.state != null) list = list.filter((p) => p.state === opts.state);
+    return list;
+  }
 
   async listPolicyVersions(ws: string) {
     return [...this.policyVersions.values()].filter((v) => v.workspaceId === ws).sort((a, b) => b.version - a.version);

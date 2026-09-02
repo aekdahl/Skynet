@@ -26,6 +26,8 @@ import type {
   ProviderInfo,
   Agent,
   RoadmapDoc,
+  RoadmapProposal,
+  RoadmapProposalState,
   Rule,
   Snapshot,
   SolutionBrief,
@@ -183,6 +185,14 @@ export interface Store {
   // by projectId; a re-sync overwrites wholesale.
   getRoadmapDoc(projectId: string): Promise<RoadmapDoc | undefined>;
   putRoadmapDoc(doc: RoadmapDoc): Promise<RoadmapDoc>;
+
+  // roadmap proposals (Phase 25 — TASK 28). Project-scoped, same shape as
+  // the kanban `Proposal` methods above but a distinct collection — see
+  // @skynet/shared's RoadmapProposal for why these are never the same thing.
+  getRoadmapProposal(id: string): Promise<RoadmapProposal | undefined>;
+  putRoadmapProposal(proposal: RoadmapProposal): Promise<RoadmapProposal>;
+  deleteRoadmapProposal(id: string): Promise<void>;
+  listRoadmapProposalsForProject(projectId: string, opts?: { state?: RoadmapProposalState }): Promise<RoadmapProposal[]>;
 
   // Command policy versions — versioned, per-workspace, git-like history of the
   // command-safety classification policy. listPolicyVersions is newest-first;

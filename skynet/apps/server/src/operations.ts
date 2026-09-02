@@ -51,6 +51,8 @@ import type {
   ResolveRequest,
   Resolution,
   RoadmapDoc,
+  RoadmapProposal,
+  ProposeRoadmapChangeRequest,
   SourceRef,
   Rule,
   SavePolicyVersionRequest,
@@ -111,6 +113,15 @@ import { askStewardWorkspace, askStewardWorkspaceStream, askStewardStream, resol
 import { contentHash, readProjectDoc, resolveRoadmapDoc, ROADMAP_PATHS } from "./steward/docs.js";
 import { parseRoadmapDoc } from "./roadmap/sync.js";
 import { localRepoHeadSha } from "./roadmap/repo-commit.js";
+import {
+  applyRoadmapProposalDiff,
+  diffRequiresHumanApproval,
+  findOpenProposalForSection,
+  joinProposal,
+  proposalIsStale,
+  proposalsConflict,
+} from "./roadmap/proposals.js";
+import { agentCoAuthor, AUTONOMOUS_APPLY_IDENTITY, operatorGitIdentity } from "./roadmap/attribution.js";
 import { draftBriefFromConversation, summarizeConversation } from "./steward/crystallize.js";
 import { scanRepo } from "./quality/scan.js";
 import { condenseProjectContext } from "./steward/context.js";
@@ -150,6 +161,37 @@ export class RoadmapConflictError extends Error {
   constructor() {
     super("The roadmap doc changed since this edit was drafted — refresh and try again.");
     this.name = "RoadmapConflictError";
+  }
+}
+
+/** A RoadmapProposal isn't `open` — already resolved, or held for a human to
+ *  untangle a conflict (Rule 4). 409. */
+export class RoadmapProposalNotOpenError extends Error {
+  constructor(state: string) {
+    super(`This roadmap proposal is "${state}", not open — nothing left to apply.`);
+    this.name = "RoadmapProposalNotOpenError";
+  }
+}
+
+/** Rule 2: a diff that removes a line or touches a promised date can NEVER be
+ *  applied without an explicit human approver — thrown by
+ *  Operations.applyRoadmapProposal before it even looks at the project's
+ *  autonomy detent, regardless of caller. 403. */
+export class RoadmapProposalNeedsHumanApprovalError extends Error {
+  constructor() {
+    super("This proposal removes content or touches a promised date — it always needs an explicit human approval, at any autonomy detent.");
+    this.name = "RoadmapProposalNeedsHumanApprovalError";
+  }
+}
+
+/** An autonomous (no operatorId) apply attempt on a project not at the
+ *  `unattended` autonomy detent — own-diff auto-merge for a roadmap proposal
+ *  follows the exact same gate as an ordinary agent diff (see
+ *  packages/shared/src/autonomy.ts's `ownDiffAutoMerge`). 403. */
+export class RoadmapProposalAutonomyGateError extends Error {
+  constructor() {
+    super("This project isn't at the Unattended autonomy detent — a human must approve this roadmap proposal.");
+    this.name = "RoadmapProposalAutonomyGateError";
   }
 }
 
@@ -3225,9 +3267,28 @@ export class Operations {
         syncedAt: now(),
         previousAst: previous?.ast ?? null,
       });
-      return await this.store.putRoadmapDoc(parsed);
+      const saved = await this.store.putRoadmapDoc(parsed);
+      // TASK 28, Rule 3 — "the repo wins": a human's direct commit may have
+      // already changed exactly what an open proposal targets. Diff every
+      // open proposal against THIS fresh parse and supersede any that no
+      // longer match — never applied from here on, whatever their state
+      // would otherwise have let through.
+      await this.supersedeStaleRoadmapProposals(projectId, saved);
+      return saved;
     } catch {
       return await this.store.putRoadmapDoc({ ...ahead, syncState: "unparseable" });
+    }
+  }
+
+  /** Rule 3's own half of syncProjectRoadmap — split out so it's independently
+   *  callable (a future manual "resync" action, or a test) without re-running
+   *  the parse itself. */
+  private async supersedeStaleRoadmapProposals(projectId: string, doc: RoadmapDoc): Promise<void> {
+    const open = await this.store.listRoadmapProposalsForProject(projectId, { state: "open" });
+    for (const proposal of open) {
+      if (proposalIsStale(proposal, doc)) {
+        await this.store.putRoadmapProposal({ ...proposal, state: "superseded" });
+      }
     }
   }
 
@@ -3256,6 +3317,149 @@ export class Operations {
       syncedProjectIds.push(project.id);
     }
     return { syncedProjectIds };
+  }
+
+  // ── roadmap proposal governance (Phase 25 — TASK 28) ──────────────────────
+
+  /**
+   * An agent proposes a change to one roadmap section. Rule 1: a second agent
+   * proposing against a section that already has an OPEN proposal joins/
+   * amends it rather than creating a second row. Rule 4: if the section is
+   * currently locked by a `held_conflict` proposal, the caller is simply
+   * queued (`blockedAgents`) against that held proposal instead — no new
+   * proposal is created while a human hasn't resolved the standing conflict.
+   * Otherwise a genuinely incompatible join (Rule 4 mid-flight) forks the
+   * section's existing open proposal AND this new one both into
+   * `held_conflict`, cross-linked via `conflictsWith`.
+   */
+  async proposeRoadmapChange(ws: string, projectId: string, input: ProposeRoadmapChangeRequest): Promise<RoadmapProposal> {
+    const project = await this.store.getProject(projectId);
+    if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
+    if (!(await this.store.getAgent(input.agentId))) throw new NotFoundError("Agent");
+
+    const existingForProject = await this.store.listRoadmapProposalsForProject(projectId);
+
+    // Rule 4 — the section is already locked pending a human's call. Queue
+    // the agent against whichever held_conflict proposal targets it (first
+    // match; a section can in principle collect more than one held pair over
+    // time, but only ever one active resolution at once) rather than
+    // creating anything new.
+    const locked = existingForProject.find((p) => p.section === input.section && p.state === "held_conflict");
+    if (locked) {
+      const blockedAgents = locked.blockedAgents.includes(input.agentId) ? locked.blockedAgents : [...locked.blockedAgents, input.agentId];
+      return await this.store.putRoadmapProposal({ ...locked, blockedAgents });
+    }
+
+    const incomingAsProposal: RoadmapProposal = {
+      id: this.uid("rp"),
+      workspaceId: ws,
+      projectId,
+      agentId: input.agentId,
+      section: input.section,
+      headline: input.headline,
+      diff: input.diff,
+      reasoning: input.reasoning,
+      impact: input.impact ?? { tasksCreated: [], questionsResolved: [], dependencies: [] },
+      respectedBoundaries: input.respectedBoundaries ?? [],
+      state: "open",
+      conflictsWith: [],
+      createdAt: now(),
+      idleMs: 0,
+      blockedAgents: [],
+    };
+
+    const openExisting = findOpenProposalForSection(existingForProject, input.section);
+    if (!openExisting) {
+      return await this.store.putRoadmapProposal(incomingAsProposal);
+    }
+
+    // Rule 4 — an incompatible overlap with the section's existing open
+    // proposal: a blind join would silently pick a winner, so instead BOTH
+    // fork into held_conflict, cross-linked, and further agent work on the
+    // section locks (Orchestrator's auto-pick checks this via
+    // roadmap/proposals.js's lockedSectionIds/taskBlockedByRoadmapLock).
+    if (proposalsConflict(openExisting, incomingAsProposal)) {
+      const heldExisting: RoadmapProposal = { ...openExisting, state: "held_conflict", conflictsWith: [...new Set([...openExisting.conflictsWith, incomingAsProposal.id])] };
+      const heldIncoming: RoadmapProposal = { ...incomingAsProposal, state: "held_conflict", conflictsWith: [...new Set([...incomingAsProposal.conflictsWith, openExisting.id])] };
+      await this.store.putRoadmapProposal(heldExisting);
+      return await this.store.putRoadmapProposal(heldIncoming);
+    }
+
+    // Rule 1 — compatible: join into the existing open proposal, same row.
+    const joined = joinProposal(openExisting, input);
+    return await this.store.putRoadmapProposal(joined);
+  }
+
+  /**
+   * Apply an approved (or auto-eligible) roadmap proposal: splices its diff
+   * onto the project's CURRENT roadmap doc and commits — via whichever write
+   * path the project already uses for a Steward roadmap edit
+   * (commitLocalRepoFile for a `repoPath` project, githubService.commitRepoFile
+   * for a GitHub-bound one) — with real attribution: the approving human (or,
+   * for an eligible autonomous apply, a distinct system identity — see
+   * roadmap/attribution.ts) as the commit AUTHOR, the proposing agent as a
+   * `Co-authored-by:` trailer.
+   *
+   * `opts.operatorId` set = an explicit human approval (the API route passes
+   * `req.principal!.operatorId`). Omitted = an autonomous/system attempt.
+   *
+   * Rule 2 is enforced FIRST, unconditionally, before this function reads
+   * the project's autonomy detent AT ALL: a diff that removes a line or
+   * touches a promised date throws RoadmapProposalNeedsHumanApprovalError
+   * the instant `opts.operatorId` is unset, full stop — there is no detent,
+   * override, or approvalLevel combination downstream of this check that can
+   * still reach the auto-apply branch for such a diff. Only once that's
+   * cleared does an operatorId-less call fall through to the ordinary
+   * own-diff auto-merge gate (`detentFor(project) === "unattended"` — the
+   * exact same notch packages/shared/src/autonomy.ts's `ownDiffAutoMerge`
+   * already uses for an agent's own code diff).
+   */
+  async applyRoadmapProposal(ws: string, projectId: string, proposalId: string, opts: { operatorId?: string } = {}): Promise<{ proposal: RoadmapProposal; committed: boolean; sha?: string }> {
+    const project = await this.store.getProject(projectId);
+    if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
+    const proposal = await this.store.getRoadmapProposal(proposalId);
+    if (!proposal || proposal.projectId !== projectId) throw new NotFoundError("Roadmap proposal");
+    if (proposal.state !== "open") throw new RoadmapProposalNotOpenError(proposal.state);
+
+    // Rule 2 — unconditional, checked before ANYTHING autonomy-related.
+    if (diffRequiresHumanApproval(proposal.diff) && !opts.operatorId) {
+      throw new RoadmapProposalNeedsHumanApprovalError();
+    }
+    if (!opts.operatorId && detentFor(project) !== "unattended") {
+      throw new RoadmapProposalAutonomyGateError();
+    }
+
+    const agent = await this.store.getAgent(proposal.agentId);
+    if (!agent) throw new NotFoundError("Agent");
+    const coAuthor = agentCoAuthor(agent);
+    const authorIdentity = opts.operatorId ? operatorGitIdentity(opts.operatorId) : AUTONOMOUS_APPLY_IDENTITY;
+    const message = `Skynet: ${proposal.headline} (roadmap proposal ${proposal.id})`;
+
+    if (!project.repoPath && !project.repo) throw new Error("This project has no bound repo to commit to.");
+    const current = await resolveRoadmapDoc(ws, project);
+    if (!current) throw new RoadmapConflictError();
+    const newContent = applyRoadmapProposalDiff(current.content, proposal.diff);
+
+    let committed: boolean;
+    let sha: string | undefined;
+    if (project.repoPath) {
+      const result = await commitLocalRepoFile(project.repoPath, current.path, newContent, current.content, message, { ...authorIdentity, coAuthor });
+      committed = result.committed;
+      sha = result.sha;
+    } else {
+      if (!current.sha) throw new RoadmapConflictError();
+      try {
+        await githubService.commitRepoFile(ws, project.repo!, current.path, newContent, current.sha, message, project.githubCredentialId, { ...authorIdentity, coAuthor });
+      } catch (err) {
+        const msg = (err as Error).message;
+        if (/→ (409|422):/.test(msg)) throw new RoadmapConflictError();
+        throw err;
+      }
+      committed = true;
+    }
+
+    const approved = await this.store.putRoadmapProposal({ ...proposal, state: "approved" });
+    return { proposal: approved, committed, sha };
   }
 
   // ── fleet ──────────────────────────────────────────────────────────────
