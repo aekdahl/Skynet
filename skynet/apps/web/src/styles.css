@@ -2368,10 +2368,27 @@ button.rb-proj:hover { color: var(--accent); }
 .op-ws-logo { width: 24px; height: 24px; border-radius: 6px; background: var(--accent); color: #0B0D11; font-weight: 700; display: flex; align-items: center; justify-content: center; font-size: var(--fz-13); flex: none; }
 .op-ws-name { font-size: var(--fz-13); font-weight: 600; flex: 1; }
 .op-nav { padding: 10px 8px; display: flex; flex-direction: column; gap: 1px; }
-.op-navitem { display: flex; align-items: center; gap: 11px; padding: 8px 11px; border-radius: 7px; color: var(--muted); border: none; background: none; text-align: left; font-family: var(--font-ui); font-size: var(--fz-13); width: 100%; cursor: pointer; }
+.op-navitem { display: flex; align-items: center; gap: 9px; padding: 8px 11px; border-radius: 7px; color: var(--muted); border: none; background: none; text-align: left; font-family: var(--font-ui); font-size: var(--fz-13); width: 100%; cursor: pointer; }
 .op-navitem .ic { width: 16px; height: 16px; flex: none; display: inline-flex; align-items: center; justify-content: center; opacity: 0.85; }
-/* Inbox/Ready-to-merge nav counts — same "pin to --accent" reasoning above. */
-.op-navitem .badge { margin-left: auto; font-family: var(--font-mono); font-size: var(--fz-10); background: var(--accent); color: #0B0D11; border-radius: 9px; padding: 1px 7px; font-weight: 600; }
+/* TASK 24 — the 4-state semantic dot every OPERATE/CONFIGURE row now carries
+   (see shell.tsx's NavDot). Reuses the --ak-* hues already established for
+   "who/what did this" elsewhere (kanban.css) rather than inventing a second
+   lime/blue — track is the neutral default, deliberately dim. */
+.op-navdot { width: 6px; height: 6px; border-radius: 50%; flex: none; background: var(--ak-track); }
+.op-navdot-lime { background: var(--ak-machine); }
+.op-navdot-human { background: var(--ak-human); }
+.op-navdot-warn { background: var(--warn); }
+/* Inbox/Ready-to-merge nav counts — same "pin to --accent" reasoning above,
+   now split into real variants (TASK 24) instead of one shared look. */
+.op-navitem .badge { margin-left: auto; font-family: var(--font-mono); font-size: var(--fz-10); border-radius: 9px; padding: 1px 7px; font-weight: 600; }
+.op-navitem .badge-human { background: var(--ak-human); color: var(--ak-canvas); }
+.op-navitem .badge-lime-outline { background: none; color: var(--ak-machine); border: 1px solid var(--ak-machine); padding: 0 6px; }
+/* Projects/Fleet — a plain count, not a decision signal, so no chip. */
+.op-navcount { margin-left: auto; font-family: var(--font-mono); font-size: var(--fz-11); color: var(--faint); }
+/* Integrations — a bare dot, not a count (there's nothing to count, just a
+   flag). Same warn hue as the dot state above, slightly larger for legibility
+   as a standalone mark. */
+.op-navwarn-dot { margin-left: auto; width: 6px; height: 6px; border-radius: 50%; flex: none; background: var(--warn); }
 /* Current view (router-derived, exactly one at a time): raised bg + accent
    marker + bolder label so it reads as selected, not merely hovered. */
 .op-navitem.on { background: var(--raised); color: var(--text); font-weight: 600; box-shadow: inset 2px 0 0 var(--accent); }
@@ -2390,11 +2407,25 @@ button.rb-proj:hover { color: var(--accent); }
 .op-navsec-toggle.on { color: var(--muted); }
 .op-navsec-caret { margin-left: auto; width: 13px; height: 13px; display: inline-flex; flex: none; }
 .op-nav-sub { padding-top: 2px; padding-bottom: 2px; }
-.op-plist { padding: 0 8px; display: flex; flex-direction: column; gap: 1px; overflow-y: auto; flex: 1; }
-.op-pitem { display: flex; align-items: center; gap: 9px; padding: 6px 11px; border-radius: 6px; color: var(--muted); font-size: var(--fz-12); background: none; border: none; text-align: left; width: 100%; cursor: pointer; }
+/* TASK 24 — was PROJECTS (flex:1, pushed the footer down as it grew). Renamed
+   OPEN NOW and pinned to the bottom instead: the nav above is a fixed, small
+   set of destinations, so there's no longer a reason for this list to be the
+   thing that "absorbs" the sidebar's slack — it just sits above the footer,
+   scrolling internally (own overflow-y) if it's ever taller than the space
+   left. */
+.op-plist { padding: 0 8px; display: flex; flex-direction: column; gap: 1px; overflow-y: auto; margin-top: auto; }
+.op-pitem { display: flex; align-items: center; gap: 8px; padding: 6px 11px; border-radius: 6px; color: var(--muted); font-size: var(--fz-12); background: none; border: none; text-align: left; width: 100%; cursor: pointer; }
 .op-pitem:hover { background: var(--raised); color: var(--text); }
-.op-pdot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
 .op-pitem .nm { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* ⌥1-4 jump-key hint — only the first 4 rows carry one (shell.tsx), matching
+   the global Alt+1..4 handler that actually jumps. */
+.op-pkey { flex: none; font-size: var(--fz-10); color: var(--faint); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }
+/* WHY a project is interesting right now, not just a status dot — see
+   shell.tsx's openNowStatus for the priority (gates > stuck > runs > idle). */
+.op-pstatus { flex: none; font-family: var(--font-mono); font-size: var(--fz-11); white-space: nowrap; }
+.op-pstatus-human { color: var(--ak-human); }
+.op-pstatus-warn { color: var(--warn); }
+.op-pstatus-track { color: var(--faint); }
 .op-side-foot { margin-top: auto; display: flex; align-items: center; gap: 9px; padding: 12px 14px; border-top: 1px solid var(--line-soft); }
 .op-side-foot .who { font-size: var(--fz-12); } .op-side-foot .role { font-size: var(--fz-11); color: var(--muted); }
 .op-role-viewer { color: var(--warn); font-weight: 600; }
@@ -2964,7 +2995,10 @@ button.firstrun-step:hover { border-color: var(--accent); }
 :root.steward-open .op-navitem { justify-content: center; gap: 0; padding: 8px 0; font-size: 0; }
 /* Icon-only rail: a touch larger since there's no adjacent label to anchor to. */
 :root.steward-open .op-navitem .ic { width: 18px; height: 18px; }
-:root.steward-open .op-navitem .badge { display: none; }
+:root.steward-open .op-navitem .badge,
+:root.steward-open .op-navdot,
+:root.steward-open .op-navcount,
+:root.steward-open .op-navwarn-dot { display: none; }
 :root.steward-open .op-navsec,
 :root.steward-open .op-navsec-caret,
 :root.steward-open .op-plist,
@@ -3514,12 +3548,31 @@ button.firstrun-step:hover { border-color: var(--accent); }
 }
 .cmdk-item.sel { background: var(--raised); }
 .cmdk-item.disabled { color: var(--faint); cursor: default; }
-.cmdk-item-icon { color: var(--muted); width: 16px; text-align: center; flex-shrink: 0; }
+.cmdk-item-icon { color: var(--muted); width: 16px; text-align: center; flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center; gap: 5px; }
 .cmdk-item-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cmdk-item-hint { font-size: var(--fz-11); color: var(--faint); }
+/* TASK 24 — a decision row's selected state is its own treatment, not the
+   generic `--raised` wash every other group uses: a fixed dark bg + a human
+   (blue) border, so it reads as "this is a live decision" even before you
+   read the row. */
+.cmdk-item-decision.sel { background: #111823; box-shadow: 0 0 0 1px var(--ak-human) inset; }
+.cmdk-kind-chip {
+  flex-shrink: 0; width: 64px; text-align: left;
+  font-family: var(--font-mono); font-size: var(--fz-10); font-weight: 600; letter-spacing: 0.05em;
+  color: var(--ak-human);
+}
+.cmdk-dot { width: 6px; height: 6px; border-radius: 50%; flex: none; }
+.cmdk-dot-lime { background: var(--ak-machine); }
+.cmdk-dot-human { background: var(--ak-human); }
+.cmdk-dot-warn { background: var(--warn); }
+/* Armed destructive action — a second Enter confirms it. Same amber the dot
+   already uses, just louder, so "this is now one keypress from happening"
+   reads unmistakably. */
+.cmdk-item.armed { background: color-mix(in oklch, var(--warn), transparent 85%); box-shadow: 0 0 0 1px var(--warn) inset; }
+.cmdk-readonly { margin-left: auto; color: var(--warn); }
 .cmdk-foot {
   display: flex; gap: 16px; padding: 9px 16px; border-top: 1px solid var(--line);
-  font-size: var(--fz-11); color: var(--faint);
+  font-size: var(--fz-11); color: var(--faint); flex-wrap: wrap;
 }
 .cmdk-foot span { display: flex; align-items: center; gap: 5px; }
 .cmdk-foot kbd { margin-right: -2px; }
