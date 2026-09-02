@@ -6,21 +6,31 @@
 
 import type {
   TaskRun,
+  AutonomyBreaker,
+  AutonomyOverride,
   Feature,
+  GithubSignalKind,
+  GithubSignalPayload,
   HitlItem,
+  LogVerb,
   Milestone,
   PlanStep,
   Project,
   ProjectContextEntry,
+  Proposal,
   Resolution,
+  Rule,
   Agent,
   SolutionBrief,
   Task,
+  Transition,
   Usage,
 } from "@skynet/shared";
 import { now } from "./config.js";
 import type { Bus } from "./bus.js";
-import { computeConflicts } from "./derive/conflicts.js";
+import { resolveActivePolicy } from "./command-policy.js";
+import { computeConflicts, computeFileCollisions } from "./derive/conflicts.js";
+import { stepRequiresApproval } from "./derive/plan-approval.js";
 import type { Store } from "./store/store.js";
 
 /** The real change reviewed at a diff/merge gate, captured into the audit record
@@ -34,6 +44,9 @@ export interface CapturedDiff {
 export class Hub {
   // Per-workspace set of already-emitted conflict keys, to avoid re-emitting.
   private conflictKeys = new Map<string, Set<string>>();
+  // Same idea for file-level collisions (see refreshFileCollisions) — kept
+  // separate from conflictKeys since the two signals key differently.
+  private fileCollisionKeys = new Map<string, Set<string>>();
   // Per-hitl-id promise chain so overlapping resolves of the same id run
   // serially — the read-check-write in resolveHitl is otherwise a TOCTOU race.
   private hitlLocks = new Map<string, Promise<unknown>>();
@@ -84,6 +97,26 @@ export class Hub {
     this.conflictKeys.set(workspaceId, seen);
   }
 
+  /**
+   * File-level companion to refreshConflicts: two concurrent, unrelated runs
+   * on the same project that have both actually touched the identical path
+   * (TaskRun.modifiedFiles), not just the same architectural module. Same
+   * dedup-by-key idiom as refreshConflicts, kept in its own map since the two
+   * signals key differently (moduleId vs file path) and can't share one set
+   * without risking a moduleId and a file path colliding by coincidence.
+   */
+  async refreshFileCollisions(workspaceId: string): Promise<void> {
+    const runs = await this.store.listRuns(workspaceId);
+    const seen = this.fileCollisionKeys.get(workspaceId) ?? new Set<string>();
+    for (const c of computeFileCollisions(runs)) {
+      const key = `${c.file}|${[...c.runIds].sort().join(",")}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      this.bus.publish(workspaceId, { type: "file-collision.detected", file: c.file, runIds: c.runIds });
+    }
+    this.fileCollisionKeys.set(workspaceId, seen);
+  }
+
   /** Resolve an agent's workspace so delta-only events land on the right channel. */
   private async wsOf(runId: string): Promise<string | undefined> {
     return (await this.store.getRun(runId))?.workspaceId;
@@ -96,11 +129,11 @@ export class Hub {
     return run;
   }
 
-  async runLog(runId: string, line: string, detail?: string): Promise<void> {
+  async runLog(runId: string, line: string, detail?: string, meta?: { verb?: LogVerb; resultKind?: "ok" | "error" }): Promise<void> {
     const at = now();
-    await this.store.appendLog(runId, at, line, detail);
+    await this.store.appendLog(runId, at, line, detail, meta);
     const ws = await this.wsOf(runId);
-    if (ws) this.bus.publish(ws, { type: "run.log", runId, at, line, detail });
+    if (ws) this.bus.publish(ws, { type: "run.log", runId, at, line, detail, verb: meta?.verb, resultKind: meta?.resultKind });
   }
 
   /** Token-level "typing" delta — bus-only, deliberately no store.appendLog.
@@ -113,13 +146,43 @@ export class Hub {
     if (ws) this.bus.publish(ws, { type: "run.log.delta", runId, delta });
   }
 
+  /**
+   * Momentum Rollout, phase 1a — bus-only, deliberately no store write: this
+   * phase's job is verify → parse → resolve → publish, nothing more. The
+   * later rule-engine phase is what turns a signal into a persisted
+   * Transition (see kanban.ts); this call is that phase's subscription point.
+   */
+  publishGithubSignal(workspaceId: string, taskId: string, kind: GithubSignalKind, payload: GithubSignalPayload): void {
+    this.bus.publish(workspaceId, { type: "github.signal", taskId, kind, payload });
+  }
+
   async runProgress(runId: string, progress: number, plan: PlanStep[]): Promise<void> {
     await this.withRunLock(runId, async () => {
       const a = await this.store.getRun(runId);
       if (!a) return;
-      await this.store.putRun({ ...a, progress, plan });
-      this.bus.publish(a.workspaceId, { type: "run.progress", runId, progress, plan });
+      const annotated = await this.annotateApproval(plan, a);
+      await this.store.putRun({ ...a, progress, plan: annotated });
+      this.bus.publish(a.workspaceId, { type: "run.progress", runId, progress, plan: annotated });
     });
+  }
+
+  /**
+   * Best-effort UI hint only — Run Detail's "· needs approval" plan annotation.
+   * Never itself gates, blocks, or auto-approves anything; the real gate is
+   * classifyCommand at Orchestrator.raise() time against the actual tool call.
+   * A plan step is free-form agent prose, not a command, so this reuses the
+   * real classifier when the text names one (a backtick-quoted command) and
+   * otherwise falls back to a narrow keyword match for the brief's two named
+   * non-command categories (merge / data-infra) — see stepRequiresApproval.
+   */
+  private async annotateApproval(plan: PlanStep[], run: TaskRun): Promise<PlanStep[]> {
+    const project = await this.store.getProject(run.projectId);
+    if (project?.approvalLevel === "full") return plan;
+    const policy = await resolveActivePolicy(this.store, run.workspaceId);
+    // Only ever ADD the field when true — omitted (not false) is the
+    // contract's own documented rest state (see PlanStep.requiresApproval),
+    // so a step nothing flagged serializes identically to before this existed.
+    return plan.map((s) => (stepRequiresApproval(s.text, policy) ? { ...s, requiresApproval: true } : s));
   }
 
   /**
@@ -153,11 +216,17 @@ export class Hub {
    *  dedicated delta event: modifiedFiles rides along in the run snapshot, and
    *  it's written alongside the run.status→review delta raised at review time. */
   async runModifiedFiles(runId: string, files: string[]): Promise<void> {
+    let workspaceId: string | undefined;
     await this.withRunLock(runId, async () => {
       const a = await this.store.getRun(runId);
       if (!a) return;
       await this.store.putRun({ ...a, modifiedFiles: files });
+      workspaceId = a.workspaceId;
     });
+    // This is the one point modifiedFiles actually changes, so it's the
+    // natural trigger for a NEW file-level collision to appear (unlike module
+    // conflicts, which are live from run creation via TaskRun.modules).
+    if (workspaceId) void this.refreshFileCollisions(workspaceId);
   }
 
   async runHeartbeat(runId: string): Promise<void> {
@@ -400,6 +469,35 @@ export class Hub {
     if (existing) this.bus.publish(existing.workspaceId, { type: "solutionBrief.deleted", id });
   }
 
+  // Momentum Rollout kanban rebuild, Phase 1c — Rule/Proposal follow the
+  // same persist-then-publish upsert shape as every collection above;
+  // Transition is append-only (see @skynet/shared's Transition), so it only
+  // ever gets a "created" publish, never "upserted"/"deleted". The RuleEngine
+  // (rules/engine.ts) routes its own mutations through these too, so a
+  // rule-driven move is exactly as WS-live as an API-driven one.
+  async upsertRule(rule: Rule): Promise<Rule> {
+    await this.store.putRule(rule);
+    this.bus.publish(rule.workspaceId, { type: "rule.upserted", rule });
+    return rule;
+  }
+  async deleteRule(id: string): Promise<void> {
+    const existing = await this.store.getRule(id);
+    await this.store.deleteRule(id);
+    if (existing) this.bus.publish(existing.workspaceId, { type: "rule.deleted", id });
+  }
+
+  async upsertProposal(proposal: Proposal): Promise<Proposal> {
+    await this.store.putProposal(proposal);
+    this.bus.publish(proposal.workspaceId, { type: "proposal.upserted", proposal });
+    return proposal;
+  }
+
+  async recordTransition(transition: Transition): Promise<Transition> {
+    await this.store.createTransition(transition);
+    this.bus.publish(transition.workspaceId, { type: "transition.created", transition });
+    return transition;
+  }
+
   async upsertAgent(agent: Agent): Promise<Agent> {
     await this.store.putAgent(agent);
     this.bus.publish(agent.workspaceId, { type: "agent.upserted", agent });
@@ -430,5 +528,26 @@ export class Hub {
   async clearAudit(workspaceId: string): Promise<void> {
     await this.store.clearAudit(workspaceId);
     this.bus.publish(workspaceId, { type: "audit.cleared" });
+  }
+
+  // ── autonomy breaker/override (TASK 19) ─────────────────────────────────
+  // Neither is part of the snapshot (same reasoning as the audit trail above)
+  // — the event carries only identity, and a project-scoped client re-fetches
+  // GET /api/projects/:id/autonomy-detent on it.
+  async putAutonomyBreaker(workspaceId: string, breaker: AutonomyBreaker): Promise<void> {
+    await this.store.putAutonomyBreaker(breaker);
+    this.bus.publish(workspaceId, { type: "autonomyBreaker.updated", projectId: breaker.projectId });
+  }
+  async deleteAutonomyBreaker(workspaceId: string, projectId: string): Promise<void> {
+    await this.store.deleteAutonomyBreaker(projectId);
+    this.bus.publish(workspaceId, { type: "autonomyBreaker.updated", projectId });
+  }
+  async putAutonomyOverride(workspaceId: string, override: AutonomyOverride): Promise<void> {
+    await this.store.putAutonomyOverride(override);
+    this.bus.publish(workspaceId, { type: "autonomyBreaker.updated", projectId: override.projectId });
+  }
+  async deleteAutonomyOverride(workspaceId: string, projectId: string): Promise<void> {
+    await this.store.deleteAutonomyOverride(projectId);
+    this.bus.publish(workspaceId, { type: "autonomyBreaker.updated", projectId });
   }
 }

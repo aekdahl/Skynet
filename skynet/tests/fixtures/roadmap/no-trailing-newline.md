@@ -1,0 +1,2 @@
+- [ ] Todo with no file-trailing newline
+- [x] Done, and this is the last line with NO trailing newline

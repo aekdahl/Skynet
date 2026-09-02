@@ -441,7 +441,7 @@ export function buildMcpServer(principal: Principal, deps: McpDeps): McpServer {
   tool("create_project", "author", "Create a project. Bind it to a repo (\"owner/repo\" via `repo`, or an existing repo's git URL via `repoUrl` to clone it) to enable the PR flow.", CreateProjectRequest.shape, (a) => operations.createProject(ws, a));
   tool("update_project", "author", "Update a project's name, goal, status, or bound repo.", { projectId: z.string(), ...UpdateProjectRequest.shape }, (a) => {
     const { projectId, ...patch } = a;
-    return operations.updateProject(ws, projectId, patch);
+    return operations.updateProject(ws, projectId, patch, principal.operatorId);
   });
   // The project's "brain": raw pasted/uploaded material (the web UI's
   // "Context" tab) condensed into Project.contextSummary — the primer every

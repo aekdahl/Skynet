@@ -1,0 +1,148 @@
+/* ─── Automation Builder (Momentum Rollout Phase 6a — TASK 07) ─────────────
+   Rule authoring UI: sentence-builder chips, backtest card, safety rails,
+   live rules list. Tokens only — every color/spacing/radius value here is
+   one of styles.css's --ak-* tokens (see kanban.css's own header comment).
+   Classes are prefixed `rb-` (Rule Builder) to stay distinct from `.mb-*`
+   (Momentum Board) and `.ak-*` (shared primitives) — this reuses .mb-sparkline
+   directly rather than redefining it (see board.css).
+*/
+
+.rb-wrap { max-width: 760px; display: flex; flex-direction: column; gap: var(--ak-sp-16); }
+
+/* ── List head / panel head ────────────────────────────────────────────── */
+.rb-list-head, .rb-panel-head {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--ak-sp-12);
+}
+.rb-panel-title { margin: 0; font-size: 15px; font-weight: 600; color: var(--ak-text-primary); }
+.rb-panel {
+  display: flex; flex-direction: column; gap: var(--ak-sp-16);
+  padding: var(--ak-pad-screen); border: 1px solid var(--ak-border); border-radius: var(--ak-radius-panel);
+  background: var(--ak-surface-0);
+}
+.rb-panel-actions { display: flex; gap: var(--ak-sp-8); }
+.rb-name-input { font-size: 14px; font-weight: 500; }
+/* TASK 13 hardening — every action button in this tab uses a plain .btn
+   variant (styles.css); scope the ak-focus-ring override to this tab's own
+   containers rather than touching the app-wide .btn rule other, non-kanban
+   screens also use. */
+.rb-panel-actions .btn:focus-visible,
+.rb-list-head .btn:focus-visible,
+.rb-rule-actions .btn:focus-visible {
+  outline: none;
+  box-shadow: var(--ak-focus-ring);
+}
+
+/* ── Card (trigger/conditions · actions · backtest · safety · lifecycle) ── */
+.rb-card {
+  display: flex; flex-direction: column; gap: var(--ak-sp-8);
+  padding: var(--ak-pad-card); border: 1px solid var(--ak-border-subtle); border-radius: var(--ak-radius-card);
+  background: var(--ak-surface-1);
+}
+.rb-card-head {
+  font-family: var(--ak-font-mono); font-size: 10.5px; font-weight: 600; letter-spacing: .06em;
+  text-transform: uppercase; color: var(--ak-text-faint);
+}
+.rb-card-hint { margin: 0; font-size: 12px; color: var(--ak-text-muted); line-height: 1.5; }
+.rb-card-err { color: var(--ak-warn); }
+.rb-card-warn {
+  margin: 0; padding: var(--ak-sp-8) var(--ak-sp-10); font-size: 12px; line-height: 1.5; color: var(--ak-warn);
+  background: color-mix(in oklch, var(--ak-warn), transparent 90%);
+  border: 1px solid color-mix(in oklch, var(--ak-warn), transparent 60%); border-radius: var(--ak-radius-sm);
+}
+
+/* ── Sentence-builder chip rows ────────────────────────────────────────── */
+.rb-chip-row { display: flex; align-items: center; gap: var(--ak-sp-8); flex-wrap: wrap; }
+.rb-chip-connector {
+  flex: none; width: 40px; font-size: 10.5px; font-weight: 700; letter-spacing: .04em; color: var(--ak-machine);
+}
+.rb-chip-select, .rb-chip-input {
+  flex: none; height: 30px; padding: 0 var(--ak-sp-8); font-size: 12.5px;
+  border: 1px solid var(--ak-border); border-radius: var(--ak-radius-sm);
+  background: var(--ak-surface-2); color: var(--ak-text-primary);
+}
+.rb-chip-select { cursor: pointer; }
+.rb-chip-select:focus-visible { outline: none; box-shadow: var(--ak-focus-ring); }
+.rb-chip-input { flex: 1; min-width: 100px; }
+.rb-chip-input-num { flex: none; width: 70px; }
+.rb-chip-input-wide { min-width: 220px; }
+.rb-chip-unit { flex: none; font-size: 11px; color: var(--ak-text-faint); }
+.rb-chip-remove {
+  flex: none; width: 22px; height: 22px; border-radius: var(--ak-radius-round); border: none;
+  background: transparent; color: var(--ak-text-faint); font-size: 15px; line-height: 1; cursor: pointer;
+}
+.rb-chip-remove:hover { color: var(--ak-warn); background: color-mix(in oklch, var(--ak-warn), transparent 90%); }
+.rb-chip-remove:focus-visible { outline: none; box-shadow: var(--ak-focus-ring); }
+.rb-add-chip {
+  align-self: flex-start; margin-top: var(--ak-sp-3); padding: var(--ak-sp-6) var(--ak-sp-10);
+  border: 1px dashed var(--ak-border-strong); border-radius: var(--ak-radius-sm);
+  background: transparent; color: var(--ak-text-secondary); font-size: 12px; cursor: pointer;
+}
+.rb-add-chip:hover { border-color: var(--ak-machine); color: var(--ak-machine); }
+.rb-add-chip:focus-visible { outline: none; box-shadow: var(--ak-focus-ring); }
+
+.rb-sentence {
+  margin: 0; padding: var(--ak-sp-10) var(--ak-sp-12); font-size: 12px; line-height: 1.6;
+  color: var(--ak-text-secondary); background: var(--ak-surface-2);
+  border: 1px solid var(--ak-border-subtle); border-radius: var(--ak-radius-sm);
+}
+
+/* ── Backtest card ──────────────────────────────────────────────────────── */
+.rb-backtest-headline { display: flex; align-items: flex-end; gap: var(--ak-sp-10); }
+.rb-backtest-count { font-size: 26px; font-weight: 700; line-height: 1; color: var(--ak-machine); font-family: var(--ak-font-mono); }
+.rb-backtest-label { flex: 1; font-size: 12px; color: var(--ak-text-muted); padding-bottom: 3px; }
+.rb-backtest-spark { flex: none; width: 90px; height: 28px; }
+
+/* ── Safety rails ───────────────────────────────────────────────────────── */
+.rb-safety-row { display: flex; align-items: center; gap: var(--ak-sp-8); font-size: 12.5px; color: var(--ak-text-secondary); line-height: 1.5; }
+.rb-safety-row strong { color: var(--ak-text-primary); }
+.rb-safety-label { flex: none; min-width: 96px; color: var(--ak-text-primary); font-weight: 500; }
+.rb-safety-num { flex: none; width: 64px; height: 28px; padding: 0 var(--ak-sp-6); font-size: 12.5px; }
+.rb-safety-priorities { align-items: flex-start; }
+.rb-priority-chips { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ak-sp-6); }
+.rb-priority-chip { display: inline-flex; align-items: center; gap: var(--ak-sp-5); }
+.rb-priority-remove { border: none; background: none; color: inherit; cursor: pointer; font-size: 12px; line-height: 1; padding: 0; }
+.rb-priority-remove:focus-visible { outline: none; box-shadow: var(--ak-focus-ring); }
+.rb-priority-suggest {
+  padding: var(--ak-sp-3) var(--ak-sp-8); font-size: 11px; font-family: var(--ak-font-mono);
+  border: 1px dashed var(--ak-border-strong); border-radius: var(--ak-radius-bar);
+  background: transparent; color: var(--ak-text-faint); cursor: pointer;
+}
+.rb-priority-suggest:hover { color: var(--ak-warn); border-color: var(--ak-warn); }
+.rb-priority-suggest:focus-visible { outline: none; box-shadow: var(--ak-focus-ring); }
+.rb-priority-input { height: 26px; width: 110px; font-size: 11.5px; padding: 0 var(--ak-sp-6); }
+
+/* ── Lifecycle state picker ─────────────────────────────────────────────── */
+.rb-state-picker { display: flex; gap: var(--ak-sp-6); }
+.rb-state-btn {
+  padding: var(--ak-sp-6) var(--ak-sp-12); font-size: 12px; font-weight: 500;
+  border: 1px solid var(--ak-border); border-radius: var(--ak-radius-pill);
+  background: var(--ak-surface-2); color: var(--ak-text-secondary); cursor: pointer;
+  transition: border-color var(--motion-fast), color var(--motion-fast);
+}
+/* Ghost-flavored toggle: border brightens toward --ak-track on hover — this
+   had no hover state at all before (found by audit). */
+.rb-state-btn:hover:not(.on):not(:disabled) { border-color: var(--ak-track); color: var(--ak-text-primary); }
+.rb-state-btn.on { border-color: var(--ak-machine); color: var(--ak-machine); background: color-mix(in oklch, var(--ak-machine), transparent 90%); }
+.rb-state-btn-sm { padding: var(--ak-sp-3) var(--ak-sp-8); font-size: 11px; }
+.rb-state-btn:disabled { cursor: default; }
+.rb-state-btn:focus-visible { outline: none; box-shadow: var(--ak-focus-ring); }
+@media (prefers-reduced-motion: reduce) {
+  .rb-state-btn { transition: none; }
+}
+
+/* ── Live rules list ────────────────────────────────────────────────────── */
+.rb-rule-list { display: flex; flex-direction: column; gap: var(--ak-sp-8); }
+.rb-rule-row {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: var(--ak-sp-12);
+  padding: var(--ak-pad-card); border: 1px solid var(--ak-border-subtle); border-radius: var(--ak-radius-card);
+  background: var(--ak-surface-1);
+}
+.rb-rule-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: var(--ak-sp-5); }
+.rb-rule-top { display: flex; align-items: center; gap: var(--ak-sp-8); flex-wrap: wrap; }
+.rb-rule-name { font-size: 13.5px; font-weight: 600; color: var(--ak-text-primary); }
+.rb-rule-paused-reason { font-size: 11px; color: var(--ak-warn); cursor: help; }
+.rb-rule-when { margin: 0; font-size: 12px; color: var(--ak-text-muted); line-height: 1.5; }
+.rb-rule-stats { font-size: 10.5px; color: var(--ak-text-faint); }
+.rb-rule-actions { flex: none; display: flex; align-items: center; gap: var(--ak-sp-5); flex-wrap: wrap; }
+/* Plain-text ghost action (no border/fill): underline on hover. */
+.rb-del:hover { color: var(--ak-warn); text-decoration: underline; }

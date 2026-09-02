@@ -46,11 +46,10 @@ export type CliEvent =
  * can't find stay 0 / null — honest partials, not invented totals.
  */
 export function usageFromJson(obj: Record<string, unknown>): Usage | null {
-  const scopes = [obj, obj.usage, obj.stats, obj.tokens, obj.metrics].filter(
-    (s): s is Record<string, unknown> => !!s && typeof s === "object",
-  );
-  const num = (keys: string[]): number | undefined => {
-    for (const scope of scopes) {
+  const isObj = (s: unknown): s is Record<string, unknown> => !!s && typeof s === "object";
+  const scopes = [obj, obj.usage, obj.stats, obj.tokens, obj.metrics].filter(isObj);
+  const num = (from: Record<string, unknown>[], keys: string[]): number | undefined => {
+    for (const scope of from) {
       for (const k of keys) {
         const v = scope[k];
         if (typeof v === "number" && Number.isFinite(v)) return v;
@@ -58,15 +57,33 @@ export function usageFromJson(obj: Record<string, unknown>): Usage | null {
     }
     return undefined;
   };
-  const input = num(["input_tokens", "prompt_tokens", "inputTokens", "tokens_in", "input"]);
-  const output = num(["output_tokens", "completion_tokens", "outputTokens", "tokens_out", "output"]);
+  const input = num(scopes, ["input_tokens", "prompt_tokens", "inputTokens", "tokens_in", "input"]);
+  const output = num(scopes, ["output_tokens", "completion_tokens", "outputTokens", "tokens_out", "output"]);
   if (input === undefined && output === undefined) return null;
-  const cost = num(["total_cost_usd", "cost_usd", "costUsd", "cost"]);
-  const turns = num(["num_turns", "turns", "steps"]);
-  const durationMs = num(["duration_ms", "durationMs", "elapsed_ms"]);
+  const cost = num(scopes, ["total_cost_usd", "cost_usd", "costUsd", "cost"]);
+  const turns = num(scopes, ["num_turns", "turns", "steps"]);
+  const durationMs = num(scopes, ["duration_ms", "durationMs", "elapsed_ms"]);
+  // Cache tiers: Codex/Gemini report them flat alongside input/output
+  // (cached_input_tokens/cache_write_input_tokens, `cached`); OpenCode nests
+  // them one level deeper under a `cache` object on the tokens scope. Same
+  // "honest partials" rule as everything else here — 0 when the vendor
+  // doesn't say, never guessed.
+  const cacheScopes = [
+    obj.cache,
+    (obj.usage as Record<string, unknown> | undefined)?.cache,
+    (obj.stats as Record<string, unknown> | undefined)?.cache,
+    (obj.tokens as Record<string, unknown> | undefined)?.cache,
+    (obj.metrics as Record<string, unknown> | undefined)?.cache,
+  ].filter(isObj);
+  const cacheRead =
+    num(scopes, ["cache_read_input_tokens", "cached_input_tokens", "cached"]) ?? num(cacheScopes, ["read"]);
+  const cacheWrite =
+    num(scopes, ["cache_write_input_tokens", "cache_creation_input_tokens"]) ?? num(cacheScopes, ["write"]);
   return {
     inputTokens: input ?? 0,
     outputTokens: output ?? 0,
+    cacheReadTokens: cacheRead ?? 0,
+    cacheWriteTokens: cacheWrite ?? 0,
     costUsd: cost ?? null,
     turns: turns ?? 0,
     durationMs: durationMs ?? null,

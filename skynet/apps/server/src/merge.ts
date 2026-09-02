@@ -99,6 +99,13 @@ const gitReason = (err: unknown): string => {
 export class MergeEngine {
   // One promise chain per integration branch → serialized merges.
   private chains = new Map<string, Promise<void>>();
+  // Introspection only, mirroring `chains`' own FIFO order — the requests
+  // currently waiting their turn on each branch (appended in enqueue(),
+  // shifted off in process()'s finally). No decision logic reads this; it
+  // exists purely so a caller can answer "what's queued and in what order"
+  // (Review & Merge, Phase 15) without the engine's real merge behavior
+  // changing at all.
+  private pending = new Map<string, MergeRequest[]>();
   /** Where scratch integration worktrees live (outside the repo working tree). */
   private scratchRoot: string;
 
@@ -223,13 +230,36 @@ export class MergeEngine {
 
   enqueue(req: MergeRequest): void {
     const branch = this.targetBranchFor(req);
+    const list = this.pending.get(branch) ?? [];
+    list.push(req);
+    this.pending.set(branch, list);
     const prev = this.chains.get(branch) ?? Promise.resolve();
     const next = prev
       .then(() => this.process(req, branch))
       // A crash anywhere in process() must surface, never silently vanish
       // (the old chain swallowed it → the run hung in review with no gate).
-      .catch((err) => this.cb.onMergeFailed(req, gitReason(err)).catch(() => undefined));
+      .catch((err) => this.cb.onMergeFailed(req, gitReason(err)).catch(() => undefined))
+      // This request's turn is over — merged, bounced back, or failed — either
+      // way it's no longer WAITING. Always the head of its branch's list
+      // (strict FIFO, same serialization `chains` itself already guarantees).
+      .finally(() => this.pending.get(branch)?.shift());
     this.chains.set(branch, next);
+  }
+
+  /** Currently-queued (not yet landed) requests for one project, in the exact
+   *  order they'll be processed — read-only introspection over `pending`, no
+   *  new merge decision logic. `position` is 0-indexed within its own target
+   *  branch (a project can have several branches in flight — its integration
+   *  branch, feature branches, guided-merge targets — each serialized
+   *  independently; see `targetBranchFor`). */
+  queueFor(projectId: string): Array<{ runId: string; branch: string; position: number }> {
+    const out: Array<{ runId: string; branch: string; position: number }> = [];
+    for (const [branch, list] of this.pending) {
+      list.forEach((r, position) => {
+        if (r.projectId === projectId) out.push({ runId: r.runId, branch, position });
+      });
+    }
+    return out;
   }
 
   private async ensureIntegrationBranch(branch: string): Promise<void> {

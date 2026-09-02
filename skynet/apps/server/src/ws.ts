@@ -49,5 +49,6 @@ export async function registerWs(app: FastifyInstance, deps: WsDeps): Promise<vo
 
     // 3. compute current conflicts now that the socket is listening (W4)
     void hub.refreshConflicts(ws);
+    void hub.refreshFileCollisions(ws);
   });
 }

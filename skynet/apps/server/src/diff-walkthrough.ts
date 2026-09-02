@@ -19,7 +19,9 @@ export const DIFF_WALKTHROUGH_SYSTEM =
 
 export const DIFF_WALKTHROUGH_INSTRUCTION =
   'Respond with ONLY a JSON object and nothing else: {"summary":"<2-4 plain-English sentences on what this diff does and why>",' +
-  '"comments":[{"file":"<path exactly as it appears in the diff>","line":<new-file line number, or null for a file-level note>,"note":"<one short line>"}]}. ' +
+  '"comments":[{"file":"<path exactly as it appears in the diff>","line":<new-file line number, or null for a file-level note>,"note":"<one short line>"}],' +
+  '"least_sure_about":"<1-2 sentences on what YOU are least confident is correct in this diff — required, never empty. ' +
+  'If you are genuinely confident in everything, name the one thing most worth a human double-checking anyway (an edge case, an assumption, a place you couldn\'t fully verify).>"}. ' +
   "Include a comment only where it adds insight beyond the summary — a risk, a non-obvious choice, a gap. Omit boilerplate ones. At most 8 comments.";
 
 /**
@@ -46,5 +48,10 @@ export function parseDiffWalkthrough(reply: string, touchedFiles: string[]): Dif
     const line = typeof rec.line === "number" && Number.isInteger(rec.line) && rec.line > 0 ? rec.line : null;
     comments.push({ file, line, note });
   }
-  return { summary, comments };
+  // Required by the prompt above, but never trusted to actually be present —
+  // an older reply (or a model that ignores the instruction) just falls back
+  // to an honest placeholder rather than dropping the whole walkthrough.
+  const rawUncertainty = obj && typeof obj.least_sure_about === "string" ? obj.least_sure_about.trim().slice(0, 500) : "";
+  const uncertainty = rawUncertainty || "Not stated by the agent.";
+  return { summary, comments, uncertainty };
 }

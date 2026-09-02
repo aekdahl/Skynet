@@ -1,0 +1,180 @@
+/* ─── Gravity Board (Phase 9a — TASK 11) ────────────────────────────────────
+   No columns — card position reflects readiness. Tokens only, same rules as
+   board.css: every color/spacing/radius is one of styles.css's --ak-* tokens.
+   Classes prefixed `gv-` (Gravity) to stay distinct from `mb-` (Momentum) and
+   `ak-` (shared primitives).
+*/
+
+/* ── mode switcher (shown only when Gravity is actually available) ───────── */
+.gv-wrap { display: flex; flex-direction: column; gap: var(--ak-sp-16); }
+.gv-mode-switch {
+  display: flex;
+  gap: var(--ak-sp-3);
+  width: fit-content;
+  padding: var(--ak-sp-3);
+  border: 1px solid var(--ak-border);
+  border-radius: var(--ak-radius-pill);
+  background: var(--ak-surface-1);
+}
+.gv-mode-btn {
+  padding: var(--ak-sp-6) var(--ak-sp-14);
+  border: none;
+  border-radius: var(--ak-radius-pill);
+  background: transparent;
+  color: var(--ak-text-secondary);
+  font-family: var(--ak-font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .03em;
+  cursor: pointer;
+}
+.gv-mode-btn { transition: color var(--motion-fast); }
+.gv-mode-btn:hover { color: var(--ak-text-primary); text-decoration: underline; }
+.gv-mode-btn.on { background: var(--ak-surface-3); color: var(--ak-machine); }
+.gv-mode-btn:focus-visible { outline: none; box-shadow: var(--ak-focus-ring); }
+/* TASK 12 — Gravity keeps the >=1100px requirement the other two tabs don't;
+   below that width the tab itself reads as clearly non-interactive rather
+   than just silently doing nothing on click. */
+.gv-mode-btn:disabled { color: var(--ak-text-faint); cursor: default; }
+.gv-mode-btn:disabled:hover { text-decoration: none; }
+@media (prefers-reduced-motion: reduce) {
+  .gv-mode-btn { transition: none; }
+}
+
+/* ── field ─────────────────────────────────────────────────────────────── */
+/* 900px comfortably holds the 800px-diameter outer ring inside .projview's
+   1100px max-width (see styles.css) with room either side. */
+.gv-field {
+  position: relative;
+  width: 900px;
+  max-width: 100%;
+  height: 900px;
+  margin: 0 auto;
+  overflow: visible;
+}
+
+/* ── rings + core (pure visual guides — never intercept clicks) ──────────── */
+.gv-ring {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  border-radius: var(--ak-radius-round);
+  pointer-events: none;
+}
+.gv-ring-1 { width: 260px; height: 260px; translate: -50% -50%; border: 1px solid var(--ak-border-subtle); }
+.gv-ring-2 { width: 520px; height: 520px; translate: -50% -50%; border: 1px solid var(--ak-border-subtle); }
+.gv-ring-3 {
+  width: 800px;
+  height: 800px;
+  translate: -50% -50%;
+  border: 2px dashed var(--ak-machine);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+}
+.gv-ring-label {
+  margin-top: var(--ak-sp-12);
+  padding: var(--ak-sp-3) var(--ak-sp-8);
+  border-radius: var(--ak-radius-bar);
+  background: var(--ak-canvas);
+  color: var(--ak-machine);
+  font-family: var(--ak-font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .06em;
+}
+
+.gv-core {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  translate: -50% -50%;
+  width: 72px;
+  height: 72px;
+  border-radius: var(--ak-radius-round);
+  background: var(--ak-surface-2);
+  border: 1px solid var(--ak-machine);
+  box-shadow: var(--ak-halo-lime);
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+}
+.gv-core-label {
+  font-family: var(--ak-font-mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: .08em;
+  color: var(--ak-machine);
+}
+
+/* ── positioned cards ──────────────────────────────────────────────────── */
+/* Position comes from an inline `transform` (board.tsx sets it per-card from
+   readiness()); this rule only supplies the base placement + the spring
+   transition so a SCORE change animates instead of jumping. `ak-drift-card`
+   (kanban.css) may ALSO apply to this same element — it animates the
+   standalone `translate` property, never `transform`, so the two compose
+   without fighting each other. */
+.gv-slot {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transition: transform var(--ak-spring-duration) var(--ak-ease-spring);
+}
+@media (prefers-reduced-motion: reduce) {
+  .gv-slot { transition: none; }
+}
+
+.gv-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ak-sp-5);
+  width: 152px;
+  padding: var(--ak-sp-9);
+  border: 1px solid var(--ak-border);
+  border-radius: var(--ak-radius-card);
+  background: var(--ak-surface-1);
+  box-shadow: var(--ak-shadow-focus-card);
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  transition: border-color var(--motion-fast), background-color var(--motion-fast), box-shadow var(--motion-fast);
+}
+/* Same shared treatment as .mb-card (board.css) — border machine-tinted,
+   surface lightens ~2%, a lift shadow. The card's own resting shadow
+   (--ak-shadow-focus-card, set above) stays; the lift shadow layers on top
+   via a second box-shadow, not a replacement. */
+.gv-card:hover {
+  border-color: color-mix(in oklch, var(--ak-machine), transparent 55%);
+  background-color: color-mix(in oklch, white, transparent 98%);
+  box-shadow: var(--ak-shadow-focus-card), var(--ak-shadow-lift);
+}
+.gv-card:focus-visible { outline: none; box-shadow: var(--ak-focus-ring); }
+@media (prefers-reduced-motion: reduce) {
+  .gv-card { transition: none; }
+}
+.gv-card-title {
+  font-size: 11.5px;
+  font-weight: 500;
+  line-height: 1.3;
+  color: var(--ak-text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.gv-card-meta { display: flex; align-items: center; justify-content: space-between; gap: var(--ak-sp-6); }
+.gv-card-score { font-size: 10px; color: var(--ak-text-faint); }
+
+/* Merge-ready (docked on the outer ring): lime-tinted, the orbit-ready glow
+   from styles.css (already named for exactly this state). */
+.gv-card-merge-ready {
+  border-color: color-mix(in oklch, var(--ak-machine), transparent 55%);
+  box-shadow: var(--ak-shadow-orbit-ready);
+}
+.gv-card-merge-ready .gv-card-score { color: var(--ak-machine); font-weight: 600; }
+/* Same specificity as .gv-card:hover — without this, hovering a merge-ready
+   card would clobber its orbit-ready glow with the plain hover shadow
+   instead of layering the lift on top of it. */
+.gv-card-merge-ready:hover { box-shadow: var(--ak-shadow-orbit-ready), var(--ak-shadow-lift); }

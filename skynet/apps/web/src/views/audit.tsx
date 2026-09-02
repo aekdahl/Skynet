@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { AuditRecord, ResolveAction, DiffWalkthrough, MergeBrief } from "@skynet/shared";
+import type { AuditRecord, ComplianceApproverType, ResolveAction, DiffWalkthrough, MergeBrief } from "@skynet/shared";
+import { classifyOperatorId } from "@skynet/shared";
 import { useStore } from "../lib/store";
 import { fmtWait, KIND_META } from "../lib/derive";
 import { RiskChip } from "../components/hitl-context";
@@ -28,6 +29,24 @@ const ACTION_META: Record<ResolveAction, { label: string; color: string }> = {
   reassign: { label: "REASSIGNED", color: "var(--violet)" },
   dismiss: { label: "DISMISSED", color: "var(--muted)" },
   push: { label: "PUSHED ANYWAY", color: "var(--warn)" },
+};
+
+// TASK 21 — actor-type dot: lime = policy, blue = human, amber = agent-review.
+// Same classification GET /api/audit now attaches server-side
+// (operations.ts#listAudit, via compliance/report.ts's classifyApprover) —
+// computed here directly (classifyOperatorId, the shared bare classifier)
+// so it's correct for both server-fetched rows AND rows this view
+// synthesizes client-side from a live HITL resolution (`merged` below),
+// which never round-trip through that endpoint.
+const ACTOR_DOT_COLOR: Record<ComplianceApproverType, string> = {
+  policy: "var(--ak-machine)",
+  human: "var(--ak-human)",
+  "agent-review": "var(--ak-warn)",
+};
+const ACTOR_DOT_TITLE: Record<ComplianceApproverType, string> = {
+  policy: "Auto-approved by a standing policy",
+  human: "A human operator",
+  "agent-review": "Auto-approved by a fleet agent's review",
 };
 
 const isResolveAction = (a: string): a is ResolveAction =>
@@ -178,6 +197,12 @@ function AuditRow({
       )}
 
       <div className="audit-meta mono">
+        <span
+          className="audit-actor-dot"
+          style={{ background: ACTOR_DOT_COLOR[classifyOperatorId(rec.operatorId)] }}
+          title={ACTOR_DOT_TITLE[classifyOperatorId(rec.operatorId)]}
+          aria-hidden="true"
+        />
         <span className="audit-op">{rec.operatorId}</span>
         <span className="audit-sep">·</span>
         <span>{fmtClockTime(rec.at)}</span>

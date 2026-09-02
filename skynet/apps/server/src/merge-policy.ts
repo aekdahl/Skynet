@@ -48,6 +48,18 @@ export const GATE_REASON_TEXT: Record<MergeGateReason, string> = {
   "too-many-lines": "changes more lines than the policy allows unattended",
 };
 
+/** Human-readable reason for each non-human Resolution.by value that can land
+ *  a run in the local merge queue (Orchestrator.mergeQueueSnapshot, Review &
+ *  Merge Phase 15) — keyed by the exact string each auto-approval path already
+ *  writes (see raiseDiffReview's `full`-autonomy / evidence-gated branches,
+ *  and autoReview's reviewer-approved resolve). A `resolution.by` not in this
+ *  map (an operator id, or a plain "approve") means a human approved it. */
+export const POLICY_MERGE_REASON: Record<string, string> = {
+  "policy:full-autonomy": "policy: full autonomy — every non-high-risk diff merges itself.",
+  "policy:evidence": "policy: low risk + green evidence merges itself.",
+  autonomy: "a second agent reviewed and approved it.",
+};
+
 export interface AutoMergePolicyInput {
   enabled: boolean;
   requireReviewApproval: boolean;

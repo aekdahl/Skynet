@@ -1,0 +1,192 @@
+/* ─── Board Health dashboard (Phase 7 — TASK 09) ────────────────────────────
+   Tokens only — every color/spacing/radius value here is one of styles.css's
+   --ak-* tokens (see kanban.css's own header comment); no new one-off colors.
+   Classes prefixed `hd-` (Health Dashboard), distinct from `mb-*` (Momentum
+   Board) and the shared `ak-*` primitive library both are built from.
+
+   Width: the spec calls for a 1280px dashboard, but the project page's own
+   .projview container caps at 1100px (styles.css — chosen deliberately after
+   a real overflow bug at 1220px/1440px-viewport). Rather than breaking that
+   container (and risking the exact bug it was fixed for), this caps at
+   1280px as a soft ceiling that only matters on a wider host — in practice,
+   inside .projview, it renders at the container's own width. */
+.hd-health {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ak-sp-16);
+  max-width: 1280px;
+  width: 100%;
+}
+
+.hd-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--ak-gap-card);
+  align-items: stretch;
+}
+.hd-second-row { margin-top: 0; }
+
+.hd-span-2 { grid-column: span 2; }
+
+.hd-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ak-sp-6);
+  min-width: 0;
+  padding: var(--ak-pad-card);
+  border: 1px solid var(--ak-border-subtle);
+  border-radius: var(--ak-radius-panel);
+  background: var(--ak-surface-0);
+}
+.hd-card-label {
+  font-family: var(--ak-font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--ak-text-secondary);
+  cursor: help;
+}
+.hd-card-value {
+  font-size: 28px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--ak-text-primary);
+  font-variant-numeric: tabular-nums;
+}
+.hd-card-sub { font-size: 11.5px; color: var(--ak-text-faint); }
+
+/* ── Stalled panel: full amber/warn treatment when active, calm when not ── */
+.hd-stalled-active {
+  background: color-mix(in oklch, var(--ak-warn), transparent 92%);
+  border-color: color-mix(in oklch, var(--ak-warn), transparent 55%);
+}
+.hd-stalled-active .hd-card-label,
+.hd-stalled-active .hd-stalled-count { color: var(--ak-warn); }
+.hd-stalled-list { display: flex; flex-direction: column; gap: 2px; list-style: none; margin: 0; padding: 0; }
+.hd-stalled-row {
+  display: flex;
+  align-items: center;
+  gap: var(--ak-sp-8);
+  width: 100%;
+  padding: var(--ak-sp-6) var(--ak-sp-6);
+  border: none;
+  border-radius: var(--ak-radius-sm);
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  color: inherit;
+  cursor: pointer;
+}
+.hd-stalled-row:hover { background: color-mix(in oklch, var(--ak-warn), transparent 88%); }
+.hd-stalled-row:focus-visible { outline: none; box-shadow: var(--ak-focus-ring); }
+.hd-stalled-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--ak-text-primary);
+}
+.hd-stalled-time {
+  flex: none;
+  font-family: var(--ak-font-mono);
+  font-size: 10.5px;
+  color: var(--ak-warn);
+}
+.hd-stalled-more { font-size: 10.5px; color: var(--ak-text-faint); padding: var(--ak-sp-6); }
+
+/* ── Forecast ── */
+.hd-forecast-unknown { color: var(--ak-text-faint); }
+
+/* ── Bar chart: same hand-rolled div+height% approach as the Momentum
+   Board's own sparkline (board.css's .mb-sparkline) — no charting library
+   anywhere in this app; stay consistent with that, not add one. ── */
+.hd-bars {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--ak-sp-12);
+  align-items: end;
+  height: 120px;
+  margin-top: var(--ak-sp-6);
+}
+.hd-bar-col { display: flex; flex-direction: column; align-items: center; gap: var(--ak-sp-5); height: 100%; }
+.hd-bar-track {
+  flex: 1;
+  width: 100%;
+  display: flex;
+  align-items: flex-end;
+  background: var(--ak-surface-1);
+  border-radius: var(--ak-radius-bar);
+  overflow: hidden;
+}
+.hd-bar-fill {
+  width: 100%;
+  background: var(--ak-machine-deep);
+  border-radius: var(--ak-radius-bar) var(--ak-radius-bar) 0 0;
+  transition: height var(--motion-base, 200ms ease-out);
+}
+.hd-bar-value {
+  font-family: var(--ak-font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--ak-text-primary);
+}
+.hd-bar-label {
+  font-size: 10.5px;
+  color: var(--ak-text-faint);
+  text-transform: uppercase;
+  letter-spacing: .03em;
+}
+
+/* ── Rule performance table ── */
+.hd-rule-table { display: flex; flex-direction: column; margin-top: var(--ak-sp-6); }
+.hd-rule-row {
+  display: grid;
+  grid-template-columns: 1fr 80px 80px 140px;
+  gap: var(--ak-sp-8);
+  align-items: center;
+  padding: var(--ak-sp-8) var(--ak-sp-6);
+  border-top: 1px solid var(--ak-hairline);
+  font-size: 12px;
+  color: var(--ak-text-secondary);
+}
+.hd-rule-row:first-child { border-top: none; }
+.hd-rule-head {
+  font-family: var(--ak-font-mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--ak-text-faint);
+  border-top: none;
+}
+.hd-rule-name { display: flex; align-items: center; gap: var(--ak-sp-6); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ak-text-primary); }
+.hd-rule-flagged { background: color-mix(in oklch, var(--ak-warn), transparent 94%); border-radius: var(--ak-radius-row); }
+.hd-rule-flag-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ak-warn);
+  animation: hd-flag-pulse 1.6s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .hd-rule-flag-dot { animation: none; }
+}
+@keyframes hd-flag-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .4; }
+}
+.hd-rule-rate-flagged { color: var(--ak-warn); font-weight: 500; }
+.hd-rule-flag-label { font-size: 10.5px; opacity: .85; }
+
+@media (max-width: 900px) {
+  .hd-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .hd-span-2 { grid-column: span 2; }
+}
+@media (max-width: 560px) {
+  .hd-grid { grid-template-columns: 1fr; }
+  .hd-span-2 { grid-column: span 1; }
+}

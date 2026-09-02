@@ -1,0 +1,404 @@
+/* ─── Run Detail (Phase 14 — TASK 17) ──────────────────────────────────── */
+
+.rd-run-detail {
+  gap: var(--ak-sp-16);
+}
+
+.rd-back {
+  align-self: flex-start;
+  background: none;
+  border: none;
+  color: var(--ak-text-muted);
+  font-size: 13px;
+  cursor: pointer;
+  padding: 0;
+}
+.rd-back:hover {
+  color: var(--ak-text-primary);
+}
+
+.rd-header {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ak-sp-6);
+  padding-bottom: var(--ak-sp-12);
+  border-bottom: 1px solid var(--ak-border);
+  position: relative;
+}
+
+.rd-title-row {
+  display: flex;
+  align-items: center;
+  gap: var(--ak-sp-9);
+}
+
+.rd-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--ak-radius-round);
+  background: var(--ak-text-faint);
+  flex-shrink: 0;
+}
+.rd-dot-live {
+  background: var(--ak-machine);
+  box-shadow: var(--ak-halo-lime);
+  animation: rd-pulse 2s ease-in-out infinite;
+}
+@keyframes rd-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .rd-dot-live, .rd-plan-now .rd-plan-check { animation: none; }
+}
+
+.rd-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--ak-text-primary);
+}
+
+.rd-step-chip {
+  margin-left: auto;
+  font: 11px var(--ak-font-mono);
+  letter-spacing: 0.02em;
+  color: var(--ak-machine);
+  background: rgba(211, 242, 106, 0.1);
+  border: 1px solid rgba(211, 242, 106, 0.3);
+  border-radius: var(--ak-radius-bar);
+  padding: 2px var(--ak-sp-8);
+  cursor: pointer;
+}
+
+/* Disconnect pill — a stream-disconnected fleet must never read the same as
+   one that's simply idle/quiet. Same wsPhase-driven treatment as the
+   Decision Inbox's own header pill (inbox.tsx/.css). */
+.rd-disconnect-pill {
+  margin-left: var(--ak-sp-8);
+  font: 10.5px var(--ak-font-mono);
+  letter-spacing: 0.02em;
+  color: var(--ak-warn);
+  background: color-mix(in oklch, var(--ak-warn), transparent 88%);
+  border: 1px solid color-mix(in oklch, var(--ak-warn), transparent 55%);
+  border-radius: var(--ak-radius-bar);
+  padding: 2px var(--ak-sp-8);
+}
+
+.rd-meta-row {
+  font-size: 12px;
+  color: var(--ak-text-secondary);
+  display: flex;
+  gap: var(--ak-sp-6);
+}
+.rd-meta-sep {
+  color: var(--ak-text-faint);
+}
+.rd-mono {
+  font-family: var(--ak-font-mono);
+}
+
+.rd-header-actions {
+  position: absolute;
+  right: 0;
+  top: 0;
+  display: flex;
+  gap: var(--ak-sp-8);
+}
+
+.rd-grid {
+  display: grid;
+  grid-template-columns: 300px 1fr 300px;
+  gap: var(--ak-sp-16);
+  align-items: start;
+  flex: 1;
+  min-height: 0;
+}
+
+.rd-col {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.rd-panel-title {
+  font: 11px var(--ak-font-mono);
+  letter-spacing: 0.04em;
+  color: var(--ak-text-faint);
+  margin-bottom: var(--ak-sp-8);
+}
+.rd-files-title,
+.rd-unasked-title,
+.rd-cost-title {
+  margin-top: var(--ak-sp-16);
+}
+
+.rd-empty {
+  font-size: 12px;
+  color: var(--ak-text-faint);
+  padding: var(--ak-sp-8) 0;
+}
+
+/* ── Plan column ─────────────────────────────────────────────────────── */
+
+.rd-plan-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.rd-plan-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--ak-sp-8);
+  padding: var(--ak-sp-7) var(--ak-sp-8);
+  border-radius: var(--ak-radius-row);
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+
+.rd-plan-check {
+  width: 13px;
+  height: 13px;
+  border-radius: 3px;
+  flex-shrink: 0;
+  margin-top: 2px;
+  border: 1px solid var(--ak-track);
+}
+
+.rd-plan-done {
+  color: var(--ak-text-muted);
+}
+.rd-plan-done .rd-plan-text {
+  text-decoration: line-through;
+}
+.rd-plan-done .rd-plan-check {
+  background: var(--ak-machine);
+  border-color: var(--ak-machine);
+}
+
+.rd-plan-now {
+  background: var(--ak-surface-2);
+  border: 1px solid var(--ak-track);
+  color: var(--ak-text-primary);
+}
+.rd-plan-now .rd-plan-check {
+  border-color: var(--ak-machine);
+  box-shadow: var(--ak-halo-lime);
+  animation: rd-pulse 2s ease-in-out infinite;
+}
+
+.rd-plan-todo {
+  color: var(--ak-text-secondary);
+}
+
+.rd-plan-approval {
+  color: var(--ak-human);
+  white-space: nowrap;
+}
+
+.rd-files-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  max-height: 160px;
+  overflow-y: auto;
+}
+.rd-file-row {
+  font: 11.5px var(--ak-font-mono);
+  color: var(--ak-text-secondary);
+  padding: 3px var(--ak-sp-8);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ── Log column ──────────────────────────────────────────────────────── */
+
+.rd-log-col {
+  height: 100%;
+}
+
+.rd-log {
+  flex: 1;
+  min-height: 260px;
+  max-height: 60vh;
+  overflow-y: auto;
+  border: 1px solid var(--ak-border);
+  border-radius: var(--ak-radius-panel);
+  background: var(--ak-surface-0);
+  padding: var(--ak-sp-8);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.rd-log-row {
+  display: grid;
+  grid-template-columns: 64px 1fr;
+  gap: var(--ak-sp-8);
+  font-size: 12px;
+  padding: 3px var(--ak-sp-6);
+  border-radius: var(--ak-radius-bar);
+  color: var(--ak-text-secondary);
+  /* New rows fade in — the log is the one place on this screen where content
+     streams in live and unattended; a hard pop-in reads as a glitch. */
+  animation: rd-log-arrive 120ms ease-out;
+}
+@keyframes rd-log-arrive {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.rd-log-verb {
+  font: 10.5px var(--ak-font-mono);
+  color: var(--ak-text-faint);
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+}
+.rd-log-line {
+  font-family: var(--ak-font-mono);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.rd-log-gate {
+  background: var(--ak-surface-2);
+  border-left: 3px solid var(--ak-human);
+  color: var(--ak-text-primary);
+}
+.rd-log-error {
+  border-left: 3px solid var(--ak-warn);
+}
+.rd-log-error .rd-log-line {
+  color: var(--ak-warn);
+}
+.rd-log-idle {
+  opacity: 0.55;
+}
+@media (prefers-reduced-motion: reduce) {
+  .rd-log-row { animation: none; }
+}
+
+.rd-gate-pin {
+  margin-top: auto;
+  padding-top: var(--ak-sp-12);
+}
+
+/* ── Side column ─────────────────────────────────────────────────────── */
+
+.rd-kv {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.rd-kv-row {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--ak-sp-8);
+  font-size: 12px;
+  padding: 3px 0;
+}
+.rd-kv-key {
+  color: var(--ak-text-faint);
+}
+.rd-kv-val {
+  color: var(--ak-text-secondary);
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rd-collisions {
+  margin-top: var(--ak-sp-12);
+  padding: var(--ak-sp-8);
+  border-left: 3px solid var(--ak-warn);
+  border-radius: var(--ak-radius-row);
+  background: rgba(242, 180, 92, 0.08);
+}
+.rd-collisions-title {
+  font: 10.5px var(--ak-font-mono);
+  color: var(--ak-warn);
+  letter-spacing: 0.03em;
+  margin-bottom: var(--ak-sp-6);
+}
+.rd-collision-row {
+  font: 11.5px var(--ak-font-mono);
+  color: var(--ak-warn);
+  padding: 2px 0;
+}
+
+.rd-unasked {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ak-sp-6);
+}
+.rd-bullet {
+  font-size: 12px;
+  padding-left: var(--ak-sp-12);
+  position: relative;
+  line-height: 1.4;
+}
+.rd-bullet::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 6px;
+  width: 5px;
+  height: 5px;
+  border-radius: var(--ak-radius-round);
+}
+.rd-bullet-lime {
+  color: var(--ak-text-secondary);
+}
+.rd-bullet-lime::before {
+  background: var(--ak-machine);
+}
+.rd-bullet-blue {
+  color: var(--ak-text-secondary);
+}
+.rd-bullet-blue::before {
+  background: var(--ak-human);
+}
+
+.rd-plan-backdrop, .rd-plan-close { display: none; }
+
+@media (max-width: 1000px) {
+  .rd-grid {
+    grid-template-columns: 1fr;
+    position: relative;
+  }
+  /* The plan column becomes a true off-canvas drawer — fixed, off-screen by
+     default, sliding in over the page rather than just reflowing into the
+     stack (which is what the rest of .rd-grid's columns still do here). */
+  .rd-plan-col {
+    position: fixed;
+    top: 0; left: 0; bottom: 0;
+    width: min(340px, 88vw);
+    z-index: 50;
+    background: var(--ak-canvas);
+    border-right: 1px solid var(--ak-border);
+    padding: var(--ak-sp-16);
+    overflow-y: auto;
+    transform: translateX(-100%);
+    transition: transform 200ms ease-out;
+  }
+  @media (prefers-reduced-motion: reduce) { .rd-plan-col { transition: none; } }
+  .rd-plan-col-open { transform: translateX(0); }
+  .rd-plan-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: color-mix(in oklch, var(--ak-canvas), transparent 40%);
+    z-index: 49;
+  }
+  .rd-plan-close {
+    display: block;
+    align-self: flex-end;
+    background: none;
+    border: none;
+    color: var(--ak-text-faint);
+    font-size: 16px;
+    cursor: pointer;
+    padding: 0 0 var(--ak-sp-8);
+  }
+}

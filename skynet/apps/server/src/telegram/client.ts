@@ -10,10 +10,13 @@
 // the token before they surface so a caught+logged error can't leak it.
 
 /** A single button on an inline keyboard. `callback_data` is limited to 64 bytes
- *  by Telegram; keep it short and opaque (e.g. `confirm:p-3`). */
+ *  by Telegram; keep it short and opaque (e.g. `confirm:p-3`). A button carries
+ *  EITHER `callback_data` (routes back to the bot) OR `url` (opens a link
+ *  directly, e.g. the "Open the run in Skynet ↗" deep link) — never both. */
 export interface InlineKeyboardButton {
   text: string;
-  callback_data: string;
+  callback_data?: string;
+  url?: string;
 }
 /** An inline keyboard: rows of buttons attached to a message. */
 export interface InlineKeyboardMarkup {

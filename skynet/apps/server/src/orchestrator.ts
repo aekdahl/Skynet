@@ -3,7 +3,7 @@
 // task, route HITL gates, deliver decisions, fork, complete. Phase 0 uses the
 // mock runner; real providers drop in behind the same runner-sdk interface.
 
-import type { TaskRun, Checkpoint, HitlItem, Project, Resolution, Agent, Task, TaskAssignment, TaskSource, ProviderId, ProviderInfo, MergeBriefing, MergeBrief, FeatureBrief, Risk, Feature, FeatureStatus, Milestone, SolutionBrief, DiffWalkthrough, PullRequest, PrChecksStatus } from "@skynet/shared";
+import type { TaskRun, AutonomyBreaker, AutonomyOverride, Checkpoint, HitlItem, Project, Resolution, Agent, Task, TaskAssignment, TaskSource, TaskState, ProviderId, ProviderInfo, MergeBriefing, MergeBrief, FeatureBrief, Risk, Feature, FeatureStatus, Milestone, SolutionBrief, DiffWalkthrough, PullRequest, PrChecksStatus } from "@skynet/shared";
 import { WorkspaceSettings, computeDailySpend, costBandFor, dayWindow, pacedAvailableUsd, ratesFor, resolveTaskBrief } from "@skynet/shared";
 import {
   isCreditExhaustionError,
@@ -29,7 +29,9 @@ import { parseReviewVerdict, extractJsonObject, REVIEW_OUTPUT_INSTRUCTION, parse
 import { parseBreakerVerdict, BREAKER_OUTPUT_INSTRUCTION, type BreakerVerdictOut } from "./breaker-verdict.js";
 import { parseInjectionVerdict, buildInjectionPrompt } from "./injection-firewall.js";
 import { parseDiffWalkthrough, DIFF_WALKTHROUGH_INSTRUCTION, DIFF_WALKTHROUGH_SYSTEM } from "./diff-walkthrough.js";
+import { parseHandoffSummary, HANDOFF_SUMMARY_INSTRUCTION, HANDOFF_SUMMARY_SYSTEM } from "./handoff-summary.js";
 import { parseMergeBrief, MERGE_BRIEF_INSTRUCTION, MERGE_BRIEF_SYSTEM } from "./merge-brief.js";
+import { groupDiffByIntent } from "./diff-groups.js";
 import { composeFeatureBrief, parseFeatureNarrative, FEATURE_BRIEF_INSTRUCTION, FEATURE_BRIEF_SYSTEM } from "./feature-brief.js";
 import { decisionResumePrompt } from "./decision-resume.js";
 import { buildAgentContext, withInstructions } from "./agent-context.js";
@@ -37,12 +39,13 @@ import { syncRepoNativeMemory } from "./repo-memory-sync.js";
 import { buildSiblingDigest } from "./sibling-digest.js";
 import { config, now } from "./config.js";
 import { githubService } from "./github/index.js";
+import { lockedSectionIds, taskBlockedByRoadmapLock } from "./roadmap/proposals.js";
 import type { Hub } from "./hub.js";
 import { MergeEngine, FEATURE_BRANCH_PREFIX, type MergeRequest } from "./merge.js";
 import { loadModuleMap, type ModuleMap } from "./modules-map.js";
 import { providerUsableFromEnv } from "./provider-env.js";
 import { assessProjectDrive } from "./drive.js";
-import { decideAutoMerge, DEFAULT_AUTO_MERGE_POLICY, GATE_REASON_TEXT } from "./merge-policy.js";
+import { decideAutoMerge, DEFAULT_AUTO_MERGE_POLICY, GATE_REASON_TEXT, POLICY_MERGE_REASON } from "./merge-policy.js";
 
 /** How long before a project's board may be re-pulled from its source again. */
 const REFILL_COOLDOWN_MS = 15 * 60 * 1000;
@@ -305,7 +308,11 @@ const BREAKER_TIMEOUT_MS = 4 * 60_000;
 // yet at this point in a brief's life (it's pre-work, before any run/task), so
 // there's no per-agent model to inherit — hardcoded to Claude's default model
 // (matches DEFAULT_PROVIDERS' first "claude" entry in packages/shared/src/providers.ts).
-const EXPLORE_MODEL = "opus-4.8";
+/** Fallback when a workspace has no `exploreModel` set (see WorkspaceSettings).
+ *  Mid-tier on purpose: exploration reads code and reports back — it doesn't
+ *  need the strongest model, and this path used to pin Opus for every
+ *  workspace regardless of what its fleet was set to. */
+const EXPLORE_MODEL_FALLBACK = "sonnet-5";
 const EXPLORE_MAX_TURNS = 14;
 const EXPLORE_TIMEOUT_MS = 4 * 60_000;
 
@@ -646,6 +653,36 @@ export function computeFeatureMergeBriefing(input: {
  *  "ESCALATE") and is set directly in `raise()`, never via `escalate()`. */
 type EscalationSource = "timeout" | "failures" | "conflict" | "turns" | "stalled" | "billing" | "agent" | "stuck-review" | "paused";
 
+/**
+ * A model-ALIAS resolution failure — mapModel (claude.ts) hands the bundled
+ * CLI a bare alias ("sonnet") and trusts it to resolve to a real, current
+ * model id (its own doc comment says as much); that trust has now broken
+ * HARD rather than just drifting (see the versioned-vs-drifted distinction in
+ * claude.ts's modelMismatchWarning) — the CLI resolved to something the API
+ * flatly 404s on, before any session even starts, so there's no init message
+ * for the drift-warning mechanism to compare against. Found live: an operator
+ * chatting a finished agent got a raw
+ * `HTTP 404: {"type":"error","error":{"type":"not_found_error","message":"model: claude-sonnet"},...}`
+ * blob instead of anything actionable.
+ */
+const MODEL_NOT_FOUND_RE = /"type":"not_found_error"[^}]*"message":"model:\s*([^"}]+)/;
+
+/**
+ * Give that ONE recognized error shape a plain, actionable message; any other
+ * error keeps its original text verbatim — never invent an explanation for a
+ * failure we haven't actually diagnosed.
+ */
+export function friendlyConsultError(err: Error): string {
+  const match = err.message.match(MODEL_NOT_FOUND_RE);
+  if (!match) return err.message;
+  const model = match[1]!.trim();
+  return (
+    `the model "${model}" isn't recognized by the provider right now — this usually means the server is ` +
+    `running an out-of-date build (redeploying with the latest code picks up a fixed model alias) or the ` +
+    `agent's model was set to something invalid in Fleet.`
+  );
+}
+
 export class Orchestrator {
   private live = new Map<string, LiveAgent>();
   // Global kill switch. When paused, the autonomy loop is a no-op (no new work is
@@ -674,6 +711,14 @@ export class Orchestrator {
   // and so a project bound to its own repo never silently uses the fallback of
   // some other repo's catalog. See moduleMapFor().
   private moduleMaps = new Map<string, ModuleMap>();
+  // Review & Merge (Phase 15): who/what approved the run currently sitting in
+  // the local merge queue — merge.ts's own MergeRequest carries no approval
+  // metadata (see MergeEngine.queueFor's doc comment), so this is set right
+  // before the enqueue() call in deliver()/completeMerged's retry paths and
+  // read back by mergeQueueSnapshot. Small and best-effort: an entry with no
+  // recorded approval (a retry path that doesn't set one) just reads as
+  // "human" below, same as an operator-driven retry actually is.
+  private mergeApprovals = new Map<string, string>();
   // One git backend per repo path (worktrees + serialized merge queue), built on
   // demand. Keyed by repo so a project's local repo and the global integration
   // repo each get their own queue.
@@ -700,16 +745,15 @@ export class Orchestrator {
   private failCounts = new Map<string, number>();
   // Session circuit-breaker: consecutive BAD autonomy outcomes (a flagged
   // auto-review verdict, or a failed run) for the SAME project, with no good
-  // outcome in between. Keyed by projectId. In-memory: a restart resets it to
-  // 0, which fails OPEN (one more attempt is allowed before the breaker can
-  // trip again) — an accepted trade-off, not a safety gap: this breaker is a
-  // BEHAVIORAL stop (don't keep grinding through tasks on a project that's
-  // clearly stuck), layered on top of the per-run/per-key breakers above and
-  // whatever spend budget the operator has configured, not the only guard.
-  // Cleared on any good outcome, or when the operator re-enables the
-  // project's `autonomy` toggle (see resetAutonomyStreak, called from
-  // operations.ts#updateProject).
-  private autonomyStreaks = new Map<string, { count: number; entries: string[] }>();
+  // outcome in between. TASK 19 — persisted via store.{get,put}AutonomyBreaker
+  // (project-scoped `autonomyBreaker` record) so a restart mid-streak no
+  // longer resets it (used to be an in-memory Map here, which failed OPEN on
+  // every restart). This breaker is a BEHAVIORAL stop (don't keep grinding
+  // through tasks on a project that's clearly stuck), layered on top of the
+  // per-run/per-key breakers above and whatever spend budget the operator has
+  // configured, not the only guard. Cleared on any good outcome, or when the
+  // operator re-enables the project's `autonomy` toggle (see
+  // resetAutonomyStreak, called from operations.ts#updateProject).
   // Key-health circuit breaker: credentials (`${ws}:${credentialId ?? provider}`)
   // known to be out of credits/quota. `providerUsable` refuses a depleted key so
   // NO new run is assigned to it (and auto-provision skips it) — stopping the
@@ -836,6 +880,23 @@ export class Orchestrator {
     return git.merge.revert(commit, branch);
   }
 
+  /** Read-only snapshot of a project's local merge queue (Review & Merge,
+   *  Phase 15) — who's queued, their position, and whether they got there via
+   *  a human's Approve or an auto-merge policy. No new merge decision logic:
+   *  position comes straight from MergeEngine.queueFor, and mode/reason come
+   *  from mergeApprovals (set in deliver(), right before enqueueing). Empty
+   *  for a project with no local git backend (e.g. the GitHub PR flow, which
+   *  has its own separate "Ready to merge" surface — apps/web/src/views/merges.tsx). */
+  mergeQueueSnapshot(project: Project): Array<{ runId: string; position: number; mode: "human" | "auto"; reason: string | null }> {
+    const git = this.gitContextFor(project);
+    if (!git) return [];
+    return git.merge.queueFor(project.id).map(({ runId, position }) => {
+      const by = this.mergeApprovals.get(runId);
+      const reason = by ? POLICY_MERGE_REASON[by] : undefined;
+      return { runId, position, mode: reason ? "auto" : "human", reason: reason ?? null };
+    });
+  }
+
   private gitContextFor(project?: Project | null): GitContext | undefined {
     const repo = project?.gitBacked && project.repoPath ? project.repoPath : config.integrationRepo;
     return repo ? this.gitContextForRepo(repo, this.baseBranchFor(project)) : undefined;
@@ -908,7 +969,7 @@ export class Orchestrator {
 
   private events(): RunnerEvents {
     return {
-      onLog: (runId, line, detail) => void this.hub.runLog(runId, line, detail),
+      onLog: (runId, line, detail, meta) => void this.hub.runLog(runId, line, detail, meta),
       onLogDelta: (runId, delta) => void this.hub.runLogDelta(runId, delta),
       onProgress: (runId, progress, plan) => void this.hub.runProgress(runId, progress, plan),
       onUsage: (runId, usage) => void this.hub.runUsage(runId, usage),
@@ -1007,6 +1068,8 @@ export class Orchestrator {
       id: `q-${runId}-${++this.seq}`,
       workspaceId: agent.workspaceId,
       runId,
+      projectId: null,
+      roadmapProposalId: null,
       kind: raise.kind,
       title: raise.title,
       why,
@@ -1039,6 +1102,7 @@ export class Orchestrator {
         command: raise.command,
         level: project?.approvalLevel ?? "trusted",
         rules: project?.approvalRules ?? [],
+        alwaysGate: project?.alwaysGateCommands ?? [],
         policy,
       });
       if (auto) {
@@ -1074,6 +1138,11 @@ export class Orchestrator {
       await this.hub.runStatus(runId, "waiting"); // an escalation gate always blocks the run
       await this.hub.runLog(runId, `escalated by the agent${live?.git ? " — freed its runner" : ""} — ${raise.title}`);
     }
+    // A real, structured "gate" row for the Run Detail live log — distinct
+    // from the escalation-kind free-text line above (still logged when that
+    // branch also ran), so the log always carries one unambiguous marker of
+    // the exact moment this run actually stalled waiting on a human.
+    await this.hub.runLog(runId, `⛔ awaiting approval: ${item.title}`, undefined, { verb: "gate" });
     await this.hub.raiseHitl(item);
     if (expiresAt != null) {
       this.questionTimers.set(item.id, setTimeout(() => void this.expireQuestion(item), timeout));
@@ -1140,24 +1209,33 @@ export class Orchestrator {
 
       if (res.committed) {
         const stat = await wt.diffStat(runId, live.baseRef);
-        // Fetched alongside the stat (not inside raiseDiffReview) since it's the
-        // same worktree/baseRef this function already has in scope — raiseDiffReview
-        // only needs the text, to draft the walkthrough and hand to the HITL.
-        const patch = await wt.patch(runId, live.baseRef);
-        await this.freeRunner(live.agentId); // compute is done; awaiting review
-        await this.hub.runStatus(runId, "review");
-        // The run produced a diff → its task enters the review column (a human or
-        // an autonomous reviewer resolves the diff HITL, which merges → done).
-        if (live.taskId) {
-          const task = await this.store.getTask(live.taskId);
-          if (task) await this.hub.upsertTask({ ...task, state: "review" });
+        // `commitAll` only proves the worktree was dirty vs its OWN last commit —
+        // e.g. a revision that undid an earlier turn's change nets to zero against
+        // `baseRef` even though something real got committed just now. Gate on the
+        // net diff, not just "did a commit land", so a genuinely empty result falls
+        // through to the same no-diff handling below instead of opening a review
+        // with nothing in it to look at.
+        if (stat.files.length > 0) {
+          // Fetched alongside the stat (not inside raiseDiffReview) since it's the
+          // same worktree/baseRef this function already has in scope — raiseDiffReview
+          // only needs the text, to draft the walkthrough and hand to the HITL.
+          const patch = await wt.patch(runId, live.baseRef);
+          await this.freeRunner(live.agentId); // compute is done; awaiting review
+          await this.hub.runStatus(runId, "review");
+          // The run produced a diff → its task enters the review column (a human or
+          // an autonomous reviewer resolves the diff HITL, which merges → done).
+          if (live.taskId) {
+            const task = await this.store.getTask(live.taskId);
+            if (task) await this.hub.upsertTask({ ...task, state: "review" });
+          }
+          await this.raiseDiffReview(runId, stat, patch);
+          // Keep what a `modify` review resolution needs to resume this run for a
+          // revision — its worktree survives (retire only happens on merge).
+          this.reviews.set(runId, { git: live.git, baseRef: live.baseRef, taskId: live.taskId });
+          this.live.delete(runId);
+          return;
         }
-        await this.raiseDiffReview(runId, stat, patch);
-        // Keep what a `modify` review resolution needs to resume this run for a
-        // revision — its worktree survives (retire only happens on merge).
-        this.reviews.set(runId, { git: live.git, baseRef: live.baseRef, taskId: live.taskId });
-        this.live.delete(runId);
-        return;
+        await this.hub.runLog(runId, "committed, but the branch is identical to its base — nothing to review");
       }
 
       if ("error" in res && res.error) {
@@ -1251,9 +1329,17 @@ export class Orchestrator {
     if (!res.committed) {
       throw new NothingToReviewError("No changes have been made on this run yet — nothing to review.");
     }
+    // `commitAll` only proves the worktree was dirty vs its OWN last commit — a
+    // revision that undid an earlier turn's change can commit something real
+    // right now while netting to zero against `baseRef`. Check the ACTUAL diff
+    // before stopping the live session, so a false-positive commit never tears
+    // down a still-running agent for a review with nothing in it to look at.
+    const stat = await wt.diffStat(runId, live.baseRef);
+    if (stat.files.length === 0) {
+      throw new NothingToReviewError("No changes have been made on this run yet — nothing to review.");
+    }
 
     await live.handle.stop().catch(() => undefined);
-    const stat = await wt.diffStat(runId, live.baseRef);
     const patch = await wt.patch(runId, live.baseRef);
     await this.freeRunner(live.agentId);
     await this.hub.runStatus(runId, "review");
@@ -1397,7 +1483,12 @@ export class Orchestrator {
     // project's own module map — not the agent's declared scope (`agent.modules`,
     // initialized []), which would under- or mis-report what changed (#6).
     const project = await this.store.getProject(agent.projectId);
-    const modules = this.moduleMapFor(project).modulesForFiles(stat.files);
+    const moduleMap = this.moduleMapFor(project);
+    const modules = moduleMap.modulesForFiles(stat.files);
+    // Review & Merge (Phase 15): the SAME diff, grouped by likely intent
+    // instead of by file — see diff-groups.ts's own doc comment for why this
+    // reuses the module map rather than a new semantic grouper.
+    const groups = groupDiffByIntent(patch, moduleMap);
     // Record what actually changed on the run so every view reflects it (the run
     // itself, not just the review card). `modifiedFiles` was never populated.
     await this.hub.runModifiedFiles(runId, stat.files);
@@ -1458,6 +1549,8 @@ export class Orchestrator {
       id: `q-diff-${runId}-${++this.seq}`,
       workspaceId: agent.workspaceId,
       runId,
+      projectId: null,
+      roadmapProposalId: null,
       kind: "diff",
       // Concise, scannable title — the run/task is shown separately in every view
       // (queue card, audit row, run header), so embedding the whole task prompt
@@ -1474,7 +1567,7 @@ export class Orchestrator {
       options: null,
       recommended: null,
       steps: null,
-      diff: { add: stat.add, del: stat.del, modules, files: stat.files, walkthrough, mergeBrief, defaultTargetBranch },
+      diff: { add: stat.add, del: stat.del, modules, files: stat.files, walkthrough, mergeBrief, groups, defaultTargetBranch },
       output: null,
       // The fixed path-policy hits, as scannable chips — the evidence behind a
       // "high" risk on an otherwise-small diff. Empty when nothing in the
@@ -1591,6 +1684,37 @@ export class Orchestrator {
       return parseDiffWalkthrough(reply, files);
     } catch {
       return null; // best-effort — a draft failure never blocks the review
+    }
+  }
+
+  /**
+   * Kanban redesign, stage 1: when a run is REASSIGNED to a different agent,
+   * draft a real summary of the prior agent's log — grounded on the log
+   * itself, same stateless one-shot consult discipline as
+   * draftDiffWalkthrough. Best-effort: an empty log, a provider with no
+   * consult() support, or a failed/unreadable reply all just mean no
+   * summary — relaunchEscalated already has a safe static fallback line, so
+   * this never blocks a reassign.
+   */
+  private async draftHandoffSummary(run: TaskRun, taskText: string): Promise<string | null> {
+    if (!run.log.length) return null;
+    try {
+      const provider = await this.getProvider(run.provider);
+      if (!provider.consult) return null;
+      const apiKey = await secretService.resolve(run.workspaceId, run.credentialId ?? run.provider);
+      const baseUrl = await secretService.resolveEndpoint(run.workspaceId, run.credentialId ?? run.provider).catch(() => undefined);
+      const rates = ratesFor(baseUrl, run.model);
+      // Recent tail only — enough to ground a handoff summary without
+      // dragging a whole long run's log through the consult.
+      const logTail = run.log.slice(-60).map((l) => l.line).join("\n").slice(-6000);
+      if (!logTail.trim()) return null;
+      const reply = await provider.consult(
+        { task: taskText, model: run.model, cwd: config.runnerCwd, apiKey, baseUrl, rates, context: logTail, system: HANDOFF_SUMMARY_SYSTEM },
+        HANDOFF_SUMMARY_INSTRUCTION,
+      );
+      return parseHandoffSummary(reply);
+    } catch {
+      return null; // best-effort — a draft failure never blocks the reassign
     }
   }
 
@@ -1772,6 +1896,22 @@ export class Orchestrator {
   /** Breaker key for a run's effective credential (`credentialId ?? provider`). */
   private keyId(workspaceId: string, provider: Agent["provider"], credentialId?: string | null): string {
     return `${workspaceId}:${credentialId ?? provider}`;
+  }
+
+  /** Every provider key currently marked depleted (out of credits/quota) for a
+   *  workspace — the ONE fleet-level source a "provider key needs attention"
+   *  banner reads, so an operator sees a single signal instead of the
+   *  per-run billing escalation `tripKeyBreaker` ALSO still raises (kept,
+   *  unchanged — each affected run still needs its own resume/reassign
+   *  decision once the key's topped up; this is additive visibility, not a
+   *  replacement for that). */
+  listDepletedKeys(workspaceId: string): { credentialId: string; reason: string; at: number }[] {
+    const prefix = `${workspaceId}:`;
+    const out: { credentialId: string; reason: string; at: number }[] = [];
+    for (const [key, v] of this.depletedKeys) {
+      if (key.startsWith(prefix)) out.push({ credentialId: key.slice(prefix.length), reason: v.reason, at: v.at });
+    }
+    return out;
   }
 
   /**
@@ -2220,6 +2360,7 @@ export class Orchestrator {
       id: runId,
       endpoint: runEndpoint,
       merge: null, // set when (and if) this run's diff actually lands — see completeMerged
+      handoff: null, // written if this run ever escalates — see composeHandoff
       workspaceId: project.workspaceId,
       projectId,
       name: task.text,
@@ -2787,6 +2928,10 @@ export class Orchestrator {
     // guardrail: the diff review gated here, so reaching this point means an
     // operator approved the push (or a failed merge/check is being retried).
     if (resolution.action === "approve" && (item.kind === "diff" || item.kind === "merge" || item.kind === "verifier")) {
+      // Recorded before enqueueing so mergeQueueSnapshot can read back WHO
+      // approved this once it's sitting in the local merge queue — see
+      // mergeApprovals's own doc comment.
+      this.mergeApprovals.set(runId, resolution.by);
       const integrated = await this.integrateRun(runId, {
         sourceBranchOverride: item.sourceBranchOverride,
         targetBranch: resolution.targetBranch ?? item.diff?.defaultTargetBranch ?? undefined,
@@ -2999,6 +3144,35 @@ export class Orchestrator {
    *  through raise() instead — same free-the-runner treatment for a
    *  worktree-backed run (a chat-only run's live gate still stays parked;
    *  see raise()'s own doc comment). */
+  /**
+   * What the agent had worked out, for whoever picks this run up next.
+   *
+   * Deliberately NOT a model call. The agent's own escalation reason is already
+   * its account of what it tried and what's blocking (that's what the ESCALATE
+   * payload carries), and its recent log is the record of what it actually did.
+   * Asking a model to summarise those would cost tokens to produce a lossier
+   * version of text we already have — on the exact code path that exists to
+   * stop paying twice for the same context.
+   *
+   * Prose lines only: tool/telemetry chatter ("▸ reading src/x.ts") is noise to
+   * a fresh agent, which can see the working tree for itself.
+   */
+  private composeHandoffFor(run: TaskRun, reason: string): string {
+    const NOISE = /^[▸✓⏸⚠❑●$]/;
+    const recent = run.log
+      .slice(-40)
+      .map((l) => l.line.trim())
+      .filter((l) => l && !NOISE.test(l))
+      .slice(-8);
+    return [
+      `Why it stopped: ${reason}`,
+      run.modifiedFiles.length ? `Files touched so far: ${run.modifiedFiles.slice(0, 20).join(", ")}` : null,
+      recent.length ? `Last notes from the previous agent:\n${recent.map((l) => `- ${l}`).join("\n")}` : null,
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+  }
+
   private async escalate(runId: string, reason: string, source: EscalationSource): Promise<void> {
     if (this.escalations.has(runId)) return; // already escalated — don't re-raise
     const run = await this.store.getRun(runId);
@@ -3015,6 +3189,14 @@ export class Orchestrator {
     // needs the task looked up by its runId pointer, or a successful
     // resume/reassign could never move the task back to "ongoing".
     const taskId = live?.taskId ?? (await this.store.listTasks(run.workspaceId)).find((t) => t.runId === run.id)?.id ?? null;
+    // Record what this agent had worked out, BEFORE the card goes up. If the
+    // resume later lands on a fresh session (the SDK session map is in-memory,
+    // so a server restart loses it), this is what saves the replacement from
+    // re-deriving the whole situation by re-reading the repo — the expensive
+    // half of an escalation resume. No model call: the agent's own escalation
+    // reason plus its recent log is both cheaper and more faithful than asking
+    // a model to summarise them.
+    await this.hub.upsertRun({ ...run, handoff: { summary: this.composeHandoffFor(run, reason), at: now() } }).catch(() => undefined);
     await this.raiseEscalationCard(run, reason, source, { git, baseRef: live?.baseRef, taskId });
   }
 
@@ -3055,6 +3237,8 @@ export class Orchestrator {
       id: `q-${run.id}-${++this.seq}`,
       workspaceId: run.workspaceId,
       runId: run.id,
+      projectId: null,
+      roadmapProposalId: null,
       kind: "escalation",
       title:
         source === "timeout"
@@ -3111,23 +3295,36 @@ export class Orchestrator {
   private async noteAutonomyBadOutcome(project: Project, runId: string, entry: string): Promise<void> {
     const max = config.autonomyMaxConsecutiveFailures;
     if (!project.autonomy || max <= 0) return;
-    const streak = this.autonomyStreaks.get(project.id) ?? { count: 0, entries: [] };
+    const existing = await this.store.getAutonomyBreaker(project.id);
+    // A fresh empty streak — used as the starting point both when there's no
+    // record yet, and when the existing one is an already-tripped leftover
+    // from a race (a bad outcome landing after the trip already fired).
+    const fresh: AutonomyBreaker = { projectId: project.id, count: 0, entries: [], trippedAt: null, trippedByRunId: null };
+    const streak: AutonomyBreaker = existing?.trippedAt ? fresh : (existing ?? fresh);
     streak.count += 1;
     streak.entries.push(entry);
+    streak.trippedByRunId = runId;
     if (streak.count < max) {
-      this.autonomyStreaks.set(project.id, streak);
+      await this.hub.putAutonomyBreaker(project.workspaceId, streak);
       return;
     }
-    // Tripped. Reset the streak BEFORE anything async can race a fresh bad
-    // outcome in (e.g. a review verdict for a run already in flight) into
-    // re-tripping on top of an already-paused project.
-    this.autonomyStreaks.delete(project.id);
+    // Tripped. Persist the FULL record (count/entries/trippedAt) rather than
+    // clearing it — the operator's "SEE THE THREE REVERTS" read on the dial
+    // (and the lift audit below, once it's cleared) needs exactly what
+    // tripped it. A fresh bad outcome landing on an already-tripped record
+    // (a race — e.g. a review verdict for a run already in flight) is
+    // absorbed by the `existing?.trippedAt` reset above, so it can't
+    // re-trip an already-paused project.
+    streak.trippedAt = now();
+    await this.hub.putAutonomyBreaker(project.workspaceId, streak);
     await this.hub.upsertProject({ ...project, autonomy: false });
     const list = streak.entries.map((e, i) => `${i + 1}) ${e}`).join(" ");
     const item: HitlItem = {
       id: `q-autonomy-${project.id}-${++this.seq}`,
       workspaceId: project.workspaceId,
       runId,
+      projectId: null,
+      roadmapProposalId: null,
       kind: "escalation",
       title: `Autonomy paused — ${streak.count} bad outcomes in a row`,
       why:
@@ -3155,19 +3352,81 @@ export class Orchestrator {
     };
     await this.hub.raiseHitl(item);
     await this.hub.runLog(runId, `project autonomy paused — ${streak.count} consecutive bad outcomes`).catch(() => undefined);
+    // Explicit audit row for the trip itself (TASK 19) — same tamper-evident
+    // AuditRecord path every HITL resolution uses (see hub.ts), so the trip
+    // shows up in the workspace's audit trail, not just the HITL queue.
+    await this.store
+      .recordAudit({
+        workspaceId: project.workspaceId,
+        hitlId: item.id,
+        runId,
+        action: "autonomy-breaker-tripped",
+        operatorId: "system",
+        at: streak.trippedAt,
+        payload: { count: streak.count, entries: streak.entries },
+      })
+      .catch(() => undefined);
   }
 
   /** A good autonomy outcome (an auto-review approve) — clears any accumulated
    *  bad streak for the project, same as an operator re-enabling autonomy. */
-  private noteAutonomyGoodOutcome(projectId: string): void {
-    this.autonomyStreaks.delete(projectId);
+  private async noteAutonomyGoodOutcome(project: Project): Promise<void> {
+    await this.clearAutonomyBreaker(project, "system");
   }
 
   /** Operator re-enabled a project's `autonomy` toggle (operations.ts#updateProject)
    *  — clear any accumulated circuit-breaker streak so it starts fresh instead of
    *  being able to re-trip on the very next bad outcome. */
-  resetAutonomyStreak(projectId: string): void {
-    this.autonomyStreaks.delete(projectId);
+  async resetAutonomyStreak(project: Project, operatorId: string): Promise<void> {
+    await this.clearAutonomyBreaker(project, operatorId);
+  }
+
+  /** Shared by both "clear" paths above: drop the persisted breaker record
+   *  (and any pending override — a real lift makes a scheduled "revert to
+   *  whatever the breaker says" moot, and a fresh autonomy decision
+   *  supersedes any earlier bypass either way). Audits + notifies a LIFT only
+   *  when the breaker had actually TRIPPED (`trippedAt` set) — clearing a
+   *  streak that never reached threshold isn't audit-worthy, same as it was
+   *  silently absorbed before TASK 19 persisted this at all. */
+  private async clearAutonomyBreaker(project: Project, operatorId: string): Promise<void> {
+    const existing = await this.store.getAutonomyBreaker(project.id);
+    await this.hub.deleteAutonomyBreaker(project.workspaceId, project.id);
+    await this.hub.deleteAutonomyOverride(project.workspaceId, project.id);
+    if (!existing?.trippedAt) return;
+    await this.store
+      .recordAudit({
+        workspaceId: project.workspaceId,
+        hitlId: `q-autonomy-lift-${project.id}-${++this.seq}`,
+        runId: existing.trippedByRunId ?? "none",
+        action: "autonomy-breaker-lifted",
+        operatorId,
+        at: now(),
+        payload: { trippedAt: existing.trippedAt, entries: existing.entries },
+      })
+      .catch(() => undefined);
+  }
+
+  /**
+   * TASK 19 — sweep every project's active autonomy override for expiry:
+   * once `expiresAt` passes, revert to whatever the breaker's CURRENT trip
+   * state says (still tripped → force `autonomy` back off; already cleared
+   * by a real lift in the meantime → this is a no-op, the project is
+   * already correctly on). Runs on the same cadence as tickAutonomy (see
+   * index.ts) — cheap, and a no-op for every project with no active override.
+   */
+  private async sweepAutonomyOverrides(ws: string, projects: Project[]): Promise<void> {
+    for (const project of projects) {
+      const override = await this.store.getAutonomyOverride(project.id).catch(() => undefined);
+      if (!override || now() < override.expiresAt) continue;
+      await this.hub.deleteAutonomyOverride(ws, project.id);
+      const breaker = await this.store.getAutonomyBreaker(project.id).catch(() => undefined);
+      if (breaker?.trippedAt && project.autonomy) {
+        await this.hub.upsertProject({ ...project, autonomy: false });
+        await this.hub
+          .runLog(breaker.trippedByRunId ?? "", `autonomy override expired — breaker is still tripped, autonomy is off again`)
+          .catch(() => undefined);
+      }
+    }
   }
 
   /** Resolve an `escalation`: help & resume (modify), reassign, stop (reject), or
@@ -3189,33 +3448,23 @@ export class Orchestrator {
       return;
     }
     if (resolution.action === "reject") {
-      // Stop: abandon the run cleanly and reclaim its worktree.
-      const taskId = this.escalations.get(runId)?.taskId ?? live?.taskId ?? null;
-      if (live) await live.handle.stop().catch(() => undefined);
-      await this.freeRunner(live?.agentId ?? null);
-      this.live.delete(runId);
-      const git = this.escalations.get(runId)?.git ?? live?.git;
-      if (git) await git.worktrees.retire(runId).catch(() => undefined);
-      await this.releaseScratchCwd(live?.scratchCwd);
-      this.escalations.delete(runId);
-      this.failCounts.delete(runId);
-      await this.hub.runStatus(runId, "done");
-      await this.hub.runLog(runId, "escalation resolved — operator stopped the run");
-      // Same invariant haltAgent upholds for a plain (non-escalated) Stop: a
-      // stopped run integrates no change, so its task must not be left
-      // stranded "ongoing"/"review" with no live run behind it — that reads as
+      // Stop: abandon the run cleanly and reclaim its worktree. Same invariant
+      // haltAgent upholds for a plain (non-escalated) Stop: a stopped run
+      // integrates no change, so its task must not be left stranded
+      // "ongoing"/"review" with no live run behind it — that reads as
       // in-progress while nothing is working it. Without this, EVERY
       // escalation stopped via this path (a reap, a stalled runner, an agent
       // escalation the operator declines) orphans its task in the kanban
       // forever — found live, 10 of 11 "ongoing" tasks on a real deployment
       // had already-done runs behind them, none reachable by drag (ongoing's
       // only legal human move is → todo, and nothing was making that move).
-      if (taskId) {
-        const task = await this.store.getTask(taskId).catch(() => undefined);
-        if (task && (task.state === "ongoing" || task.state === "review")) {
-          await this.hub.upsertTask({ ...task, state: "todo", runId: null, reviewVerdict: null }).catch(() => undefined);
-        }
-      }
+      // retireRun ALSO dismisses any OTHER HITL still open for this run
+      // (e.g. an approval gate raised alongside the escalation) — the
+      // escalation item itself is already resolved by the time deliver() is
+      // called, so it's not re-touched here.
+      this.escalations.delete(runId);
+      this.failCounts.delete(runId);
+      await this.retireRun(runId, "escalation resolved — operator stopped the run");
       return;
     }
     // A worktree-backed escalation frees its runner + clears `this.live` the
@@ -3240,16 +3489,13 @@ export class Orchestrator {
     if (resolution.action === "reassign" && resolution.resetWork) {
       const run = await this.store.getRun(runId);
       const taskId = this.escalations.get(runId)?.taskId ?? live?.taskId ?? null;
-      if (live) await live.handle.stop().catch(() => undefined);
-      await this.freeRunner(live?.agentId ?? null);
-      this.live.delete(runId);
-      const git = this.escalations.get(runId)?.git ?? live?.git;
-      if (git) await git.worktrees.retire(runId).catch(() => undefined);
-      await this.releaseScratchCwd(live?.scratchCwd);
       this.escalations.delete(runId);
       this.failCounts.delete(runId);
-      await this.hub.runStatus(runId, "done");
-      await this.hub.runLog(runId, "escalation resolved — operator reassigned with a clean slate (previous work discarded)");
+      // unstrand:false — assignTask (below) mints a brand-new run and
+      // overwrites task.runId itself; no need to un-strand to todo first.
+      await this.retireRun(runId, "escalation resolved — operator reassigned with a clean slate (previous work discarded)", {
+        unstrand: false,
+      });
       if (run && taskId) await this.assignTask(run.projectId, taskId).catch(() => undefined);
       return;
     }
@@ -3393,15 +3639,27 @@ export class Orchestrator {
       cleanedGitState.length > 0
         ? `\n\nNote: the previous agent was interrupted mid-\`git ${cleanedGitState.join("/")}\` — it's been aborted for you (no file changes were touched), so the working directory reflects only real committed/uncommitted work, not a half-finished merge. No need to investigate this further.`
         : "";
+    // Kanban redesign, stage 1: brief a reassigned agent with a REAL summary
+    // of what the prior agent tried, not just "the work is in the directory"
+    // — grounded on the actual log, best-effort (see draftHandoffSummary).
+    const handoffSummary = reassign ? await this.draftHandoffSummary(run, task?.text ?? run.name) : null;
+    const handoffNote = handoffSummary ? `\n\nSummary of the prior agent's work so far:\n\n${handoffSummary}` : "";
     const prompt = buildAgentContext({
       project,
       feature,
       brief: solutionBrief ? this.briefContextText(solutionBrief) : undefined,
       siblings,
+      // Carried into every relaunch prompt. When the SDK session survived, this
+      // is mildly redundant with the agent's own memory and costs a few hundred
+      // characters; when it didn't (a server restart, or a takeover by a
+      // different runner), it is the difference between continuing and
+      // re-reading the entire repo to rediscover what was already known. Cheap
+      // insurance against the expensive case.
+      handoff: run.handoff?.summary,
       body: targetAgentId
-        ? `An operator manually reassigned this task to you mid-run — the previous agent wasn't stuck, they just chose to switch who's working it. Its work so far is already in the working directory (branch ${run.branch}).${gitStateNote}${guidance ? `\n\nOperator guidance:\n\n${guidance}` : ""}\n\nReview what's there, then continue and finish the task. If you get stuck, escalate (AskUserQuestion with header "ESCALATE").`
+        ? `An operator manually reassigned this task to you mid-run — the previous agent wasn't stuck, they just chose to switch who's working it. Its work so far is already in the working directory (branch ${run.branch}).${handoffNote}${gitStateNote}${guidance ? `\n\nOperator guidance:\n\n${guidance}` : ""}\n\nReview what's there, then continue and finish the task. If you get stuck, escalate (AskUserQuestion with header "ESCALATE").`
         : reassign
-          ? `You are taking over a task another agent escalated because it got stuck. Its work so far is already in the working directory (branch ${run.branch}).${gitStateNote}${guidance ? `\n\nOperator guidance:\n\n${guidance}` : ""}\n\nReview what's there, then continue and finish the task. If you also get stuck, escalate (AskUserQuestion with header "ESCALATE").`
+          ? `You are taking over a task another agent escalated because it got stuck. Its work so far is already in the working directory (branch ${run.branch}).${handoffNote}${gitStateNote}${guidance ? `\n\nOperator guidance:\n\n${guidance}` : ""}\n\nReview what's there, then continue and finish the task. If you also get stuck, escalate (AskUserQuestion with header "ESCALATE").`
           : `You escalated this task for help, and the operator responded:\n\n${guidance || "(no specific guidance — use your best judgement, or escalate again if still blocked)"}\n\nYour work so far is already in the working directory (branch ${run.branch}).${gitStateNote} Continue with this guidance and finish, or escalate again (AskUserQuestion with header "ESCALATE") if you're still blocked.`,
     });
     // Reflect the (re)acquired runner on the persisted run: a reassign moves the
@@ -3422,7 +3680,28 @@ export class Orchestrator {
     );
     try {
       const handle = await provider.start(
-        { runId, projectId: run.projectId, task: prompt, model: run.model, branch: run.branch, cwd, apiKey, baseUrl, rates, disallowedTools: project?.disallowedTools },
+        {
+          runId,
+          projectId: run.projectId,
+          task: prompt,
+          model: run.model,
+          branch: run.branch,
+          cwd,
+          apiKey,
+          baseUrl,
+          rates,
+          disallowedTools: project?.disallowedTools,
+          // RESUME this run's own SDK session instead of starting cold. Without
+          // it, every "Help & resume" / "Reassign" threw the conversation away
+          // and paid full price to re-read the repo and re-derive what the
+          // first agent already knew. The runner resolves this through its
+          // session map (claude.ts) and silently falls back to a fresh session
+          // when there's nothing to resume — which is the RESTART case, and
+          // exactly why the run also carries a handoff summary in its prompt.
+          // Note `reassign + resetWork` never reaches here: it short-circuits
+          // to a clean slate earlier, so a deliberate reset still gets one.
+          parentId: runId,
+        },
         this.events(),
       );
       this.live.set(runId, { handle, agentId: acq.id, taskId: taskIdForResume ?? null, branch: run.branch, baseRef: ctx?.baseRef ?? live?.baseRef ?? this.baseBranchFor(project), git });
@@ -3999,7 +4278,8 @@ export class Orchestrator {
   ): Promise<{ merged: boolean; reason?: string; blocked?: "conflict" | "checks" | "protection" }> {
     const run = await this.store.getRun(runId);
     if (!run || run.workspaceId !== workspaceId || run.pr?.state !== "open") throw new Error("No open PR for this run.");
-    const res = await githubService.mergePr(workspaceId, run.pr.repo, run.pr.number, method);
+    const cred = (await this.store.getProject(run.projectId))?.githubCredentialId ?? null;
+    const res = await githubService.mergePr(workspaceId, run.pr.repo, run.pr.number, method, cred);
     if (!res.merged) {
       const blocked = await this.classifyMergeBlock(workspaceId, run.projectId, run.pr, res.reason);
       await this.hub.runLog(runId, `merge blocked (${blocked.blocked}): ${blocked.reason}`);
@@ -4144,7 +4424,8 @@ export class Orchestrator {
   ): Promise<{ merged: boolean; reason?: string; blocked?: "conflict" | "checks" | "protection" }> {
     const feature = await this.store.getFeature(featureId);
     if (!feature || feature.workspaceId !== workspaceId || feature.pr?.state !== "open") throw new Error("No open PR for this feature.");
-    const res = await githubService.mergePr(workspaceId, feature.pr.repo, feature.pr.number, method);
+    const cred = (await this.store.getProject(feature.projectId))?.githubCredentialId ?? null;
+    const res = await githubService.mergePr(workspaceId, feature.pr.repo, feature.pr.number, method, cred);
     if (!res.merged) {
       const blocked = await this.classifyMergeBlock(workspaceId, feature.projectId, feature.pr, res.reason);
       return { merged: false, ...blocked };
@@ -4190,6 +4471,8 @@ export class Orchestrator {
       id: `q-merge-${req.runId}-${++this.seq}`,
       workspaceId: agent.workspaceId,
       runId: req.runId,
+      projectId: null,
+      roadmapProposalId: null,
       kind: "merge",
       title: "Integration failed — not a conflict",
       why: featureUp
@@ -4208,7 +4491,7 @@ export class Orchestrator {
       // Carry the originally-attempted target branch forward so a plain retry
       // lands in the same place the operator chose (or the default) the first
       // time — deliver() re-reads this on approve (see resolution.targetBranch).
-      diff: { add: 0, del: 0, modules: agent.modules, files: [], walkthrough: null, mergeBrief: null, defaultTargetBranch: req.targetBranch ?? null },
+      diff: { add: 0, del: 0, modules: agent.modules, files: [], walkthrough: null, mergeBrief: null, groups: [], defaultTargetBranch: req.targetBranch ?? null },
       output: null,
       flags: [reason],
       sourceBranchOverride: featureUp ? req.agentBranch : null,
@@ -4243,6 +4526,8 @@ export class Orchestrator {
       id: `q-merge-${req.runId}-${++this.seq}`,
       workspaceId: agent.workspaceId,
       runId: req.runId,
+      projectId: null,
+      roadmapProposalId: null,
       kind: "merge",
       title: `Merge conflict — ${files.length} file${files.length === 1 ? "" : "s"}`,
       why: featureUp
@@ -4259,11 +4544,17 @@ export class Orchestrator {
       recommended: null,
       steps: null,
       // Same carry-forward as raiseMergeFailedHitl above.
-      diff: { add: 0, del: 0, modules: agent.modules, files: [], walkthrough: null, mergeBrief: null, defaultTargetBranch: req.targetBranch ?? null },
+      diff: { add: 0, del: 0, modules: agent.modules, files: [], walkthrough: null, mergeBrief: null, groups: [], defaultTargetBranch: req.targetBranch ?? null },
       output: conflictDiff
         ? `Target branch: ${targetBranch}\n\n${conflictDiff}`.slice(0, Orchestrator.VERIFIER_OUTPUT_CAP)
         : null,
-      flags: files, // the conflicting files — shown as chips
+      // The conflicting files as chips, plus a literal tag (TASK 15) marking
+      // this as a REAL same-file collision — flags is already a generic tag
+      // bag (escalation mixes semantic tags into its own reason list the same
+      // way, e.g. `[...flags, "agent"]` above), so no new schema field. Its
+      // absence on another `kind:"merge"` item (e.g. raiseMergeFailedHitl,
+      // a non-conflict git failure) is what lets a caller tell the two apart.
+      flags: [...files, "file_collision"],
       sourceBranchOverride: featureUp ? req.agentBranch : null,
     });
   }
@@ -4300,6 +4591,8 @@ export class Orchestrator {
       id: `q-verifier-${req.runId}-${++this.seq}`,
       workspaceId: agent.workspaceId,
       runId: req.runId,
+      projectId: null,
+      roadmapProposalId: null,
       kind: "verifier",
       title: "Checks failed — merge undone",
       why: `${req.agentBranch}'s checks failed after merging; the merge commit was undone. Approve to retry the merge + checks, or reject/modify to send the agent the output as revision guidance.`,
@@ -4547,7 +4840,7 @@ export class Orchestrator {
         yield await provider.consult!(spec, question);
       }
     } catch (err) {
-      yield `couldn't look into that right now (${(err as Error).message}).`;
+      yield `couldn't look into that right now (${friendlyConsultError(err as Error)}).`;
     }
   }
 
@@ -4576,6 +4869,67 @@ export class Orchestrator {
     await this.releaseScratchCwd(live?.scratchCwd);
     await this.hub.runLog(runId, reason);
     this.live.delete(runId);
+  }
+
+  /**
+   * Kanban redesign, stage 1: the single "this run is over, not reassigned"
+   * teardown. Consolidates what `haltAgent`, `deliverEscalation`'s `reject`
+   * branch, and `reapStaleAgents`' waiting-run branch each hand-rolled
+   * separately — worktree retirement was consistent across them, but HITL
+   * dismissal and `hub.runCompleted` were NOT (audited while building this:
+   * only 2 of the 5 total detach paths in the codebase dismissed dangling
+   * HITL items, which is the "Inbox message doesn't update when a task moves
+   * in kanban" bug class — see the `Operations.transitionTask` fix this
+   * builds on). Always: stops the live handle if any, frees the runner,
+   * retires the worktree, archives the run (a retired run — not reassigned,
+   * not naturally completed — is dead weight for the current work; tucking
+   * it away, reversibly, is more consistent than the old patchwork where
+   * only some paths archived, some only conditionally), marks it terminal
+   * (`status: "done"` + `run.completed`), and dismisses every HITL gate
+   * still open for it — it's now unanswerable.
+   *
+   * `unstrand` (default true) additionally returns the owning task to `todo`
+   * if it was ongoing/review — the invariant "an ongoing/review task always
+   * has a live run" asserted in five places before this. Callers that
+   * already know the operator's chosen destination column (which may not be
+   * `todo` — `Operations.transitionTask`'s done→triage/backlog demotion
+   * case) pass `unstrand: false` and write the task themselves right after.
+   */
+  async retireRun(runId: string, reason: string, opts: { by?: string; unstrand?: boolean } = {}): Promise<void> {
+    const run = await this.store.getRun(runId);
+    if (!run) return;
+    await this.stopAgent(runId, reason);
+    await this.hub.setRunArchived(runId, true).catch(() => undefined);
+    if (run.status !== "done") {
+      await this.hub.runStatus(runId, "done");
+      await this.hub.runCompleted(runId, run.branch);
+    }
+    // Any gate still pointing at this run is now unanswerable — it's stopped
+    // and (unless reassigned, a separate path) the task is starting fresh
+    // elsewhere, so leaving the card would strand it in the Inbox pointing
+    // at dead work.
+    const open = (await this.store.listQueue(run.workspaceId).catch(() => [] as HitlItem[])).filter(
+      (q) => q.runId === runId && !q.resolvedAt,
+    );
+    for (const q of open) {
+      await this.hub
+        .resolveHitl(q.id, {
+          action: "dismiss",
+          by: opts.by ?? "system",
+          at: now(),
+          optionIndex: null,
+          guidance: null,
+          targetBranch: null,
+          memoryNote: null,
+          resetWork: false,
+        })
+        .catch(() => undefined);
+    }
+    if (opts.unstrand === false) return;
+    const task = (await this.store.listTasks(run.workspaceId).catch(() => [] as Task[])).find((t) => t.runId === runId);
+    if (task && (task.state === "ongoing" || task.state === "review")) {
+      await this.hub.upsertTask({ ...task, state: "todo", runId: null, reviewVerdict: null });
+    }
   }
 
   /**
@@ -4762,22 +5116,13 @@ export class Orchestrator {
         continue;
       }
       // A `waiting` run with a frozen heartbeat that ISN'T an escalation was
-      // parked on a gate whose session died — free its runner + mark it terminal.
-      await this.stopAgent(a.id, reason).catch(() => undefined);
-      await this.hub.runStatus(a.id, "done").catch(() => undefined);
-      await this.hub.runCompleted(a.id, a.branch).catch(() => undefined);
-      // stopAgent retired the worktree — this run integrates no change, so its
-      // owning task must not be left stranded "ongoing" (or "review") showing
-      // a live-looking column next to a run whose chip now reads "done". Same
-      // invariant haltAgent/settleArchivedRun uphold; this sweep was the one
-      // termination path missing it (reported live: a kanban card sitting in
-      // a mid-pipeline column while its status chip showed done).
-      const reapedTask = (await this.store.listTasks(a.workspaceId).catch(() => [] as Task[])).find(
-        (t) => t.runId === a.id,
-      );
-      if (reapedTask && (reapedTask.state === "ongoing" || reapedTask.state === "review")) {
-        await this.hub.upsertTask({ ...reapedTask, state: "todo", runId: null, reviewVerdict: null }).catch(() => undefined);
-      }
+      // parked on a gate whose session died — retireRun frees its runner,
+      // marks it terminal, dismisses that now-unanswerable gate (this sweep
+      // used to leave it dangling in the Inbox — same bug class as the
+      // kanban-move fix), and un-strands its owning task back to `todo` so a
+      // live-looking column doesn't sit next to a run whose chip now reads
+      // "done" (reported live: exactly that kanban symptom).
+      await this.retireRun(a.id, reason).catch(() => undefined);
     }
   }
 
@@ -5009,6 +5354,10 @@ export class Orchestrator {
         // is exactly the one that most needs its state written down, so it must
         // not be skipped by the very condition it's reporting on.
         await this.updateDriveStates(ws, projects, tasks).catch(() => undefined);
+        // TASK 19 — expire any manual autonomy-breaker overrides. Runs
+        // regardless of capacity (like the drive read above): it's a project
+        // settings/state maintenance step, not autonomous work.
+        await this.sweepAutonomyOverrides(ws, projects).catch(() => undefined);
         for (const p of projects) {
           // Re-read idle capacity per project (an earlier project may have used it).
           const idle = (await this.store.listAgents(ws)).filter((a) => a.status === "idle");
@@ -5038,7 +5387,11 @@ export class Orchestrator {
             const backlog = mine.find(
               (t) => t.state === "backlog" && (t.assignment?.mode ?? "unassigned") !== "unassigned",
             );
-            if (backlog && projectIdle.length > 0) await this.triageOne(ws, projectIdle[0]!, backlog);
+            if (backlog && projectIdle.length > 0) {
+              const before = backlog.state;
+              const triaged = await this.triageOne(ws, projectIdle[0]!, backlog);
+              await this.writeMachineTransition(triaged, before, triaged.state, ["autonomy triage sweep"]);
+            }
             // 2) Start auto-pick todo tasks (todo → ongoing) while capacity lasts.
             //    Gated by `p.autonomy` — this is where money/time actually gets
             //    spent, so it stays under the project autonomy toggle. Also
@@ -5055,8 +5408,18 @@ export class Orchestrator {
             //    serializes in call order — grants idle agents to the
             //    highest-priority tasks first instead of array/insertion order.
             if (p.autonomy && (await this.underDailyBudget(p, runs))) {
+              // TASK 28, Rule 4 — a roadmap section held in `held_conflict`
+              // (two agents' proposals contradicted each other) locks out
+              // further auto-picked work tied to it via RoadmapLine.taskIds,
+              // until a human resolves the conflict. Cheap when nothing's
+              // locked (the common case): one held-conflict list read, no
+              // roadmap doc read at all unless something's actually locked.
+              const heldConflicts = await this.store.listRoadmapProposalsForProject(p.id, { state: "held_conflict" });
+              const locked = lockedSectionIds(heldConflicts);
+              const roadmapDoc = locked.size > 0 ? await this.store.getRoadmapDoc(p.id) : undefined;
               const pickable = mine
                 .filter((t) => t.state === "todo" && t.autoPick && (t.assignment?.mode ?? "unassigned") !== "unassigned")
+                .filter((t) => !taskBlockedByRoadmapLock(roadmapDoc, locked, t.id))
                 // S7: a task generated from a brief decomposition may declare
                 // dependencies on other tasks from the same plan — skip it
                 // until every one of those is `done`. `mine` already holds
@@ -5073,7 +5436,14 @@ export class Orchestrator {
               // selectAffordable's own comment) — a no-op list transform when
               // no budget is set.
               const affordable = await this.selectAffordable(p, runs, pickable);
-              await Promise.allSettled(affordable.map((t) => this.assignTask(p.id, t.id)));
+              const results = await Promise.allSettled(affordable.map((t) => this.assignTask(p.id, t.id)));
+              await Promise.all(
+                results.map((r, i) =>
+                  r.status === "fulfilled"
+                    ? this.writeMachineTransition(affordable[i]!, "todo", "ongoing", ["autonomy auto-pick"])
+                    : Promise.resolve(),
+                ),
+              );
             }
             // 3) Review a finished run — runs REGARDLESS of `p.autonomy`.
             //    Recording a verdict is diagnostic (an LLM consult), not a
@@ -5119,7 +5489,7 @@ export class Orchestrator {
    * through the EXACT same write logic — including the clarification loop
    * breaker below — rather than two copies that can drift.
    */
-  private async triageOne(ws: string, agent: Agent, task: Task): Promise<void> {
+  private async triageOne(ws: string, agent: Agent, task: Task): Promise<Task> {
     const { assessment, assessmentEffort, assessmentRisks, estimatedDurationMs, clarity, featureId, milestoneId, questions } =
       await this.assessTask(ws, agent, task);
     // Only OVERWRITE an existing estimate when triage produced a new one —
@@ -5164,7 +5534,7 @@ export class Orchestrator {
           "Triage still flagged this unclear after the operator's answer — proceeding anyway; confirm scope before/while working it.",
         ]
       : assessmentRisks;
-    await this.hub.upsertTask({
+    return this.hub.upsertTask({
       ...task,
       state: nextState,
       assessment,
@@ -5175,6 +5545,32 @@ export class Orchestrator {
       featureId: nextFeatureId,
       milestoneId: nextMilestoneId,
     });
+  }
+
+  /** Momentum Rollout Phase 1b: record the orchestrator's OWN autonomous task
+   *  moves (not a human action, not a Rule) into the same Transition log the
+   *  rule engine writes to — so "what moved and why" has a single source of
+   *  truth regardless of which system did it. `actor:"machine"` +
+   *  `ruleId:null` is the documented signal for exactly this case (see
+   *  Transition's own doc comment in kanban.ts). Best-effort: a failure here
+   *  must never block the actual task move it's recording. */
+  private async writeMachineTransition(task: Task, from: TaskState, to: TaskState, evidence: string[]): Promise<void> {
+    if (from === to) return; // nothing actually moved — no-op, don't pollute the log
+    await this.store
+      .createTransition({
+        id: `tr-${task.id}-${++this.seq}`,
+        workspaceId: task.workspaceId,
+        projectId: task.projectId,
+        taskId: task.id,
+        from,
+        to,
+        actor: "machine",
+        actorId: null,
+        ruleId: null,
+        evidence,
+        at: now(),
+      })
+      .catch(() => undefined);
   }
 
   /**
@@ -5324,7 +5720,7 @@ export class Orchestrator {
       };
     } catch (err) {
       return {
-        assessment: `Auto-triaged — "${task.text}" (assessment unavailable: ${(err as Error).message}).`,
+        assessment: `Auto-triaged — "${task.text}" (assessment unavailable: ${friendlyConsultError(err as Error)}).`,
         assessmentEffort: null,
         assessmentRisks: [],
         estimatedDurationMs: null,
@@ -5806,7 +6202,7 @@ export class Orchestrator {
               // command", since it has no explicit tool-name field.
               const isBash = /^Run a shell command:/.test(raise.title);
               if (raise.kind === "approval" && isBash) {
-                const auto = decideAutoApproval({ command: raise.command, level: project.approvalLevel, rules: project.approvalRules, policy });
+                const auto = decideAutoApproval({ command: raise.command, level: project.approvalLevel, rules: project.approvalRules, alwaysGate: project.alwaysGateCommands, policy });
                 resolution = auto
                   ? { action: "approve", optionIndex: null, guidance: null, targetBranch: null, memoryNote: null, resetWork: false, by: auto.by, at: now() }
                   : {
@@ -5917,7 +6313,9 @@ export class Orchestrator {
       if (!provider) return null;
       const apiKey = (await secretService.resolve(ws, "claude").catch(() => undefined)) ?? undefined;
       const baseUrl = await secretService.resolveEndpoint(ws, "claude").catch(() => undefined);
-      const rates = ratesFor(baseUrl, EXPLORE_MODEL);
+      // Operator-settable — this path has no run or agent to inherit from.
+      const exploreModel = (await this.fleetPolicy(ws)).exploreModel || EXPLORE_MODEL_FALLBACK;
+      const rates = ratesFor(baseUrl, exploreModel);
 
       const prompt = [
         `You are grounding a DRAFT plan against the ACTUAL codebase before a human decides whether to approve it. Read the repo — don't assume.`,
@@ -5976,7 +6374,7 @@ export class Orchestrator {
                 runId: exploreRunId,
                 projectId: project.id,
                 task: prompt,
-                model: EXPLORE_MODEL,
+                model: exploreModel,
                 branch: this.baseBranchFor(project),
                 cwd,
                 apiKey,
@@ -6086,7 +6484,7 @@ export class Orchestrator {
       }
     } catch (err) {
       decision = "flag";
-      reason = `review consult failed: ${(err as Error).message}`;
+      reason = `review consult failed: ${friendlyConsultError(err as Error)}`;
     }
     // The consult above is slow (an LLM round-trip); meanwhile an operator — or
     // another actor — may have resolved this same gate and driven the run to
@@ -6125,7 +6523,7 @@ export class Orchestrator {
       if (decision === "flag") {
         await this.noteAutonomyBadOutcome(breakerProject, hitl.runId, `"${freshTask.text}" flagged — ${reason}`);
       } else {
-        this.noteAutonomyGoodOutcome(breakerProject.id);
+        await this.noteAutonomyGoodOutcome(breakerProject);
       }
       // Self-replenishing backlog: independent of the verdict itself — a
       // flagged run's reviewer can still have noticed something worth a task,
@@ -6295,6 +6693,8 @@ export class Orchestrator {
       milestoneId: null,
       source,
       dependsOnTaskIds: [],
+      parentTaskId: null,
+      priority: null,
       lint: null,
       preferredProvider: null,
       preferredModel: null,
@@ -6368,29 +6768,7 @@ export class Orchestrator {
   async haltAgent(runId: string): Promise<TaskRun | undefined> {
     const agent = await this.store.getRun(runId);
     if (!agent) return undefined;
-    const live = this.live.get(runId);
-    if (live?.agentId) {
-      const runner = await this.store.getAgent(live.agentId);
-      if (runner) await this.hub.upsertAgent({ ...runner, status: "idle", idleSince: now() });
-    }
-    await this.stopAgent(runId); // stop the handle + retire the worktree + drop the session
-    // stopAgent detaches but leaves the status untouched — halt is the terminal
-    // operator action, so mark it done and emit the completion event.
-    if (agent.status !== "done") {
-      await this.hub.runStatus(runId, "done");
-      await this.hub.runCompleted(runId, agent.branch);
-    }
-    // A stopped run integrates no change, so its owning task must not be left
-    // stranded "ongoing" (or "review") with no live run behind it — that reads as
-    // in-progress while nothing is working it. Return the task to `todo` (cleanly
-    // re-pickable) and archive+detach the dead run, mirroring the abandon path
-    // (transitionTask ongoing/review → todo). Invariant: an `ongoing` task always
-    // has a live run.
-    const task = (await this.store.listTasks(agent.workspaceId)).find((t) => t.runId === runId);
-    if (task && (task.state === "ongoing" || task.state === "review")) {
-      await this.hub.setRunArchived(runId, true).catch(() => undefined);
-      await this.hub.upsertTask({ ...task, state: "todo", runId: null, reviewVerdict: null });
-    }
+    await this.retireRun(runId, "stopped by operator");
     return this.store.getRun(runId);
   }
 

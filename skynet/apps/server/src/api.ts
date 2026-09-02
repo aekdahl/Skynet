@@ -8,11 +8,15 @@
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import {
+  AcceptSubtaskRequest,
+  AddApprovalRuleRequest,
+  BacktestRuleRequest,
   ConfigureRunnerRequest,
   CreateFeatureRequest,
   CreateMilestoneRequest,
   CreateProjectContextEntryRequest,
   CreateProjectRequest,
+  CreateRuleRequest,
   CreateSolutionBriefRequest,
   CreateTaskRequest,
   AnswerClarificationRequest,
@@ -27,8 +31,12 @@ import {
   UpdateMilestoneRequest,
   UpdateProjectRequest,
   UpdateProjectRoadmapRequest,
+  ProposeRoadmapChangeRequest,
+  CommitRoadmapLineEditRequest,
+  RoadmapConflictResolveRequest,
   UpdateWorkspaceSettingsRequest,
   UpdateRunnerRequest,
+  UpdateRuleRequest,
   UpdateSolutionBriefRequest,
   UpdateTaskRequest,
   MoveTaskRequest,
@@ -36,6 +44,8 @@ import {
   MergePrRequest,
   ReworkPrRequest,
   ExecuteStewardActionRequest,
+  PendingRuleActionStatus,
+  SetAutonomyDetentRequest,
 } from "@skynet/shared";
 import { installProviderCli } from "./provider-install.js";
 import { installCommandFor } from "./provider-requirements.js";
@@ -63,7 +73,17 @@ import {
   NoTriageTargetError,
   type Orchestrator,
 } from "./orchestrator.js";
-import { NotFoundError, type Operations, RoadmapConflictError, RunnerBusyError } from "./operations.js";
+import {
+  CommandNotRememberableError,
+  NotFoundError,
+  type Operations,
+  ProposalAlreadyResolvedError,
+  RoadmapConflictError,
+  RoadmapProposalAutonomyGateError,
+  RoadmapProposalNeedsHumanApprovalError,
+  RoadmapProposalNotOpenError,
+  RunnerBusyError,
+} from "./operations.js";
 import { CrystallizeParseError } from "./steward/crystallize.js";
 import type { ChatTurn } from "./project-assistant.js";
 import { simulateConversational } from "./telegram/index.js";
@@ -88,10 +108,18 @@ function fail(reply: FastifyReply, err: unknown): FastifyReply {
   if (err instanceof NotFoundError) return reply.code(404).send({ error: err.message });
   // A denylisted command can never be approved — policy refusal, not a bad request.
   if (err instanceof CommandDeniedError) return reply.code(422).send({ error: err.message });
+  // A high-risk/deny command can never become a standing auto-approval either.
+  if (err instanceof CommandNotRememberableError) return reply.code(422).send({ error: err.message });
   // The request was well-formed, but the model couldn't produce a valid draft
   // even after a retry — semantically unprocessable, not a malformed request.
   if (err instanceof CrystallizeParseError) return reply.code(422).send({ error: err.message });
+  // Rule 2 / the autonomy-detent gate on an autonomous roadmap-proposal
+  // apply — policy refusals, same family as CommandDeniedError above.
+  if (err instanceof RoadmapProposalNeedsHumanApprovalError || err instanceof RoadmapProposalAutonomyGateError) {
+    return reply.code(403).send({ error: err.message });
+  }
   if (
+    err instanceof RoadmapProposalNotOpenError ||
     err instanceof NoCapacityError ||
     err instanceof TaskAlreadyAssignedError ||
     err instanceof RunnerNotConfiguredError ||
@@ -101,7 +129,8 @@ function fail(reply: FastifyReply, err: unknown): FastifyReply {
     err instanceof AlreadyReviewedError ||
     err instanceof NoReviewerAvailableError ||
     err instanceof NothingToReviewError ||
-    err instanceof NoTriageTargetError
+    err instanceof NoTriageTargetError ||
+    err instanceof ProposalAlreadyResolvedError
   ) {
     return reply.code(409).send({ error: (err as Error).message });
   }
@@ -316,6 +345,40 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
   );
 
   // ── HITL ───────────────────────────────────────────────────────────────
+  // TASK 15 — every open decision across every project in the workspace
+  // (today's per-project HITL surfaces all filter the same underlying
+  // workspace-scoped queue down to one project). Sorted by cost-of-waiting.
+  app.get("/api/decisions", async (req, reply) => {
+    try {
+      return await ops.listDecisions(ws(req));
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
+  // TASK 23 hardening — the ONE fleet-level source for "a provider key needs
+  // attention", so the web app can show a single banner instead of leaving
+  // the operator to notice N duplicated per-run billing escalations.
+  app.get("/api/depleted-keys", async (req, reply) => {
+    try {
+      return ops.listDepletedKeys(ws(req));
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
+  // TASK 24 — the command palette's "Pause the whole fleet" destructive
+  // action. Same kill switch Telegram's /stop already calls; falls through
+  // to the default "author" scope (auth-guard.ts), so a viewer can't reach it.
+  app.post("/api/fleet/stop-all", async (req, reply) => {
+    try {
+      const stopped = await ops.stopAllRuns(req.principal!.operatorId);
+      return { stopped };
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
   app.post<{ Params: { id: string } }>("/api/hitl/:id/resolve", async (req, reply) => {
     const body = ResolveRequest.safeParse(req.body);
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
@@ -616,7 +679,7 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     const body = UpdateProjectRequest.safeParse(req.body);
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
     try {
-      return await ops.updateProject(ws(req), req.params.id, body.data);
+      return await ops.updateProject(ws(req), req.params.id, body.data, req.principal!.operatorId);
     } catch (err) {
       return fail(reply, err);
     }
@@ -626,6 +689,18 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     try {
       await ops.deleteProject(ws(req), req.params.id);
       return { ok: true };
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
+  // Add a standing "approve always" rule directly (Keys & Budget panel's
+  // "+ add pattern" — the risk cap is derived server-side, never client-supplied).
+  app.post<{ Params: { id: string } }>("/api/projects/:id/approval-rules", async (req, reply) => {
+    const body = AddApprovalRuleRequest.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+    try {
+      return await ops.addApprovalRule(ws(req), req.params.id, body.data.command, req.principal!.operatorId);
     } catch (err) {
       return fail(reply, err);
     }
@@ -642,6 +717,40 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
       }
     },
   );
+
+  // TASK 19 — autonomy dial: GET the composite notch + persisted breaker/
+  // override state, POST to set a target notch (atomically writes both
+  // underlying fields), POST to bypass a tripped breaker for a bounded window.
+  app.get<{ Params: { id: string } }>("/api/projects/:id/autonomy-detent", async (req, reply) => {
+    try {
+      return await ops.getAutonomyDetent(ws(req), req.params.id);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+  app.get<{ Params: { id: string } }>("/api/projects/:id/merge-queue", async (req, reply) => {
+    try {
+      return await ops.getMergeQueue(ws(req), req.params.id);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+  app.post<{ Params: { id: string } }>("/api/projects/:id/autonomy-detent", async (req, reply) => {
+    const body = SetAutonomyDetentRequest.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+    try {
+      return await ops.setAutonomyDetent(ws(req), req.params.id, body.data.detent, req.principal!.operatorId);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+  app.post<{ Params: { id: string } }>("/api/projects/:id/autonomy-override", async (req, reply) => {
+    try {
+      return await ops.createAutonomyOverride(ws(req), req.params.id, req.principal!.operatorId);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
 
   // Clone a GitHub-connected project's repo into a managed local checkout (for a
   // headless server with no folder to point at). Sets repoPath + gitBacked.
@@ -677,8 +786,9 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
 
   // Streaming Steward chat: the reply is written as text/plain deltas so the dock
   // renders it live, then a final control frame — a RS (\x1e) sentinel followed by
-  // {reply, action, projectId} — carries the CLEAN reply (trailing action JSON
-  // stripped) and any confirm-first action. The sentinel never occurs in prose.
+  // {reply, actions, projectId, sources} — carries the CLEAN reply (trailing
+  // action/sources JSON stripped), any confirm-first actions, and any source
+  // citations (TASK 21). The sentinel never occurs in prose.
   app.post<{ Body: { question?: string; history?: ChatTurn[]; projectId?: string } }>(
     "/api/steward/chat/stream",
     async (req, reply) => {
@@ -707,7 +817,7 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
       raw.flushHeaders();
       try {
         const gen = ops.stewardChatStream(ws(req), question, history, focus);
-        let result: { reply: string; actions: unknown; projectId: string | null } | undefined;
+        let result: { reply: string; actions: unknown; projectId: string | null; sources: unknown } | undefined;
         for (;;) {
           const { value, done } = await gen.next();
           if (done) {
@@ -917,6 +1027,7 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     try {
       return await ops.executeStewardAction(ws(req), req.params.id, body.data.action, req.principal!.operatorId, {
         dryRun: body.data.dryRun,
+        onlyIndices: body.data.onlyIndices,
       });
     } catch (err) {
       return fail(reply, err);
@@ -1313,6 +1424,124 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     }
   });
 
+  // ── roadmap document view (Phase 26 — TASK 29) ────────────────────────────
+  // The parsed doc (real line state, blame-derived provenance, claim overrides).
+  app.get<{ Params: { id: string } }>("/api/projects/:id/roadmap/doc", async (req, reply) => {
+    try {
+      return await ops.getProjectRoadmapDoc(ws(req), req.params.id);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+  app.get<{ Params: { id: string } }>("/api/projects/:id/roadmap/proposals", async (req, reply) => {
+    try {
+      return await ops.listRoadmapProposals(ws(req), req.params.id);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+  // TASK 31 — the Drift dashboard's ORPHANS panel ("propose N roadmap lines
+  // to cover these") rides the exact same governed creation path an agent's
+  // own proposal uses (Operations.proposeRoadmapChange — one open proposal
+  // per section, raises a roadmap_edit Inbox card); the operator supplies
+  // which fleet agent to attribute it to (the dashboard picks one, since
+  // there's no "the operator proposed this as an agent" identity).
+  app.post<{ Params: { id: string } }>("/api/projects/:id/roadmap/proposals", async (req, reply) => {
+    const body = ProposeRoadmapChangeRequest.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+    try {
+      return await ops.proposeRoadmapChange(ws(req), req.params.id, body.data);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+  app.post<{ Params: { id: string; pid: string } }>("/api/projects/:id/roadmap/proposals/:pid/apply", async (req, reply) => {
+    try {
+      return await ops.applyRoadmapProposal(ws(req), req.params.id, req.params.pid, { operatorId: req.principal!.operatorId });
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+  app.post<{ Params: { id: string; lineId: string } }>("/api/projects/:id/roadmap/lines/:lineId/claim", async (req, reply) => {
+    try {
+      return await ops.claimRoadmapLine(ws(req), req.params.id, req.params.lineId, req.principal!.operatorId);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+  app.post<{ Params: { id: string; lineId: string } }>("/api/projects/:id/roadmap/lines/:lineId/revert", async (req, reply) => {
+    try {
+      return await ops.revertRoadmapLineCommit(ws(req), req.params.id, req.params.lineId, req.principal!.operatorId);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+  app.get<{ Params: { id: string }; Querystring: { limit?: string } }>("/api/projects/:id/roadmap/history", async (req, reply) => {
+    const limit = req.query.limit ? Number(req.query.limit) : undefined;
+    try {
+      return await ops.getRoadmapHistory(ws(req), req.params.id, { limit });
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+  // TASK 31 — the Drift dashboard's ONE DECISION panel ("MOVE IT TO Q4" /
+  // "KEEP AND RE-DATE Q3"): a single-line edit the operator decided directly,
+  // committed straight through TASK 28's attributed-commit path with no
+  // proposal/HITL detour (see Operations.commitRoadmapLineEdit).
+  app.post<{ Params: { id: string } }>("/api/projects/:id/roadmap/commit-edit", async (req, reply) => {
+    const body = CommitRoadmapLineEditRequest.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+    try {
+      return await ops.commitRoadmapLineEdit(ws(req), req.params.id, body.data, req.principal!.operatorId);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+  // "Without a file there is no roadmap — create one from the board."
+  app.post<{ Params: { id: string } }>("/api/projects/:id/roadmap/scaffold", async (req, reply) => {
+    try {
+      return await ops.scaffoldProjectRoadmap(ws(req), req.params.id, req.principal!.operatorId);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
+  // ── workspace roadmap roll-up (Phase 29 — TASK 32) ────────────────────────
+  // Scoped to the caller's own project access (req.principal — the same
+  // allowlist mcp/project-scope.ts enforces everywhere else); no new
+  // access-control surface.
+  app.get("/api/roadmap-rollup", async (req, reply) => {
+    try {
+      return await ops.getWorkspaceRoadmapRollup(ws(req), req.principal!);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
+  // ── roadmap proposal governance (TASK 30) ────────────────────────────────
+  // The plain approve/reject action rides the existing generic
+  // POST /api/hitl/:id/resolve (Operations.resolveHitl branches on
+  // kind === "roadmap_edit" itself — see that method) — no new route needed
+  // for it. Only the two genuinely different shapes get their own route: a
+  // live read (the Inbox/conflict card never trusts a frozen HITL snapshot)
+  // and the held_conflict pair's choose/write_own action.
+  app.get<{ Params: { id: string; pid: string } }>("/api/projects/:id/roadmap-proposals/:pid", async (req, reply) => {
+    try {
+      return await ops.getRoadmapProposal(ws(req), req.params.id, req.params.pid);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+  app.post<{ Params: { id: string } }>("/api/hitl/:id/roadmap-conflict-resolve", async (req, reply) => {
+    const body = RoadmapConflictResolveRequest.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+    try {
+      return await ops.resolveRoadmapConflict(ws(req), req.params.id, body.data, req.principal!.operatorId);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
   // ── fleet ──────────────────────────────────────────────────────────────
   app.post("/api/fleet/runners", async (req, reply) => {
     const body = ConfigureRunnerRequest.safeParse(req.body);
@@ -1334,6 +1563,186 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     try {
       await ops.retireRunner(ws(req), req.params.id);
       return { ok: true };
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
+  // Momentum Rollout Phase 1b — cancel a rule engine action within its undo
+  // window (still-pending: never applies; just-finalized: reverts the
+  // task's move). 404s if the pending action isn't found in this workspace;
+  // otherwise surfaces the RuleEngine's own honest reason (already undone /
+  // window passed) via `fail`.
+  app.post<{ Params: { id: string } }>("/api/rules/pending-actions/:id/undo", async (req, reply) => {
+    try {
+      return await ops.undoRuleAction(ws(req), req.params.id, req.principal!.operatorId);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
+  // ── rules (Momentum Rollout Phase 1c — CRUD) ─────────────────────────────
+  app.get<{ Params: { id: string } }>("/api/projects/:id/rules", async (req, reply) => {
+    try {
+      return await ops.listRules(ws(req), req.params.id);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+  app.post<{ Params: { id: string } }>("/api/projects/:id/rules", async (req, reply) => {
+    const body = CreateRuleRequest.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+    try {
+      return await ops.createRule(ws(req), req.params.id, body.data);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+  app.patch<{ Params: { id: string; ruleId: string } }>("/api/projects/:id/rules/:ruleId", async (req, reply) => {
+    const body = UpdateRuleRequest.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+    try {
+      return await ops.updateRule(ws(req), req.params.ruleId, body.data);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+  app.delete<{ Params: { id: string; ruleId: string } }>("/api/projects/:id/rules/:ruleId", async (req, reply) => {
+    try {
+      await ops.deleteRule(ws(req), req.params.ruleId);
+      return { ok: true };
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+  // Rail Graph's "pause rules" action (TASK 12) — bulk-pauses every live rule
+  // for this project in one call rather than N individual PATCHes.
+  app.post<{ Params: { id: string } }>("/api/projects/:id/rules/pause-all", async (req, reply) => {
+    try {
+      return await ops.pauseAllRules(ws(req), req.params.id);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+  // A draft (not-yet-saved) rule's conditions replayed against this
+  // project's historical Transition log — powers the Automation Builder's
+  // backtest card before an operator commits to actually saving the rule.
+  app.post<{ Params: { id: string } }>("/api/projects/:id/rules/backtest", async (req, reply) => {
+    const body = BacktestRuleRequest.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+    try {
+      return await ops.backtestRule(ws(req), req.params.id, body.data);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
+  // ── transitions (Momentum Rollout Phase 1c — read) ───────────────────────
+  // Workspace-wide (Home's stats, Phase 22) — a distinct top-level path from
+  // the task/project-scoped routes below, so no route-shadowing concern.
+  app.get<{ Querystring: { since?: string; limit?: string } }>("/api/transitions", async (req, reply) => {
+    const since = req.query.since ? Number(req.query.since) : undefined;
+    const limit = req.query.limit ? Number(req.query.limit) : undefined;
+    try {
+      return await ops.listTransitionsForWorkspace(ws(req), { since, limit });
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+  app.get<{ Params: { id: string } }>("/api/tasks/:id/transitions", async (req, reply) => {
+    try {
+      return await ops.listTransitionsForTask(ws(req), req.params.id);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+  app.get<{ Params: { id: string }; Querystring: { since?: string; limit?: string } }>(
+    "/api/projects/:id/transitions",
+    async (req, reply) => {
+      const since = req.query.since ? Number(req.query.since) : undefined;
+      const limit = req.query.limit ? Number(req.query.limit) : undefined;
+      try {
+        return await ops.listTransitionsForProject(ws(req), req.params.id, { since, limit });
+      } catch (err) {
+        return fail(reply, err);
+      }
+    },
+  );
+
+  // ── pending rule actions (Activity Feed, Phase 6b) ───────────────────────
+  // Which rule-engine actions are still within their announce/undo window —
+  // the Activity Feed's "undo · Xm left" chip reads this, matched to a
+  // Transition row via PendingRuleAction.transitionId.
+  app.get<{ Params: { id: string }; Querystring: { status?: string } }>(
+    "/api/projects/:id/pending-actions",
+    async (req, reply) => {
+      const status = req.query.status ? PendingRuleActionStatus.safeParse(req.query.status) : undefined;
+      if (status && !status.success) return reply.code(400).send({ error: "invalid status" });
+      try {
+        return await ops.listPendingActionsForProject(ws(req), req.params.id, { status: status?.data });
+      } catch (err) {
+        return fail(reply, err);
+      }
+    },
+  );
+  app.post<{ Params: { id: string } }>("/api/pending-actions/:id/undo", async (req, reply) => {
+    try {
+      return await ops.undoRuleAction(ws(req), req.params.id, req.principal!.operatorId);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
+  // TASK 13 hardening — the Activity Feed's "retry" action on a
+  // status:"failed" row: re-runs the rule's current dispatch for this task.
+  app.post<{ Params: { ruleId: string }; Body: { taskId: string } }>(
+    "/api/rules/:ruleId/retry",
+    async (req, reply) => {
+      if (!req.body?.taskId) return reply.code(400).send({ error: "taskId is required" });
+      try {
+        return await ops.retryFailedAction(ws(req), req.params.ruleId, req.body.taskId);
+      } catch (err) {
+        return fail(reply, err);
+      }
+    },
+  );
+
+  // ── proposals (Momentum Rollout Phase 1c — accept / dismiss) ────────────
+  // `activate` only matters for a suggested_rule proposal — TASK 10's
+  // "TURN IT ON" onboarding action; omitted/false is a plain accept (creates
+  // the rule into "watch", the long-standing default — see acceptProposal's
+  // own doc comment).
+  app.post<{ Params: { id: string; pid: string }; Body: { activate?: boolean } | undefined }>(
+    "/api/projects/:id/proposals/:pid/accept",
+    async (req, reply) => {
+      try {
+        return await ops.acceptProposal(ws(req), req.params.id, req.params.pid, { activate: req.body?.activate === true });
+      } catch (err) {
+        return fail(reply, err);
+      }
+    },
+  );
+  app.post<{ Params: { id: string; pid: string } }>("/api/projects/:id/proposals/:pid/dismiss", async (req, reply) => {
+    try {
+      return await ops.dismissProposal(ws(req), req.params.id, req.params.pid);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
+  // ── suggested subtasks (Momentum Rollout Phase 1c) ───────────────────────
+  app.post<{ Params: { id: string } }>("/api/tasks/:id/subtasks/accept", async (req, reply) => {
+    const body = AcceptSubtaskRequest.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+    try {
+      return await ops.acceptSubtask(ws(req), req.params.id, body.data);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+  app.post<{ Params: { id: string } }>("/api/tasks/:id/subtasks/accept-all", async (req, reply) => {
+    try {
+      return await ops.acceptAllSubtasks(ws(req), req.params.id);
     } catch (err) {
       return fail(reply, err);
     }

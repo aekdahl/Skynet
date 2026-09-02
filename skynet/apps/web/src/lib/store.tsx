@@ -10,6 +10,8 @@ import {
 import type {
   TaskRun,
   ApprovalLevel,
+  AutonomyDetent,
+  AutonomyOverride,
   Checkpoint,
   Dependency,
   Feature,
@@ -17,17 +19,25 @@ import type {
   Milestone,
   Module,
   ParallelismNudge,
+  PendingRuleAction,
   Project,
   ProjectCharter,
   ProviderId,
   ProviderInfo,
+  Proposal,
   ResolveAction,
+  Rule,
+  RuleAction,
+  RuleCondition,
+  RuleLifecycleState,
+  RuleSafety,
   Agent,
   ServerEvent,
   Snapshot,
   SolutionBrief,
   Task,
   TaskAssignment,
+  Transition,
   WorkspaceSettings,
 } from "@skynet/shared";
 import * as api from "./client";
@@ -62,6 +72,15 @@ export interface StoreState {
   modules: Module[];
   deps: Dependency[];
   providers: ProviderInfo[];
+  // Momentum Board (Phase 4) data — Rules/Proposals ride the Snapshot + WS
+  // deltas like everything else above. Transitions don't (it's an append-only
+  // feed, not current state, so Snapshot never carries a backlog of them) —
+  // this only ever holds what's arrived LIVE via `transition.created` since
+  // this session connected; a board fetches its own project's history over
+  // REST (client.ts's fetchProjectTransitions) and merges it in locally.
+  rules: Rule[];
+  proposals: Proposal[];
+  transitions: Transition[];
   connected: boolean;
   loaded: boolean;
   // Live socket lifecycle, so the shell can show connect→connected and a retry
@@ -71,6 +90,11 @@ export interface StoreState {
   // over HTTP by the Audit view), so this is the signal the view watches to
   // re-pull after an archive/delete/clear lands — from any operator or tab.
   auditRev: number;
+  // Bumps on any autonomyBreaker.updated delta (TASK 19) — same reasoning as
+  // auditRev: the breaker/override records aren't held in the store, so this
+  // is what an open autonomy dial watches to re-pull after a trip/lift/
+  // override lands, from any operator or tab.
+  autonomyRev: number;
   // The server's default approval level, so the create-project form can
   // pre-select what a new project would otherwise get. Undefined until the first
   // snapshot lands (or an older server that doesn't send it).
@@ -187,8 +211,17 @@ export interface Store extends StoreState {
       checkCmd?: string | null;
       deepReview?: boolean;
       breakerReview?: boolean;
+      // Momentum Board opt-in; see Project.newBoardEnabled.
+      newBoardEnabled?: boolean;
+      // Momentum Board's Queued-column WIP limit; null clears back to no limit.
+      queuedWipLimit?: number | null;
+      // Exact commands that must ALWAYS gate for a human. See Project.alwaysGateCommands.
+      alwaysGateCommands?: string[];
+      // Project-level default for a NEW automation rule's safety rails.
+      ruleSafetyDefaults?: RuleSafety;
     },
   ) => Promise<void>;
+  addApprovalRule: (projectId: string, command: string) => Promise<void>;
   removeApprovalRule: (projectId: string, ruleId: string) => Promise<void>;
   deleteProject: (id: string) => Promise<void>;
   cloneProjectRepo: (id: string) => Promise<void>;
@@ -221,6 +254,24 @@ export interface Store extends StoreState {
     },
   ) => Promise<void>;
   deleteFeature: (featureId: string) => Promise<void>;
+  // Automation Builder (Phase 6a) — mutations only; reads ride the Snapshot +
+  // rule.upserted/rule.deleted WS deltas (see the reducer below), same as
+  // features/milestones. createRule RETURNS the created Rule so the builder
+  // can switch straight from "new" to "editing" without a re-fetch.
+  createRule: (
+    projectId: string,
+    req: { name: string; when: string; conditions: RuleCondition[]; actions: RuleAction[]; safety?: RuleSafety; state?: RuleLifecycleState },
+  ) => Promise<Rule | null>;
+  updateRule: (
+    projectId: string,
+    ruleId: string,
+    patch: { name?: string; when?: string; conditions?: RuleCondition[]; actions?: RuleAction[]; safety?: RuleSafety; state?: RuleLifecycleState; archived?: boolean },
+  ) => Promise<void>;
+  deleteRule: (projectId: string, ruleId: string) => Promise<void>;
+  // Rail Graph (Phase 11, TASK 12) — bulk-pauses every live rule for a
+  // project in one call. Returns the rules actually paused so the caller can
+  // report a real count; each one also rides back live via rule.upserted.
+  pauseAllRules: (projectId: string) => Promise<Rule[]>;
   createMilestone: (projectId: string, name: string, description?: string, targetAt?: number | null) => Promise<void>;
   updateMilestone: (
     milestoneId: string,
@@ -248,6 +299,30 @@ export interface Store extends StoreState {
   assignTask: (projectId: string, taskId: string) => Promise<TaskRun | null>;
   dismissTaskLint: (projectId: string, taskId: string) => Promise<void>;
   answerClarification: (projectId: string, taskId: string, answer: string) => Promise<void>;
+  // Momentum Board (Phase 5) — accept a suggested_subtask Proposal into a real
+  // Task (parentTaskId set) individually, or every pending one for this task
+  // at once. The echoed task.upserted / proposal.upserted WS deltas update
+  // state — same "call the API, let the delta land" pattern as everything else.
+  acceptSubtask: (taskId: string, proposalId: string) => Promise<void>;
+  acceptAllSubtasks: (taskId: string) => Promise<void>;
+  // Activity Feed (Phase 6b) — cancel a rule-engine action within its undo
+  // window. Returns the updated PendingRuleAction (status "undone") so the
+  // feed can optimistically update the row immediately — no WS event exists
+  // for a pending action's own lifecycle, only the Transition it produces.
+  undoRuleAction: (pendingId: string) => Promise<PendingRuleAction | null>;
+  // TASK 13 hardening — the Activity Feed's "retry" action on a
+  // status:"failed" row: re-runs the rule's own current dispatch (respecting
+  // its live announceBeforeActing setting, same as any fresh signal would),
+  // so the outcome shows up live through whichever normal path that implies
+  // — a new transition.created event, or a new PendingRuleAction the Feed's
+  // own periodic refetch picks up. Nothing to apply optimistically here.
+  retryRuleAction: (ruleId: string, taskId: string) => Promise<void>;
+  // Generic proposal accept/dismiss (Phase 1c) — TASK 10's pattern-spotted
+  // card is the first UI to call these. `activate` only matters for a
+  // suggested_rule proposal (see client.ts's acceptProposal doc comment).
+  // Both resolved states ride back on the `proposal.upserted` WS echo.
+  acceptProposal: (projectId: string, proposalId: string, opts?: { activate?: boolean }) => Promise<Proposal | null>;
+  dismissProposal: (projectId: string, proposalId: string) => Promise<void>;
   createAgent: (provider: string, model: string, name?: string, credentialId?: string, label?: string | null) => Promise<void>;
   updateAgent: (id: string, patch: { model?: string; name?: string; canReview?: boolean; label?: string | null; credentialId?: string | null }) => Promise<void>;
   deleteAgent: (id: string) => Promise<void>;
@@ -256,6 +331,11 @@ export interface Store extends StoreState {
   deleteAudit: (hitlId: string) => Promise<void>;
   archiveAllAudit: () => Promise<void>;
   clearAudit: () => Promise<void>;
+  // TASK 19 — autonomy dial mutations. GET (getAutonomyDetent) is called
+  // directly from the dial component (same convention as the Audit view's
+  // own api.fetchAudit) — only mutations get a store wrapper.
+  setAutonomyDetent: (projectId: string, detent: AutonomyDetent) => Promise<Project>;
+  createAutonomyOverride: (projectId: string) => Promise<AutonomyOverride>;
   // Persist the workspace display name. No WS delta announces this (settings
   // aren't part of the live event stream), so echo the response into local
   // state directly rather than waiting on the next snapshot.
@@ -296,7 +376,7 @@ function reduce(state: StoreState, ev: ServerEvent): StoreState {
         ...state,
         runs: state.runs.map((a) =>
           a.id === ev.runId
-            ? { ...a, log: [...a.log, { at: ev.at, line: ev.line, detail: ev.detail }] }
+            ? { ...a, log: [...a.log, { at: ev.at, line: ev.line, detail: ev.detail, verb: ev.verb, resultKind: ev.resultKind }] }
             : a,
         ),
         // The finalized line just landed — whatever was typing for it is now
@@ -370,6 +450,8 @@ function reduce(state: StoreState, ev: ServerEvent): StoreState {
       };
     case "conflict.detected":
       return state; // conflicts are derived from agent.modules on the client
+    case "file-collision.detected":
+      return state; // ditto, from agent.modifiedFiles — see fileCollisionsForAgent
     case "project.upserted":
       return { ...state, projects: upsert(state.projects, ev.project) };
     case "project.deleted":
@@ -394,12 +476,27 @@ function reduce(state: StoreState, ev: ServerEvent): StoreState {
       return { ...state, fleet: upsert(state.fleet, ev.agent) };
     case "agent.deleted":
       return { ...state, fleet: state.fleet.filter((r) => r.id !== ev.id) };
+    case "rule.upserted":
+      return { ...state, rules: upsert(state.rules, ev.rule) };
+    case "rule.deleted":
+      return { ...state, rules: state.rules.filter((r) => r.id !== ev.id) };
+    case "proposal.upserted":
+      return { ...state, proposals: upsert(state.proposals, ev.proposal) };
+    case "transition.created":
+      // Unbounded growth guard: keep the most recent 500 — plenty for a live
+      // board session (moves-today counts, a landed sparkline, a task's own
+      // trail); a board's own initial history still comes from the REST fetch.
+      return { ...state, transitions: [...state.transitions, ev.transition].slice(-500) };
     case "audit.archived":
     case "audit.deleted":
     case "audit.archived-all":
     case "audit.cleared":
       // The trail lives outside the store — nudge the Audit view to re-fetch.
       return { ...state, auditRev: state.auditRev + 1 };
+    case "autonomyBreaker.updated":
+      // The breaker/override records live outside the store too — nudge an
+      // open autonomy dial to re-fetch (see client.ts's getAutonomyDetent).
+      return { ...state, autonomyRev: state.autonomyRev + 1 };
     default:
       return state;
   }
@@ -417,10 +514,14 @@ const EMPTY: StoreState = {
   modules: [],
   deps: [],
   providers: [],
+  rules: [],
+  proposals: [],
+  transitions: [],
   connected: false,
   loaded: false,
   wsPhase: "connecting",
   auditRev: 0,
+  autonomyRev: 0,
   logDeltas: {},
 };
 
@@ -437,6 +538,11 @@ function fromSnapshot(snap: Snapshot): StoreState {
     modules: snap.modules,
     deps: snap.deps,
     providers: snap.providers,
+    rules: snap.rules,
+    proposals: snap.proposals,
+    // A fresh snapshot has no transition backlog to seed from (see StoreState's
+    // own comment) — a mounted board re-fetches its project's history itself.
+    transitions: [],
     defaultApprovalLevel: snap.defaultApprovalLevel,
     workspaceSettings: snap.workspaceSettings,
     parallelismNudge: snap.parallelismNudge,
@@ -448,6 +554,7 @@ function fromSnapshot(snap: Snapshot): StoreState {
     // A fresh snapshot supersedes any prior trail state; the Audit view re-pulls
     // on mount anyway, so reset the revision rather than carrying it across.
     auditRev: 0,
+    autonomyRev: 0,
     // Any in-flight typing preview predates this snapshot — drop it rather than
     // carry stale partial text across a reconnect.
     logDeltas: {},
@@ -575,7 +682,15 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     return {
       ...state,
       resolveHitl: async (id, action, extra) => {
-        await api.resolveHitl(id, { action, ...extra });
+        // TASK 16 (Decision Inbox) needs failure feedback — resolveHitl had no
+        // error handling anywhere in the app before this (an already-resolved
+        // gate, a network blip) became a silent unhandled rejection. Matches
+        // the try/catch+toast idiom every other mutation here already uses.
+        try {
+          await api.resolveHitl(id, { action, ...extra });
+        } catch (e) {
+          toast(serverMessage(e, "Couldn't resolve that decision."));
+        }
       },
       sendAgentMessage: async (id, text) => {
         const { reply } = await api.sendAgentMessage(id, text);
@@ -677,8 +792,22 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           else throw e;
         }
       },
+      addApprovalRule: async (projectId, command) => {
+        try {
+          const updated = await api.addApprovalRule(projectId, command);
+          setState((s) => ({ ...s, projects: upsert(s.projects, updated) }));
+        } catch (e) {
+          if (e instanceof api.ApiError) toast(serverMessage(e, "Couldn't add that pattern."));
+          else throw e;
+        }
+      },
       removeApprovalRule: async (projectId, ruleId) => {
-        await api.removeApprovalRule(projectId, ruleId);
+        try {
+          await api.removeApprovalRule(projectId, ruleId);
+        } catch (e) {
+          if (e instanceof api.ApiError) toast(serverMessage(e, "Couldn't remove that pattern."));
+          else throw e;
+        }
       },
       deleteProject: async (id) => {
         await api.deleteProject(id);
@@ -782,6 +911,32 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       deleteFeature: async (featureId) => {
         await api.deleteFeature(featureId);
       },
+      createRule: async (projectId, req) => {
+        try {
+          return await api.createRule(projectId, req);
+        } catch (e) {
+          if (e instanceof api.ApiError) toast(serverMessage(e, "Couldn't save the rule."));
+          return null;
+        }
+      },
+      updateRule: async (projectId, ruleId, patch) => {
+        try {
+          await api.updateRule(projectId, ruleId, patch);
+        } catch (e) {
+          if (e instanceof api.ApiError) toast(serverMessage(e, "Couldn't update the rule."));
+        }
+      },
+      deleteRule: async (projectId, ruleId) => {
+        await api.deleteRule(projectId, ruleId);
+      },
+      pauseAllRules: async (projectId) => {
+        try {
+          return await api.pauseAllRules(projectId);
+        } catch (e) {
+          toast(serverMessage(e, "Couldn't pause the rules."));
+          return [];
+        }
+      },
       createMilestone: async (projectId, name, description, targetAt) => {
         await api.createMilestone(projectId, { name, ...(description ? { description } : {}), ...(targetAt !== undefined ? { targetAt } : {}) });
       },
@@ -814,6 +969,42 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       answerClarification: async (projectId, taskId, answer) => {
         await api.answerClarification(projectId, taskId, answer);
       },
+      acceptSubtask: async (taskId, proposalId) => {
+        await api.acceptSubtask(taskId, proposalId);
+      },
+      acceptAllSubtasks: async (taskId) => {
+        await api.acceptAllSubtasks(taskId);
+      },
+      undoRuleAction: async (pendingId) => {
+        try {
+          return await api.undoRuleAction(pendingId);
+        } catch (e) {
+          toast(serverMessage(e, "Couldn't undo that action — the window may have passed."));
+          return null;
+        }
+      },
+      retryRuleAction: async (ruleId, taskId) => {
+        try {
+          await api.retryRuleAction(ruleId, taskId);
+        } catch (e) {
+          toast(serverMessage(e, "Couldn't retry that action."));
+        }
+      },
+      acceptProposal: async (projectId, proposalId, opts) => {
+        try {
+          return await api.acceptProposal(projectId, proposalId, opts);
+        } catch (e) {
+          toast(serverMessage(e, "Couldn't accept that proposal."));
+          return null;
+        }
+      },
+      dismissProposal: async (projectId, proposalId) => {
+        try {
+          await api.dismissProposal(projectId, proposalId);
+        } catch (e) {
+          toast(serverMessage(e, "Couldn't dismiss that proposal."));
+        }
+      },
       createAgent: async (provider, model, name, credentialId, label) => {
         await api.createAgent({ provider, model, name, credentialId, label });
       },
@@ -842,6 +1033,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       },
       clearAudit: async () => {
         await api.clearAudit();
+      },
+      setAutonomyDetent: async (projectId, detent) => {
+        return api.setAutonomyDetent(projectId, detent);
+      },
+      createAutonomyOverride: async (projectId) => {
+        return api.createAutonomyOverride(projectId);
       },
       updateWorkspaceName: async (name) => {
         const settings = await api.updateWorkspaceSettings({ name });

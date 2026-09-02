@@ -59,6 +59,20 @@ describe("parseStewardStream", () => {
     expect(r.actions?.[0]).toMatchObject({ kind: "add_task" });
   });
 
+  // TASK 21 — the control frame also carries `sources` (source citations for
+  // "no claim without a chip"), independent of whether any action was proposed.
+  it("carries source citations through the control frame", async () => {
+    const s = sink();
+    const ctrl = JSON.stringify({
+      reply: "Run r-abc123 failed on the last attempt.",
+      actions: [],
+      projectId: "p1",
+      sources: [{ kind: "run", runId: "r-abc123" }],
+    });
+    const r = await parseStewardStream(chunksOf("Run r-abc123 failed on the last attempt." + SEP + ctrl), s.onDelta);
+    expect(r.sources).toEqual([{ kind: "run", runId: "r-abc123" }]);
+  });
+
   it("falls back to the streamed prose on a malformed trailer", async () => {
     const s = sink();
     const r = await parseStewardStream(chunksOf("partial" + SEP + "{not json"), s.onDelta);

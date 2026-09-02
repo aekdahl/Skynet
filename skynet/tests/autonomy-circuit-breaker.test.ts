@@ -25,9 +25,10 @@ class NullBus implements Bus {
 // crashed process — see tests/runner-failure.test.ts, same async-onFailed
 // pattern). One provider class covers both shapes so a single test can drive
 // a review-consult round AND a real assignTask()-spawned failure through the
-// SAME orchestrator instance — the circuit-breaker's streak is in-memory
-// per-orchestrator, so two separate provider/orchestrator pairs wouldn't
-// share one streak.
+// SAME orchestrator instance — simplest way to exercise both bad-outcome
+// signals feeding one streak in a single test (the streak itself is now
+// store-backed, TASK 19, and would survive a second orchestrator instance
+// over the same store just as well).
 class MixedProvider implements RunnerProvider {
   readonly id: ProviderId = "claude";
   reply = "ok";
@@ -231,8 +232,9 @@ describe("session circuit-breaker — consecutive bad autonomy outcomes", () => 
     // the orchestrator's own reset call directly (operations.ts is a thin
     // pass-through covered by its own suite) alongside flipping the flag the
     // same way the operator's PATCH would.
-    await store.putProject({ ...(await store.getProject("p1"))!, autonomy: true });
-    orch.resetAutonomyStreak("p1");
+    const reEnabled = { ...(await store.getProject("p1"))!, autonomy: true };
+    await store.putProject(reEnabled);
+    await orch.resetAutonomyStreak(reEnabled, "jordan");
 
     // A single flag right after re-enabling must NOT immediately re-trip —
     // proof the streak actually reset to 0, not just that autonomy flipped on.
