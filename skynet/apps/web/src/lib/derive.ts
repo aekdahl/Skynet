@@ -639,3 +639,33 @@ export function spendEfficiency(runs: TaskRun[]): SpendEfficiency {
     runs: runs.length,
   };
 }
+
+
+// ─── Cache hit rate ────────────────────────────────────────────────────────
+// The share of a run's input tokens that were CACHE READS rather than fresh
+// input. This is the number that decides which cost fix is the right one, and
+// the two answers call for opposite work:
+//
+//   HIGH (say >80%) — caching is doing its job. Spend is a VOLUME problem:
+//     long runs re-reading a large context. The levers are fewer turns, less
+//     injected context, a tighter tool surface.
+//   LOW             — something invalidates the cached prefix, so we pay fresh
+//     input prices (~10x cache reads) on the dominant token class. The lever is
+//     finding what varies early in the prompt.
+//
+// Reported as null rather than 0 when the tiers are absent — a run recorded
+// before the tiers were persisted has an UNKNOWN hit rate, and showing that as
+// "0% cached" would invent an alarming fact out of missing data.
+export function cacheHitRate(u: { inputTokens: number; cacheReadTokens?: number; cacheWriteTokens?: number } | null | undefined): number | null {
+  if (!u || u.inputTokens <= 0) return null;
+  const read = u.cacheReadTokens ?? 0;
+  const write = u.cacheWriteTokens ?? 0;
+  if (read === 0 && write === 0) return null; // never recorded — not "no hits"
+  return read / u.inputTokens;
+}
+
+/** "72% cached" — or null when unknown. */
+export function fmtCacheHitRate(u: Parameters<typeof cacheHitRate>[0]): string | null {
+  const r = cacheHitRate(u);
+  return r == null ? null : `${Math.round(r * 100)}% cached`;
+}

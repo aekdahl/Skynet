@@ -306,7 +306,11 @@ const BREAKER_TIMEOUT_MS = 4 * 60_000;
 // yet at this point in a brief's life (it's pre-work, before any run/task), so
 // there's no per-agent model to inherit — hardcoded to Claude's default model
 // (matches DEFAULT_PROVIDERS' first "claude" entry in packages/shared/src/providers.ts).
-const EXPLORE_MODEL = "opus-4.8";
+/** Fallback when a workspace has no `exploreModel` set (see WorkspaceSettings).
+ *  Mid-tier on purpose: exploration reads code and reports back — it doesn't
+ *  need the strongest model, and this path used to pin Opus for every
+ *  workspace regardless of what its fleet was set to. */
+const EXPLORE_MODEL_FALLBACK = "sonnet-5";
 const EXPLORE_MAX_TURNS = 14;
 const EXPLORE_TIMEOUT_MS = 4 * 60_000;
 
@@ -6141,7 +6145,9 @@ export class Orchestrator {
       if (!provider) return null;
       const apiKey = (await secretService.resolve(ws, "claude").catch(() => undefined)) ?? undefined;
       const baseUrl = await secretService.resolveEndpoint(ws, "claude").catch(() => undefined);
-      const rates = ratesFor(baseUrl, EXPLORE_MODEL);
+      // Operator-settable — this path has no run or agent to inherit from.
+      const exploreModel = (await this.fleetPolicy(ws)).exploreModel || EXPLORE_MODEL_FALLBACK;
+      const rates = ratesFor(baseUrl, exploreModel);
 
       const prompt = [
         `You are grounding a DRAFT plan against the ACTUAL codebase before a human decides whether to approve it. Read the repo — don't assume.`,
@@ -6200,7 +6206,7 @@ export class Orchestrator {
                 runId: exploreRunId,
                 projectId: project.id,
                 task: prompt,
-                model: EXPLORE_MODEL,
+                model: exploreModel,
                 branch: this.baseBranchFor(project),
                 cwd,
                 apiKey,

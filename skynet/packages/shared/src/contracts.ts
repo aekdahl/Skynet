@@ -155,6 +155,14 @@ export type LogVerb = z.infer<typeof LogVerb>;
 export const Usage = z.object({
   inputTokens: z.number().int().nonnegative().default(0),
   outputTokens: z.number().int().nonnegative().default(0),
+  // Cache tiers, BOTH also counted inside `inputTokens`. Kept separately
+  // because they are priced ~10x apart, which makes the split — not the total —
+  // the number that says whether spend is a caching problem or a volume one.
+  // The runner has always computed these (RunnerUsage); they used to be dropped
+  // here, so "what is our cache hit rate?" was unanswerable. Same failure as
+  // the original under-reporting meter: the data existed, nothing kept it.
+  cacheReadTokens: z.number().int().nonnegative().default(0),
+  cacheWriteTokens: z.number().int().nonnegative().default(0),
   costUsd: z.number().nonnegative().nullable().default(null),
   turns: z.number().int().nonnegative().default(0),
   durationMs: z.number().int().nonnegative().nullable().default(null),
@@ -2249,6 +2257,13 @@ export const WorkspaceSettings = z.object({
   // reclaimed instead of accumulating. Operator-added runners are never touched.
   // 0 = never auto-retire. Default 30.
   retireIdleRunnersAfterMinutes: z.number().int().min(0).default(30),
+  // Model for PRE-WORK exploration (grounding a solution brief against the
+  // repo). It has no run or agent to inherit a model from, so it was hardcoded
+  // — and hardcoded to Opus, which kept an expensive model in the loop for
+  // every workspace no matter what the fleet was set to. Now a setting, and
+  // defaulted to a mid-tier model: this reads code and reports, it does not
+  // need the strongest model available.
+  exploreModel: z.string().min(1).default("sonnet-5"),
   // Opt-in: equip Claude runners with a real browser (a Playwright/Chrome MCP
   // server) so an agent can drive a browser inside a coding task — reproduce a
   // bug, verify a UI change end-to-end, read live docs. Off by default; when on,
@@ -2273,6 +2288,7 @@ export const UpdateWorkspaceSettingsRequest = z.object({
   autoProvisionRunners: z.boolean().optional(),
   maxRunners: z.number().int().min(0).optional(),
   retireIdleRunnersAfterMinutes: z.number().int().min(0).optional(),
+  exploreModel: z.string().min(1).optional(),
   browserTools: z.boolean().optional(),
   requireLoginVerification: z.boolean().optional(),
 });
