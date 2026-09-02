@@ -359,6 +359,21 @@ export const SCENARIOS: Scenario[] = [
     },
   },
   {
+    id: "home-workspace-transitions",
+    name: "Home's workspace-wide transitions read (Phase 22)",
+    desc: "The cross-project transitions endpoint Home's automation-rate/stalled-count stats read — control-plane only: array shape, and `since` actually filters, not just per-project scoping.",
+    run: async () => {
+      const steps: Step[] = [];
+      const all = await api.fetchTransitions({ limit: 50 });
+      steps.push(step("workspace transitions endpoint returns an array", Array.isArray(all), `${all.length} transitions`));
+      // A `since` far in the future can never match anything real — proves
+      // the filter is actually applied server-side, not just ignored.
+      const future = await api.fetchTransitions({ since: Date.now() + 365 * 24 * 60 * 60 * 1000 });
+      steps.push(step("a future `since` returns nothing", future.length === 0));
+      return steps;
+    },
+  },
+  {
     id: "task-detail-panel",
     name: "Task Detail panel's own endpoints — trail + subtask accept",
     desc: "A fresh task's transition trail is empty; accepting all (zero) suggested subtasks is a clean no-op; accepting a specific but nonexistent one is refused — control-plane only, no seeded Proposal needed.",

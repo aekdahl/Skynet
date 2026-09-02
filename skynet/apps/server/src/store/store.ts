@@ -109,6 +109,11 @@ export interface Store {
   createTransition(t: Transition): Promise<Transition>;
   listTransitionsForTask(taskId: string): Promise<Transition[]>;
   listTransitionsForProject(projectId: string, opts?: { since?: number; limit?: number }): Promise<Transition[]>;
+  // Momentum Rollout Phase 22 (Home rebuild) — the workspace-wide read a
+  // per-project page has no need for (health.tsx fetches per-project), but a
+  // cross-project dashboard does (automation %, stalled-task count). Same
+  // since/limit + newest-first contract as listTransitionsForProject.
+  listTransitionsForWorkspace(workspaceId: string, opts?: { since?: number; limit?: number }): Promise<Transition[]>;
 
   // rules (Momentum Rollout kanban rebuild, Phase 0 — project-scoped kanban
   // automation; see @skynet/shared's Rule). Project-scoped only (no

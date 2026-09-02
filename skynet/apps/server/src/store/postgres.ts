@@ -103,6 +103,7 @@ CREATE INDEX IF NOT EXISTS context_entries_ws ON context_entries(workspace_id);
 CREATE INDEX IF NOT EXISTS solution_briefs_ws ON solution_briefs(workspace_id);
 CREATE INDEX IF NOT EXISTS transitions_task    ON transitions(task_id);
 CREATE INDEX IF NOT EXISTS transitions_project ON transitions(project_id, at DESC);
+CREATE INDEX IF NOT EXISTS transitions_ws      ON transitions(workspace_id, at DESC);
 CREATE INDEX IF NOT EXISTS rules_project        ON rules(project_id);
 CREATE INDEX IF NOT EXISTS rules_ws             ON rules(workspace_id);
 CREATE INDEX IF NOT EXISTS proposals_project    ON proposals(project_id, status);
@@ -296,6 +297,15 @@ export class PostgresStore implements Store {
     let sql = "SELECT data FROM transitions WHERE project_id=$1";
     if (opts.since != null) { params.push(opts.since); sql += ` AND at >= $${params.length}`; }
     sql += " ORDER BY at DESC"; // newest first, matching listAudit's convention
+    if (opts.limit != null) { params.push(opts.limit); sql += ` LIMIT $${params.length}`; }
+    const { rows } = await this.pool.query<{ data: Transition }>(sql, params);
+    return rows.map((r) => r.data);
+  }
+  async listTransitionsForWorkspace(ws: string, opts: { since?: number; limit?: number } = {}): Promise<Transition[]> {
+    const params: unknown[] = [ws];
+    let sql = "SELECT data FROM transitions WHERE workspace_id=$1";
+    if (opts.since != null) { params.push(opts.since); sql += ` AND at >= $${params.length}`; }
+    sql += " ORDER BY at DESC";
     if (opts.limit != null) { params.push(opts.limit); sql += ` LIMIT $${params.length}`; }
     const { rows } = await this.pool.query<{ data: Transition }>(sql, params);
     return rows.map((r) => r.data);

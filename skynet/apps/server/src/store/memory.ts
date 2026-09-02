@@ -163,6 +163,14 @@ export class MemoryStore implements Store {
     if (opts.limit != null) list = list.slice(0, opts.limit);
     return list;
   }
+  async listTransitionsForWorkspace(ws: string, opts: { since?: number; limit?: number } = {}) {
+    let list = [...this.transitions.values()]
+      .filter((t) => t.workspaceId === ws)
+      .sort((a, b) => b.at - a.at); // newest first, matching listTransitionsForProject's convention
+    if (opts.since != null) list = list.filter((t) => t.at >= opts.since!);
+    if (opts.limit != null) list = list.slice(0, opts.limit);
+    return list;
+  }
 
   async getRule(id: string) { return this.rules.get(id); }
   async putRule(rule: Rule) { this.rules.set(rule.id, rule); this.persist(); return rule; }

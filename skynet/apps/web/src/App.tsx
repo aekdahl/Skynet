@@ -312,13 +312,9 @@ export function App() {
               <HomeView
                 now={now}
                 onOpenTask={openTask}
-                onOpenAgent={openAgent}
-                onOpenProject={openProject}
                 onCreate={createProject}
-                onGoInbox={() => setView("queue")}
                 onConfigureFleet={() => setView("fleet")}
                 onOpenSettings={() => setView("settings")}
-                onAssign={() => setView("projects")}
               />
             )}
             {store.loaded && view === "projects" && (

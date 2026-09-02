@@ -2599,6 +2599,14 @@ export class Operations {
     return this.store.listTransitionsForProject(projectId, opts);
   }
 
+  /** Momentum Rollout Phase 22 (Home rebuild) — the cross-project read a
+   *  per-project page has no need for (BoardHealth fetches per-project via
+   *  listTransitionsForProject above); Home's automation-rate/stalled-count
+   *  stats need the workspace's FULL transition history, not one project's. */
+  async listTransitionsForWorkspace(ws: string, opts: { since?: number; limit?: number } = {}): Promise<Transition[]> {
+    return this.store.listTransitionsForWorkspace(ws, opts);
+  }
+
   // ── proposals (Momentum Rollout Phase 1c — accept / dismiss) ────────────
   /** Fetch one proposal scoped to the workspace, or throw NotFoundError (404). */
   async getProposal(ws: string, proposalId: string): Promise<Proposal> {
