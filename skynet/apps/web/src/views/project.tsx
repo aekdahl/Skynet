@@ -509,7 +509,15 @@ function TaskCard({
       }}
       onDragEnd={() => dnd?.end()}
       onClick={openCard}
-      onKeyDown={(e: React.KeyboardEvent) => (e.key === "Enter" || e.key === " ") && openCard()}
+      onKeyDown={(e: React.KeyboardEvent) => {
+        // Same exclusion as onDragStart above: a keydown that started in an
+        // inner control (typing a space/enter into the clarification answer,
+        // the description edit textarea, an eligibility select, etc.) must
+        // stay that control's own keystroke, not bubble up and pop the
+        // detail modal out from under whoever's mid-typing.
+        if ((e.target as HTMLElement).closest("input,select,textarea,button,label,a")) return;
+        if (e.key === "Enter" || e.key === " ") openCard();
+      }}
     >
       <div className="kb-card-top">
         {run && <StatusDot status={run.status} />}
