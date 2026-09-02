@@ -486,6 +486,12 @@ export function fetchDepletedKeys() {
   return req<DepletedKey[]>("GET", "/api/depleted-keys");
 }
 
+// TASK 24 — the command palette's destructive "Pause the whole fleet"
+// action. Same kill switch Telegram's /stop already exposes to the operator.
+export function stopAllRuns() {
+  return req<{ stopped: number }>("POST", "/api/fleet/stop-all");
+}
+
 // ─── Project roadmap doc (ROADMAP.md, read from the project's bound repo) ──
 export type ProjectRoadmapResult =
   | { state: "ok"; path: string; content: string; source: "local" | "github"; sha?: string }

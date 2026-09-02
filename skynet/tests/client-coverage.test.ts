@@ -315,6 +315,12 @@ const ALLOW = new Set<string>([
   // journey-driven user action. Server-side covered by
   // orchestrator-depleted-keys.test.ts.
   "fetchDepletedKeys",
+  // TASK 24 — the command palette's destructive "Pause the whole fleet"
+  // action. No offline journey triggers a real fleet-wide kill switch (it
+  // stops every run and pauses autonomy workspace-wide); the route/
+  // Operations wrapper is covered server-side by fleet-stop-all-route.test.ts,
+  // and orchestrator.stopAll itself by orchestrator-stopall.test.ts.
+  "stopAllRuns",
 ]);
 
 describe("client API coverage", () => {

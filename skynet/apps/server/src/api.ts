@@ -348,6 +348,18 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     }
   });
 
+  // TASK 24 — the command palette's "Pause the whole fleet" destructive
+  // action. Same kill switch Telegram's /stop already calls; falls through
+  // to the default "author" scope (auth-guard.ts), so a viewer can't reach it.
+  app.post("/api/fleet/stop-all", async (req, reply) => {
+    try {
+      const stopped = await ops.stopAllRuns(req.principal!.operatorId);
+      return { stopped };
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
   app.post<{ Params: { id: string } }>("/api/hitl/:id/resolve", async (req, reply) => {
     const body = ResolveRequest.safeParse(req.body);
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() });

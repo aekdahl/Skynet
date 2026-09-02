@@ -669,3 +669,24 @@ export function fmtCacheHitRate(u: Parameters<typeof cacheHitRate>[0]): string |
   const r = cacheHitRate(u);
   return r == null ? null : `${Math.round(r * 100)}% cached`;
 }
+
+// ─── sidebar "OPEN NOW" (TASK 24) ────────────────────────────────────────────
+
+export type OpenNowDot = "human" | "warn" | "track";
+
+/** The sidebar's OPEN NOW row label — WHY a project is interesting right now,
+ *  most urgent first: an open gate (needs YOU) > a stuck run (no gate, but
+ *  stale — needs a LOOK) > an ordinary running run (ambient) > nothing.
+ *  Reuses `classifyRun` (the same pure classifier the Runs dashboard uses)
+ *  for "stuck" rather than re-deriving it — a run whose heartbeat has gone
+ *  stale with no open gate is exactly classifyRun's "blocked" no-hitl branch. */
+export function openNowStatus(p: Project, runs: TaskRun[], queue: HitlItem[], now: number): { text: string; dot: OpenNowDot } {
+  const projectRuns = runs.filter((r) => r.projectId === p.id && r.status !== "done");
+  const gateCount = projectRuns.filter((r) => hitlFor(queue, r.id)).length;
+  if (gateCount > 0) return { text: `${gateCount} gate${gateCount === 1 ? "" : "s"}`, dot: "human" };
+  const stuckCount = projectRuns.filter((r) => classifyRun(r, undefined, now, STALE_HEARTBEAT_SEC).tag === "blocked").length;
+  if (stuckCount > 0) return { text: "stuck", dot: "warn" };
+  const runningCount = projectRuns.filter((r) => r.status === "running").length;
+  if (runningCount > 0) return { text: `${runningCount} run${runningCount === 1 ? "" : "s"}`, dot: "track" };
+  return { text: "idle", dot: "track" };
+}

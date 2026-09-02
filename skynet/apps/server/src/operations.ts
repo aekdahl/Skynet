@@ -477,6 +477,16 @@ export class Operations {
     return this.orchestrator.listDepletedKeys(ws);
   }
 
+  /** Remote kill switch, exposed to the web app (Telegram's `/stop` already
+   *  called `orchestrator.stopAll` directly — this is the same call, reached
+   *  from the command palette's "Pause the whole fleet" action instead of a
+   *  chat command). Genuinely global (every workspace, per `stopAll`'s own
+   *  doc comment) — pauses autonomy AND halts every in-flight run. Returns
+   *  how many runs were actually stopped. */
+  async stopAllRuns(operatorId: string): Promise<number> {
+    return this.orchestrator.stopAll(`command palette — ${operatorId}`);
+  }
+
   /** Fetch ONE HITL item scoped to the workspace, or throw NotFoundError (404)
    *  — the full-record counterpart to a summarized queue listing (the MCP
    *  list_hitl → get_hitl drill-in). */
