@@ -457,6 +457,17 @@ export function isStuckReview(item: HitlItem): boolean {
   return item.kind === "escalation" && (item.flags ?? []).includes("stuck-review");
 }
 
+/** An `autonomy-paused` escalation (orchestrator.ts's noteAutonomyBadOutcome)
+ *  is a PROJECT-level notice — the sweep tripped its circuit breaker — only
+ *  carrying a `runId` because `HitlItem` requires one; it isn't "about" that
+ *  run or any single task/agent, and resolving it (any action) just dismisses
+ *  the notice server-side, since the real lever is the project's own
+ *  Autonomy toggle. Used to keep it off a task/agent's own card/page, where
+ *  it would read as something that run could act on. */
+export function isAutonomyPaused(item: HitlItem): boolean {
+  return item.kind === "escalation" && (item.flags ?? []).includes("autonomy-paused");
+}
+
 export function hitlHeadline(item: HitlItem): { label: string; color: string } {
   return isStuckReview(item) ? { label: "AWAITING REVIEW", color: "var(--ok)" } : KIND_META[item.kind];
 }

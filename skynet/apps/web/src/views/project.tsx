@@ -12,6 +12,7 @@ import {
   fmtDurMs,
   fmtNum,
   fmtWait,
+  isAutonomyPaused,
   isStuckReview,
   openQueue,
   STATUS_META,
@@ -412,7 +413,10 @@ function TaskCard({
   const [descDraft, setDescDraft] = useState(task.description ?? "");
   const pid = task.projectId;
   const s = task.state;
-  const q = run ? openQueue(queue).find((it) => it.runId === run.id) : undefined;
+  // Excludes an `autonomy-paused` notice — a project-level circuit-breaker
+  // trip, not something this task/run could act on — so it doesn't pin to
+  // this one card as if it were the task that's blocked.
+  const q = run ? openQueue(queue).find((it) => it.runId === run.id && !isAutonomyPaused(it)) : undefined;
   const openRun = run ? () => onOpenTask(run.id) : undefined;
   // A card is always openable: a run card opens its live activity; a card with no
   // run opens a read-only detail modal (the card itself clamps title/description).

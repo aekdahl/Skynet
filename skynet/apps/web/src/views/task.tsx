@@ -8,6 +8,7 @@ import {
   fmtElapsed,
   fmtWait,
   heartbeatSecs,
+  isAutonomyPaused,
   KIND_META,
   fmtCacheHitRate,
   modName,
@@ -120,7 +121,10 @@ export function TaskDetail({
   } = useStore();
   const confirm = useConfirm();
   const choice = useChoice();
-  const q = openQueue(queue).find((it) => it.runId === agent.id);
+  // Excludes an `autonomy-paused` notice — it's a project-level circuit-breaker
+  // trip, not something this run/agent could act on, so it shouldn't show up
+  // in this run's own decision bar as if Reassign/Stop applied to it.
+  const q = openQueue(queue).find((it) => it.runId === agent.id && !isAutonomyPaused(it));
   // The backing task carries the operator's brief AND the autonomous triage
   // metadata (assessment note + duration estimate) — surface both here so
   // opening a run detail shows what the fleet decided during triage, not just
