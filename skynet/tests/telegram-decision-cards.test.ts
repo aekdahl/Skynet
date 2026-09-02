@@ -27,9 +27,9 @@ const gate = (over: Partial<HitlItem> = {}): HitlItem =>
 
 // ── Pure copy + keyboard ─────────────────────────────────────────────────────
 describe("decisionCardHtml", () => {
-  it("renders a rich HTML card: head, run/project, diff summary, and the agent's rationale", () => {
+  it("renders a rich HTML card: kind label + run tag, run/project, diff summary, and the agent's rationale", () => {
     const html = decisionCardHtml(gate(), { run: "rate-limiter", project: "Takeoff" }, true);
-    expect(html).toContain("<b>Review the changes</b> · Takeoff");
+    expect(html).toContain("<b>REVIEW NEEDED</b> · Takeoff · RUN #");
     expect(html).toContain("rate-limiter");
     expect(html).toContain("<code>+214 −18</code>");
     expect(html).toContain("medium risk");
@@ -97,11 +97,29 @@ describe("gateKeyboard", () => {
     expect(byData["hitl:reject:q-42"]).toMatch(/reject/i);
   });
 
-  it("omits View diff for a gate with no diff to show", () => {
-    const kb = gateKeyboard(gate({ kind: "approval", diff: null, command: "deploy" } as Partial<HitlItem>));
-    const datas = kb.inline_keyboard.flat().map((b) => b.callback_data);
+  it("an approval gate gets the exact 3-row shape: Approve once/Reject, Always allow, Open in Skynet — no View diff or Request changes", () => {
+    const kb = gateKeyboard(gate({ kind: "approval", diff: null, command: "deploy" } as Partial<HitlItem>), "Takeoff", "https://app/#/agent/run-1");
+    const flat = kb.inline_keyboard.flat();
+    const datas = flat.map((b) => b.callback_data);
+    const byData = Object.fromEntries(flat.filter((b) => b.callback_data).map((b) => [b.callback_data, b.text]));
     expect(datas).not.toContain("hitl:diff:q-42");
-    expect(datas).toContain("hitl:modify:q-42");
+    expect(datas).not.toContain("hitl:modify:q-42");
+    expect(byData["hitl:approve:q-42"]).toBe("Approve once");
+    expect(byData["hitl:reject:q-42"]).toMatch(/reject/i);
+    // "deploy" has no explicit rule → falls to the default gate/medium risk, which IS rememberable.
+    expect(byData["hitl:remember:q-42"]).toContain("Always allow for Takeoff");
+    expect(flat.find((b) => b.url)).toEqual({ text: "Open the run in Skynet ↗", url: "https://app/#/agent/run-1" });
+  });
+
+  it("omits the 'Always allow' row for a non-rememberable (high-risk/deny) command", () => {
+    const kb = gateKeyboard(gate({ kind: "approval", diff: null, command: "git push origin main" } as Partial<HitlItem>), "Takeoff");
+    const datas = kb.inline_keyboard.flat().map((b) => b.callback_data);
+    expect(datas).not.toContain("hitl:remember:q-42");
+  });
+
+  it("omits the Open-in-Skynet row when no link is given", () => {
+    const kb = gateKeyboard(gate({ kind: "approval", diff: null, command: "deploy" } as Partial<HitlItem>), "Takeoff");
+    expect(kb.inline_keyboard.flat().some((b) => b.url)).toBe(false);
   });
 
   it("renders a button PER option for a decision (question), not an approve/reject gate", () => {
@@ -229,5 +247,35 @@ describe("View diff", () => {
     expect(c.resolveHitl).not.toHaveBeenCalled(); // viewing ≠ deciding
     expect(c.notes.at(-1)).toContain("diff --git");
     expect(c.edits).not.toContain(500); // decision buttons stay put
+  });
+});
+
+// "Always allow for <project>" — the keyboard's row 2, the same
+// Project.approvalRules write path as the web inbox's remember checkbox
+// (TASK 16) and the Keys & Budget panel's direct "+ add pattern" (TASK 20).
+describe("Always allow (remember)", () => {
+  const approvalGate = gate({ kind: "approval", diff: null, command: "npm test" } as Partial<HitlItem>);
+
+  it("tapping it approves AND passes remember:true to resolveHitl", async () => {
+    const c = makeControl(true, approvalGate);
+    await c.handleCallback(OWNER, "hitl:remember:q-42", "cb-1", 500);
+    expect(c.resolveHitl).toHaveBeenCalledTimes(1);
+    expect(c.resolveHitl.mock.calls[0]?.[1]).toBe("q-42");
+    expect(c.resolveHitl.mock.calls[0]?.[2]).toEqual({ action: "approve", remember: true });
+    expect(c.notes.at(-1)).toMatch(/remembered/i);
+    expect(c.edits).toContain(500); // buttons stripped
+  });
+
+  it("does nothing with control OFF", async () => {
+    const c = makeControl(false, approvalGate);
+    await c.handleCallback(OWNER, "hitl:remember:q-42", "cb-1", 500);
+    expect(c.resolveHitl).not.toHaveBeenCalled();
+  });
+
+  it("refuses a stale tap on an already-resolved gate", async () => {
+    const c = makeControl(true, approvalGate);
+    await c.handleCallback(OWNER, "hitl:remember:q-999", "cb-1", 500);
+    expect(c.resolveHitl).not.toHaveBeenCalled();
+    expect(c.acks[0]?.text).toMatch(/already/i);
   });
 });

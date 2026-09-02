@@ -5,8 +5,9 @@
 // ("Gate q-diff-pin-the-node-docker-image-to-a-d-1-20 …", "Run pin-the-node-
 // docker-image-to-a-d-1 needs attention").
 
-import type { HitlItem } from "@skynet/shared";
+import type { HitlItem, Resolution } from "@skynet/shared";
 import type { InlineKeyboardMarkup } from "./client.js";
+import { rememberableRisk } from "../approval-policy.js";
 
 export type Names = { run: string; project: string };
 
@@ -86,6 +87,68 @@ function headFor(it: HitlItem): string {
   return isStuckReview(it) ? "Done — awaiting your review" : (GATE_HEAD[it.kind] ?? "Needs your review");
 }
 
+// ─── Decision-card bubble structure ─────────────────────────────────────────
+// Telegram's Bot API has no way for a bot to set bubble/background colors —
+// those are the RECEIVING CLIENT's own theme (dark/light, chosen by the
+// operator), never something `parse_mode: "HTML"` can touch. The card below
+// is re-skinned at the level Telegram actually gives a bot control over: the
+// TEXT structure (a short all-caps kind label, a one-sentence verdict, a mono
+// command inset, a risk-flagged consequence line, a plain-language context
+// line) — Telegram's own dark theme paints the surrounding chrome and stamps
+// every message with its own delivery timestamp bottom-right for free.
+
+const KIND_LABEL: Record<HitlItem["kind"], string> = {
+  approval: "APPROVAL NEEDED",
+  diff: "REVIEW NEEDED",
+  merge: "MERGE NEEDS YOU",
+  question: "DECISION NEEDED",
+  plan: "PLAN REVIEW",
+  escalation: "NEEDS HELP",
+  verifier: "CHECKS FAILED",
+};
+
+/** All-caps kind label for the card's header line — "AWAITING REVIEW" for a
+ *  stuck-review escalation (nothing failed), the per-kind label otherwise. */
+function kindLabel(it: HitlItem): string {
+  return isStuckReview(it) ? "AWAITING REVIEW" : (KIND_LABEL[it.kind] ?? "NEEDS YOU");
+}
+
+/** A short, stable, glanceable run tag ("RUN #A912") — the last 4 alphanumeric
+ *  characters of the run id, uppercased. Not an identifier the operator needs
+ *  to type anywhere (buttons carry the real id); just something to visually
+ *  anchor "which run is this" without the full ugly id. */
+function shortRunTag(runId: string): string {
+  const clean = runId.replace(/[^a-zA-Z0-9]/g, "");
+  return (clean.slice(-4) || clean).toUpperCase();
+}
+
+/** A one-line, risk-flagged statement of what actually happens if this is
+ *  approved — distinct from `why` (which explains the DECISION) and `title`
+ *  (the verdict). Medium/high risk gets the ⚠️ flag (the closest a bot can
+ *  get to "amber" — Telegram can't tint text); low risk reads as reassurance. */
+function consequenceLine(it: HitlItem): string {
+  if (it.risk === "high") return "⚠️ High risk — can affect things outside the sandbox (e.g. a push, deploy, or an irreversible change).";
+  if (it.risk === "medium") return "⚠️ Medium risk — writes or changes state inside the project.";
+  return "Low risk — reversible, contained to the project sandbox.";
+}
+
+/** The always-true reason the operator is being pinged: the run is genuinely
+ *  blocked until this gate resolves — no auto-timeout silently moves on. */
+const CONTEXT_LINE = "Agent is idle until you answer.";
+
+/** `telegram:<ownerChatId>` (the only Telegram-originated operatorId, see
+ *  index.ts) reads as "you" — there's no name directory to resolve it against
+ *  (single-owner scope, unchanged by this task); any other operatorId is
+ *  already a human-readable id (e.g. "jordan") and is shown as-is, matching
+ *  how the web audit trail already renders it (audit.tsx). */
+function humanizeOperator(operatorId: string): string {
+  return operatorId.startsWith("telegram:") ? "you" : operatorId;
+}
+
+function fmtTime(at: number): string {
+  return new Date(at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
+
 /** The gate heads-up body. `control` toggles the tappable-buttons hint vs the
  *  slash-command fallback. Never includes the internal gate/run id in the prose.
  *  Mirrors the web queue card's own ordering (queue.tsx): title → why →
@@ -131,10 +194,11 @@ export function gateNotice(it: HitlItem, names: Names, control: boolean, link?: 
  * impossible to act on from a merge-conflict card.
  */
 export function decisionCardHtml(it: HitlItem, names: Names, control: boolean, link?: string): string {
-  const head = headFor(it);
   const lines: string[] = [];
-  lines.push(`🔔 <b>${esc(head)}</b>${names.project ? ` · ${esc(names.project)}` : ""}`);
+  // Kind label + run tag — the header line the operator scans first.
+  lines.push(`<b>${esc(kindLabel(it))}</b>${names.project ? ` · ${esc(names.project)}` : ""} · RUN #${esc(shortRunTag(it.runId))}`);
   lines.push(esc(names.run));
+  // One-sentence verdict.
   if (it.title) lines.push(`<b>${esc(it.title)}</b>`);
   if (it.rationale) lines.push(`<i>“${esc(it.rationale.trim())}”</i>`);
   if (it.why) lines.push(esc(it.why));
@@ -143,6 +207,7 @@ export function decisionCardHtml(it: HitlItem, names: Names, control: boolean, l
     lines.push(`<code>+${it.diff.add} −${it.diff.del}</code> · ${esc(it.risk)} risk${n ? ` · ${n} file${n === 1 ? "" : "s"}` : ""}`);
     lines.push(...fileLines(it, esc, (s) => `<code>${esc(s)}</code>`));
   } else if (it.command) {
+    // Mono command inset, immediately followed by its risk-flagged consequence.
     lines.push(`<code>${esc(it.command)}</code>`);
   } else if (it.kind === "question" && it.options?.length) {
     // A decision: show a numbered choice list (matches the per-option
@@ -151,6 +216,7 @@ export function decisionCardHtml(it: HitlItem, names: Names, control: boolean, l
     lines.push("<b>Choose one:</b>");
     lines.push(it.options.map((o, i) => `${i + 1}. ${esc(o)}`).join("\n"));
   }
+  lines.push(esc(consequenceLine(it)));
   if (outputSnippet(it)) {
     // A merge gate's captured output is the raw `<<<<<<<`/`=======`/`>>>>>>>`
     // conflict text — genuinely hard to read on a phone even labeled, but
@@ -162,6 +228,8 @@ export function decisionCardHtml(it: HitlItem, names: Names, control: boolean, l
   if (it.kind === "merge" && it.flags?.length) {
     lines.push(`<b>Conflicts in:</b> ${it.flags.map((f) => `<code>${esc(f)}</code>`).join(", ")}`);
   }
+  // Context line — the run is genuinely blocked until this resolves.
+  lines.push(esc(CONTEXT_LINE));
   const isChoice = it.kind === "question" && !!it.options?.length;
   lines.push(
     control
@@ -174,17 +242,31 @@ export function decisionCardHtml(it: HitlItem, names: Names, control: boolean, l
   );
   // A run deep link to open the full gate in the app (a href is safe — the URL
   // is server config + a safe run id, no user text). Telegram HTML supports <a>.
+  // (Also rides as its own "Open the run in Skynet ↗" keyboard button — see
+  // gateKeyboard — kept here too as a fallback when control/keyboards are off.)
   if (link) lines.push(`<a href="${esc(link)}">Open in the app ↗</a>`);
   return lines.join("\n");
 }
 
 /**
- * The inline keyboard for a gate. Approve + Request changes for every gate;
- * View diff only when there's a diff to show; Reject to refuse. The gate id
- * rides in each callback_data so a tap resolves exactly the gate it was on.
- * Pure so it's unit-testable (no client/network).
+ * The inline keyboard for a gate. Pure so it's unit-testable (no client/
+ * network). The gate id rides in each callback_data so a tap resolves exactly
+ * the gate it was on; an `url` button (never callback_data) opens the run in
+ * the app directly, no round trip through the bot.
+ *
+ * `approval` gates get the exact 3-row shape: Approve once / Reject, then
+ * (only when the command is rememberable — the SAME live classification
+ * `Operations.addApprovalRule`/the web "ALWAYS FOR THIS PROJECT" action use,
+ * see approval-policy.ts's `rememberableRisk`) a full-width "Always allow for
+ * <project>" row, then Open-in-Skynet. Every other kind keeps its existing
+ * Approve/Request-changes(+View diff)/Reject shape — "always allow" has no
+ * meaning for a diff, merge, or a free-form question.
  */
-export function gateKeyboard(it: HitlItem): InlineKeyboardMarkup {
+export function gateKeyboard(it: HitlItem, projectName = "", link?: string): InlineKeyboardMarkup {
+  const openLinkRow: InlineKeyboardMarkup["inline_keyboard"] = link
+    ? [[{ text: "Open the run in Skynet ↗", url: link }]]
+    : [];
+
   // A decision (AskUserQuestion) is a SELECTION, not an approve/reject gate — give
   // it one tappable button PER option (numbered to match the message body) so it's
   // obviously "pick one". Free-text answer + refuse still available below.
@@ -196,8 +278,22 @@ export function gateKeyboard(it: HitlItem): InlineKeyboardMarkup {
       { text: "✏️ Other answer", callback_data: `hitl:modify:${it.id}` },
       { text: "⛔ Reject", callback_data: `hitl:reject:${it.id}` },
     ]);
-    return { inline_keyboard: rows };
+    return { inline_keyboard: [...rows, ...openLinkRow] };
   }
+
+  if (it.kind === "approval" && it.command) {
+    const rows: InlineKeyboardMarkup["inline_keyboard"] = [
+      [
+        { text: "Approve once", callback_data: `hitl:approve:${it.id}` },
+        { text: "⛔ Reject", callback_data: `hitl:reject:${it.id}` },
+      ],
+    ];
+    if (rememberableRisk(it.command) != null) {
+      rows.push([{ text: `Always allow for ${clipBtn(projectName || "this project")}`, callback_data: `hitl:remember:${it.id}` }]);
+    }
+    return { inline_keyboard: [...rows, ...openLinkRow] };
+  }
+
   const rows: InlineKeyboardMarkup["inline_keyboard"] = [
     [
       { text: "✅ Approve", callback_data: `hitl:approve:${it.id}` },
@@ -208,7 +304,7 @@ export function gateKeyboard(it: HitlItem): InlineKeyboardMarkup {
     rows.push([{ text: "🔍 View diff", callback_data: `hitl:diff:${it.id}` }]);
   }
   rows.push([{ text: "⛔ Reject", callback_data: `hitl:reject:${it.id}` }]);
-  return { inline_keyboard: rows };
+  return { inline_keyboard: [...rows, ...openLinkRow] };
 }
 
 /** Keep an option's button label short — Telegram truncates long buttons anyway,
@@ -239,6 +335,34 @@ export function completedNotice(names: Names, link?: string): string {
  *  so the card you decided on becomes the result, in place. */
 export function shippedCardHtml(names: Names): string {
   return `✅ <b>Shipped</b>${names.project ? ` · ${esc(names.project)}` : ""}\n${esc(names.run)}`;
+}
+
+const RESOLUTION_HEAD: Record<Resolution["action"], string> = {
+  approve: "✅ Approved",
+  reject: "🚫 Rejected",
+  modify: "✏️ Changes requested",
+  option: "✅ Answered",
+  reassign: "↻ Reassigned",
+  dismiss: "🗑 Dismissed",
+  push: "🚀 Pushed",
+};
+
+/**
+ * HTML "resolved" state a live decision card is edited into the moment its
+ * gate is resolved — from EITHER channel (a Telegram button tap or the web
+ * inbox; `hitl.resolved` fires the same either way, see index.ts's `handler`).
+ * This is what closes the gap between "buttons get stripped" (always worked)
+ * and "the card reads as decided, with who and when" (didn't). No name
+ * directory exists for `by` (see `humanizeOperator`) — a Telegram tap reads as
+ * "you", a web operatorId is shown verbatim, same as the audit trail.
+ */
+export function resolvedCardHtml(names: Names, resolution: Pick<Resolution, "action" | "by" | "at">): string {
+  const head = RESOLUTION_HEAD[resolution.action] ?? "✅ Resolved";
+  const who = humanizeOperator(resolution.by);
+  return [
+    `${head} by ${esc(who)} · ${esc(fmtTime(resolution.at))}${names.project ? ` · ${esc(names.project)}` : ""}`,
+    esc(names.run),
+  ].join("\n");
 }
 
 /**
@@ -289,4 +413,62 @@ export function parseQuietHours(raw: string | undefined): { start: number; end: 
   const end = Number(m[2]);
   if (!Number.isInteger(start) || !Number.isInteger(end) || start > 23 || end > 23) return null;
   return { start, end };
+}
+
+// ─── Daily digest (scheduled, distinct from the on-demand /inbox) ──────────
+
+/** Ms until the next occurrence of `hour:00` local time (today if it hasn't
+ *  passed yet, else tomorrow). Pure (takes `now` rather than reading the
+ *  clock) so the scheduling math is unit-testable without faking timers. */
+export function nextDigestDelayMs(hour: number, now: Date): number {
+  const next = new Date(now);
+  next.setHours(hour, 0, 0, 0);
+  if (next.getTime() <= now.getTime()) next.setDate(next.getDate() + 1);
+  return next.getTime() - now.getTime();
+}
+
+const DIGEST_BAR_LEN = 10;
+
+/** A block-character mini bar (10 cells) showing spend against a cap. Mirrors
+ *  the web Keys & Budget meter's shape in the only form Telegram can render —
+ *  filled/empty characters, no color. */
+function miniBar(spentUsd: number, capUsd: number): string {
+  const pct = capUsd > 0 ? Math.min(1, spentUsd / capUsd) : 0;
+  const filled = Math.round(pct * DIGEST_BAR_LEN);
+  return "▓".repeat(filled) + "░".repeat(DIGEST_BAR_LEN - filled);
+}
+
+/**
+ * The scheduled daily digest — distinct from the on-demand `/inbox` (`digestText`
+ * above): a fixed-time evening ping rather than something the operator asks for.
+ * Always exactly 3 summary sentences (the single thing most needing attention,
+ * run counts, and how many decisions remain open) plus a spend line — a mini
+ * bar only when at least one project has a daily cap set (nothing to bar
+ * against otherwise, same as the web panel's "No limit set"). Pure; caller
+ * resolves gates/counts/spend. `gates` should already be sorted
+ * longest-waiting-first so `gates[0]` is genuinely "most needing attention".
+ */
+export function dailyDigestHtml(d: {
+  hour: number;
+  gates: { head: string; run: string }[];
+  running: number;
+  done: number;
+  spentUsd: number;
+  capUsd: number | null;
+}): string {
+  const hourLabel = `${String(d.hour).padStart(2, "0")}:00`;
+  const top = d.gates[0];
+  const s1 = top ? `${esc(top.head)} on ${esc(top.run)} needs you most.` : "Nothing needs a decision right now.";
+  const s2 = `${d.running} run${d.running === 1 ? "" : "s"} active, ${d.done} finished today.`;
+  const s3 =
+    d.gates.length > 1
+      ? `${d.gates.length} decisions are open in total.`
+      : d.gates.length === 1
+        ? "That's the only open decision."
+        : "Autonomy is running the rest without you.";
+  const spendLine =
+    d.capUsd != null && d.capUsd > 0
+      ? `<code>${miniBar(d.spentUsd, d.capUsd)}</code> $${d.spentUsd.toFixed(2)} of $${d.capUsd.toFixed(2)} spent today`
+      : `$${d.spentUsd.toFixed(2)} spent today`;
+  return [`🟢 <b>DIGEST · ${hourLabel}</b>`, "", `${s1} ${s2} ${s3}`, "", spendLine].join("\n");
 }
