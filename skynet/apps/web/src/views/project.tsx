@@ -37,6 +37,8 @@ import { KeysBudgetPanel } from "../kanban/keys-budget";
 import { ActivityFeed } from "../kanban/feed";
 import { BoardHealth } from "../kanban/health";
 import { AutonomyDialButton } from "../kanban/autonomy-dial";
+import { Chip } from "../kanban/primitives";
+import { isTypingTarget } from "../lib/keys";
 
 const stop = (e: React.MouseEvent) => e.stopPropagation();
 
@@ -1774,6 +1776,31 @@ export function ProjectView({
   const [resyncing, setResyncing] = useState(false);
   const hasRepo = !!(project.gitBacked || project.repo);
 
+  // Breadcrumb's "N GATES OPEN" chip — the same underlying workspace-wide
+  // queue TASK 15's /api/decisions filters down to one project (see that
+  // endpoint's own doc comment), derived here from the already-live,
+  // WS-synced store instead of a second fetch so the count never lags.
+  const openGates = queue.filter(
+    (q) => !q.resolvedAt && runs.some((r) => r.id === q.runId && r.projectId === project.id),
+  ).length;
+
+  // Breadcrumb keyboard affordances — Escape or Option/Alt+Left leaves the
+  // project, same action as the ✕ button and the "Projects" crumb itself.
+  // Skipped while typing, or while a local overlay this view owns is open
+  // (that overlay's own Escape handling should win instead).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (isTypingTarget(e.target)) return;
+      if (editing || previewOpen || flyOpen || confirmDel || informOpen) return;
+      if (e.key === "Escape" || (e.altKey && e.key === "ArrowLeft")) {
+        e.preventDefault();
+        onBack();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [editing, previewOpen, flyOpen, confirmDel, informOpen, onBack]);
+
   useEffect(() => {
     setName(project.name);
     setGoal(project.goal);
@@ -1786,9 +1813,23 @@ export function ProjectView({
 
   return (
     <section className="projview">
-      <button className="btn btn-ghost btn-back" onClick={onBack}>
-        ← Back
-      </button>
+      <div className="pv-breadcrumb">
+        <div className="pv-breadcrumb-trail">
+          <button className="pv-breadcrumb-projects" onClick={onBack}>Projects</button>
+          <span className="pv-breadcrumb-sep">/</span>
+          <span className="pv-breadcrumb-current">{project.name}</span>
+        </div>
+        <div className="pv-breadcrumb-chips">
+          {hasRepo && (
+            <Chip
+              tone="neutral"
+              label={`${project.repo ?? (project.repoPath ? "local repo" : "no repo")} · ${project.baseBranch || "main"}`}
+            />
+          )}
+          {openGates > 0 && <Chip tone="human" label={`${openGates} GATE${openGates === 1 ? "" : "S"} OPEN`} />}
+        </div>
+        <button className="pv-breadcrumb-close" onClick={onBack} aria-label="Back to projects" title="Back to projects (Esc)">✕</button>
+      </div>
       {editing ? (
         <div className="projview-edit">
           <input className="qx-input" value={name} onChange={(e) => setName(e.target.value)} />
@@ -1896,7 +1937,6 @@ export function ProjectView({
       ) : (
         <div className="projview-head">
           <div className="projview-head-main">
-            <h2>{project.name}</h2>
             <p>{project.goal}</p>
             {project.instructions && (
               <button
