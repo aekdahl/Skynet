@@ -45,6 +45,7 @@ import {
   type AutonomyDetentState,
   type AutonomyOverride,
   type SourceRef,
+  type Decision,
 } from "@skynet/shared";
 import { parseStewardStream, type StewardReply } from "./steward-stream";
 import { toast } from "../components/toast";
@@ -466,6 +467,23 @@ export function resumeAgent(id: string) {
 /** The product roadmap (ROADMAP.md), rendered in Settings. */
 export function fetchRoadmap() {
   return req<{ markdown: string }>("GET", "/api/roadmap");
+}
+
+// ─── Decision Inbox (TASK 16) ───────────────────────────────────────────────
+// Every open HITL across every project in the workspace, joined with the
+// project/task it belongs to and sorted by cost-of-waiting server-side (see
+// Operations.listDecisions, TASK 15).
+export function fetchDecisions() {
+  return req<Decision[]>("GET", "/api/decisions");
+}
+
+// ─── Depleted provider keys (TASK 23 hardening) ────────────────────────────
+// The ONE fleet-level source for "a provider key is out of credits/quota" —
+// backs a single banner instead of a duplicated per-run billing escalation
+// being the operator's only signal.
+export type DepletedKey = { credentialId: string; reason: string; at: number };
+export function fetchDepletedKeys() {
+  return req<DepletedKey[]>("GET", "/api/depleted-keys");
 }
 
 // ─── Project roadmap doc (ROADMAP.md, read from the project's bound repo) ──

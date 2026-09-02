@@ -526,4 +526,26 @@ export const SCENARIOS: Scenario[] = [
       return steps;
     },
   },
+  {
+    id: "decision-inbox-fetch",
+    name: "Decision Inbox — GET /api/decisions",
+    desc: "Confirms the cross-project decisions endpoint returns an array of only-open items, and — when a gate happens to already be open — that it's joined with the correct project fields.",
+    run: async () => {
+      const steps: Step[] = [];
+      // Same keyless constraint as hitl-audit above: this suite can't spawn a
+      // real agent to RAISE a gate, so it can only exercise the join/shape
+      // when one already happens to be open.
+      const decisions = await api.fetchDecisions();
+      steps.push(step("returns an array", Array.isArray(decisions)));
+      steps.push(step("every item is open — resolved ones don't leak through", decisions.every((d) => d.resolution === null)));
+      const open = decisions[0];
+      if (!open) {
+        steps.push(skipped("an open decision to check the project/task join on", "none open (keyless) — the self-contained version needs a real agent-raised gate"));
+        return steps;
+      }
+      steps.push(step("joined with a real projectName", typeof open.projectName === "string" && open.projectName.length > 0));
+      steps.push(step("costOfWaiting reflects real idle time", open.costOfWaiting >= 0));
+      return steps;
+    },
+  },
 ];

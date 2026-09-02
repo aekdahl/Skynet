@@ -466,6 +466,17 @@ export class Operations {
     decisions.sort((a, b) => b.costOfWaiting - a.costOfWaiting);
     return decisions;
   }
+
+  /** Every provider key currently out of credits/quota for the workspace — the
+   *  fleet-level banner's one source, distinct from the per-run billing
+   *  escalation each affected run still separately raises (Orchestrator.
+   *  tripKeyBreaker). Thin passthrough; the breaker state lives on the
+   *  Orchestrator (in-memory, per-process — same footing as the autonomy
+   *  streak counter before TASK 19 made it durable). */
+  listDepletedKeys(ws: string): { credentialId: string; reason: string; at: number }[] {
+    return this.orchestrator.listDepletedKeys(ws);
+  }
+
   /** Fetch ONE HITL item scoped to the workspace, or throw NotFoundError (404)
    *  — the full-record counterpart to a summarized queue listing (the MCP
    *  list_hitl → get_hitl drill-in). */

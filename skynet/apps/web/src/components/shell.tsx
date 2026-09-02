@@ -1,6 +1,7 @@
-import { useState, type ComponentType, type SVGProps } from "react";
+import { useEffect, useState, type ComponentType, type SVGProps } from "react";
 import type { TaskRun, Project } from "@skynet/shared";
 import type { WsPhase } from "../lib/client";
+import * as api from "../lib/client";
 import { useStore, useNow } from "../lib/store";
 import {
   fmtWait,
@@ -39,6 +40,7 @@ import {
 type NavKey =
   | "home"
   | "queue"
+  | "decisionInbox"
   | "audit"
   | "projects"
   | "fleet"
@@ -56,6 +58,8 @@ function activeNav(view: ViewName): NavKey | null {
       return "home";
     case "queue":
       return "queue";
+    case "decisionInbox":
+      return "decisionInbox";
     case "audit":
       return "audit";
     case "projects":
@@ -102,6 +106,39 @@ const wsInitials = (name: string): string =>
       .join("")
       .slice(0, 2) || "S"
   ).toUpperCase();
+
+// TASK 23 hardening — ONE fleet-level banner for "a provider key is out of
+// credits/quota", so the operator gets a single signal instead of noticing
+// it only as N duplicated per-run billing escalations. Additive: the
+// per-run escalations still exist and are still each individually
+// actionable (a run may need reassigning, not just a top-up); this is
+// visibility on top, not a replacement. Polled — no WS event exists for a
+// key-breaker trip/clear (it's in-memory on the Orchestrator, unlike the
+// durable per-project autonomy breaker TASK 19 built).
+const DEPLETED_KEYS_POLL_MS = 60_000;
+
+export function DepletedKeyBanner() {
+  const [keys, setKeys] = useState<api.DepletedKey[]>([]);
+  useEffect(() => {
+    let live = true;
+    const poll = () => api.fetchDepletedKeys().then((k) => live && setKeys(k)).catch(() => undefined);
+    poll();
+    const id = setInterval(poll, DEPLETED_KEYS_POLL_MS);
+    return () => {
+      live = false;
+      clearInterval(id);
+    };
+  }, []);
+  if (keys.length === 0) return null;
+  return (
+    <div className="depleted-keys-bar" role="status" aria-live="polite">
+      <span className="depleted-keys-dot" aria-hidden="true" />
+      {keys.length === 1
+        ? `A provider key is out of credits — ${keys[0]!.reason}. New work is paused on it until it's topped up.`
+        : `${keys.length} provider keys are out of credits/quota. New work is paused on each until they're topped up.`}
+    </div>
+  );
+}
 
 export function TitleBar() {
   const { workspaceSettings } = useStore();
@@ -280,6 +317,10 @@ export function OpSidebar({
           active === "home",
         )}
         {item("Inbox", InboxIcon, () => setView("queue"), active === "queue", queueCount)}
+        {/* TASK 16 — the new cross-project Decision Inbox, additive alongside
+            the existing per-project Inbox above (same relationship Rail Graph
+            had to Momentum/Gravity). Same underlying open-queue count. */}
+        {item("Decisions", InboxIcon, () => setView("decisionInbox"), active === "decisionInbox", queueCount)}
         {item("Audit", AuditIcon, () => setView("audit"), active === "audit")}
         {item("Projects", ProjectsIcon, () => setView("projects"), active === "projects")}
         {item("Fleet", FleetIcon, () => setView("fleet"), active === "fleet")}

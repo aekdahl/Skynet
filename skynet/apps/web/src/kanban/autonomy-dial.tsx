@@ -11,6 +11,7 @@ import { AUTONOMY_DETENTS, AUTONOMY_DETENT_INFO, autonomyGateRows, fieldsForDete
 import * as api from "../lib/client";
 import { useStore } from "../lib/store";
 import { useConfirm } from "../components/confirm";
+import { toast } from "../components/toast";
 
 const INDEX_OF: Record<AutonomyDetent, number> = { shadow: 0, assisted: 1, earned: 2, unattended: 3 };
 
@@ -48,7 +49,7 @@ export function AutonomyDialButton({
 }
 
 function AutonomyDial({ project, onClose }: { project: Project; onClose: () => void }) {
-  const { setAutonomyDetent, createAutonomyOverride, autonomyRev } = useStore();
+  const { setAutonomyDetent, createAutonomyOverride, autonomyRev, wsPhase } = useStore();
   const confirm = useConfirm();
   const [state, setState] = useState<AutonomyDetentState | null>(null);
   const [error, setError] = useState(false);
@@ -85,6 +86,11 @@ function AutonomyDial({ project, onClose }: { project: Project; onClose: () => v
       try {
         await setAutonomyDetent(project.id, detent);
         await load();
+      } catch (e) {
+        // Previously silent — a rejected setAutonomyDetent (network blip, a
+        // stale precondition) left the dial exactly where it was with zero
+        // indication anything went wrong.
+        toast(e instanceof Error ? e.message : "Couldn't change the autonomy level.");
       } finally {
         setBusy(false);
       }
@@ -196,6 +202,11 @@ function AutonomyDial({ project, onClose }: { project: Project; onClose: () => v
     try {
       await createAutonomyOverride(project.id);
       await load();
+    } catch (e) {
+      // The worst of the audited silent-failure paths: previously a rejected
+      // override request (e.g. a 409 — already overridden) left the operator
+      // believing autonomy resumed when it hadn't, with zero feedback.
+      toast(e instanceof Error ? e.message : "Couldn't start the override.");
     } finally {
       setBusy(false);
     }
@@ -206,7 +217,10 @@ function AutonomyDial({ project, onClose }: { project: Project; onClose: () => v
       <div className="ad-panel" onMouseDown={(e) => e.stopPropagation()}>
         <div className="ad-header">
           <div>
-            <h2 className="ad-title">Autonomy — {project.name}</h2>
+            <h2 className="ad-title">
+              Autonomy — {project.name}
+              {wsPhase !== "open" && <span className="ad-disconnect-pill" role="status">⚠ RECONNECTING</span>}
+            </h2>
             <p className="ad-subtitle">A dial, not a switch — pick how much runs without a person.</p>
           </div>
           <button className="btn btn-ghost btn-sm" onClick={onClose} aria-label="Close">✕</button>
