@@ -47,6 +47,13 @@ const ALLOW = new Set<string>([
   // commit with attribution, plus the held_conflict choose/write_own path)
   // is covered by tests/roadmap-decision-cards.test.ts instead.
   "fetchRoadmapProposal", "resolveRoadmapConflict",
+  // TASK 32 — workspace roadmap roll-up + "create one from the board". Both
+  // need a project genuinely bound to a real git repo (scaffold additionally
+  // needs one with NO roadmap file yet) — no offline journey has that
+  // fixture. The full round trip (access scoping, the dashed no-roadmap row,
+  // a real scaffolded+attributed commit, cross-repo milestone grouping) is
+  // covered server-side by tests/roadmap-workspace-rollup.test.ts instead.
+  "fetchWorkspaceRoadmapRollup", "scaffoldProjectRoadmap",
   // add a second named credential for a provider — needs a real key + the secret
   // store (master key), so no offline journey; the route is guarded server-side
   // and the set/delete-by-id paths it shares ARE journey-covered.

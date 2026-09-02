@@ -1,0 +1,52 @@
+/* ─── Workspace roadmap roll-up (Phase 29 — TASK 32) ─────────────────────── */
+/* "Six repos, one quarter". Same --ak-* token family as roadmap.css/board.css. */
+
+.wrr { display: flex; flex-direction: column; gap: var(--ak-sp-16); }
+
+.wrr-topbar { display: flex; align-items: baseline; gap: var(--ak-sp-12); flex-wrap: wrap; }
+.wrr-title { font-size: 19px; font-weight: 600; color: var(--ak-text-primary); margin: 0; }
+.wrr-sub { font-size: 12.5px; color: var(--ak-text-faint); }
+
+/* Milestone cards — one per shared `##` heading, 2+ repos. */
+.wrr-milestones { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: var(--ak-sp-12); }
+.wrr-milestone { background: var(--ak-surface-1); border: 1px solid var(--ak-border); border-radius: var(--ak-radius-card); padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; }
+.wrr-milestone-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.wrr-milestone-name { font-size: 14px; font-weight: 600; color: var(--ak-text-primary); margin: 0; }
+.wrr-milestone-count { font-family: var(--ak-font-mono); font-size: 10.5px; color: var(--ak-text-faint); }
+
+.wrr-milestone-repos { display: flex; flex-direction: column; gap: 8px; }
+.wrr-mrepo { display: flex; flex-direction: column; gap: 4px; }
+.wrr-mrepo-warn { padding: 6px 8px; margin: -6px -8px; border-radius: var(--ak-radius-sm); background: color-mix(in oklch, var(--ak-warn), transparent 92%); }
+.wrr-mrepo-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.wrr-mrepo-name { font-size: 12px; color: var(--ak-text-secondary); }
+.wrr-mrepo-count { font-family: var(--ak-font-mono); font-size: 10.5px; color: var(--ak-text-faint); }
+.wrr-mrepo-track { height: 5px; border-radius: 3px; background: var(--ak-surface-2); overflow: hidden; }
+.wrr-mrepo-fill { height: 100%; background: var(--ak-machine); border-radius: 3px; }
+.wrr-mrepo-reason { font-size: 11px; color: var(--ak-warn); }
+
+/* Repo table. */
+.wrr-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.wrr-table th { text-align: left; font-family: var(--ak-font-mono); font-size: 10px; font-weight: 600; letter-spacing: 0.05em; color: var(--ak-text-faint); padding: 8px 10px; border-bottom: 1px solid var(--ak-border); }
+.wrr-table td { padding: 10px; border-bottom: 1px solid var(--ak-border-subtle); vertical-align: middle; color: var(--ak-text-primary); }
+
+.wrr-repo-cell { display: flex; align-items: center; gap: 8px; }
+.wrr-repo-name { font-weight: 600; }
+.wrr-mono { font-family: var(--ak-font-mono); font-size: 11.5px; color: var(--ak-text-secondary); }
+.wrr-muted { color: var(--ak-text-faint); }
+
+.wrr-badge { font-family: var(--ak-font-mono); font-size: 9.5px; font-weight: 600; letter-spacing: 0.05em; padding: 2px 7px; border-radius: 5px; white-space: nowrap; }
+.wrr-badge-lime { color: var(--ak-machine-deep); background: color-mix(in oklch, var(--ak-machine-deep), transparent 88%); }
+.wrr-badge-amber { color: var(--ak-warn); background: color-mix(in oklch, var(--ak-warn), transparent 88%); }
+.wrr-badge-warn { color: var(--ak-warn); background: color-mix(in oklch, var(--ak-warn), transparent 88%); }
+
+.wrr-bar-cell { min-width: 120px; }
+.wrr-bar { display: flex; height: 8px; border-radius: 4px; overflow: hidden; background: var(--ak-surface-2); }
+.wrr-bar-empty { background: var(--ak-surface-2); }
+.wrr-bar-seg { display: block; height: 100%; }
+.wrr-bar-criteria { background: var(--ak-machine); }
+.wrr-bar-tasks { background: var(--ak-human); }
+.wrr-bar-bare { background: var(--ak-border-strong); }
+
+.wrr-dashed-row td { border-bottom: 1px dashed var(--ak-border-subtle); background: var(--ak-surface-0); }
+.wrr-dashed-content { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; color: var(--ak-text-secondary); }
+.wrr-dashed-err { color: var(--ak-warn); font-size: 11.5px; }

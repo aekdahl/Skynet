@@ -205,7 +205,7 @@ export class GithubService {
     repo: string,
     path: string,
     content: string,
-    sha: string,
+    sha: string | undefined,
     message: string,
     githubCredentialId?: string | null,
     attribution?: GitCommitAttribution,

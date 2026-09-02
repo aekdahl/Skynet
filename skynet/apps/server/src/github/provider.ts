@@ -222,11 +222,13 @@ export class GitHubProvider implements GitProvider {
     }
   }
 
-  async putFile(token: string, repo: string, path: string, content: string, sha: string, message: string, attribution?: GitCommitAttribution): Promise<void> {
+  async putFile(token: string, repo: string, path: string, content: string, sha: string | undefined, message: string, attribution?: GitCommitAttribution): Promise<void> {
     const trailer = attribution?.coAuthor ? `\n\nCo-authored-by: ${attribution.coAuthor.name} <${attribution.coAuthor.email}>` : "";
     await this.api(token, "PUT", `/repos/${repo}/contents/${path.replace(/^\/+/, "")}`, {
       message: `${message}${trailer}`,
       content: Buffer.from(content, "utf8").toString("base64"),
+      // `sha: undefined` is dropped by JSON.stringify — the Contents API
+      // creates a new file when it's absent, updates when it's present.
       sha,
       // Contents API accepts an explicit author/committer identity per commit
       // (docs.github.com/rest/repos/contents) — the approving human when set,

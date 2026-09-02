@@ -53,6 +53,7 @@ import {
   type RoadmapConflictResolveRequest,
   type ProposeRoadmapChangeRequest,
   type CommitRoadmapLineEditRequest,
+  type RoadmapWorkspaceRollup,
 } from "@skynet/shared";
 import { parseStewardStream, type StewardReply } from "./steward-stream";
 import { toast } from "../components/toast";
@@ -581,6 +582,18 @@ export function fetchRoadmapHistory(projectId: string, opts?: { limit?: number }
  *  through TASK 28's attributed-commit path with no proposal/HITL detour. */
 export function commitRoadmapLineEdit(projectId: string, body: CommitRoadmapLineEditRequest) {
   return req<{ committed: boolean; sha?: string }>("POST", `/api/projects/${projectId}/roadmap/commit-edit`, body);
+}
+
+/** "Without a file there is no roadmap — create one from the board." */
+export function scaffoldProjectRoadmap(projectId: string) {
+  return req<RoadmapDoc>("POST", `/api/projects/${projectId}/roadmap/scaffold`);
+}
+
+// ── workspace roadmap roll-up (Phase 29 — TASK 32) ────────────────────────
+// "Six repos, one quarter" — scoped server-side to the caller's own project
+// access; every project in the response is one this operator can already see.
+export function fetchWorkspaceRoadmapRollup() {
+  return req<RoadmapWorkspaceRollup>("GET", "/api/roadmap-rollup");
 }
 
 // ── roadmap proposal governance (TASK 30) ────────────────────────────────
