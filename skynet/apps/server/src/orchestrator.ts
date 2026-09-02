@@ -38,6 +38,7 @@ import { syncRepoNativeMemory } from "./repo-memory-sync.js";
 import { buildSiblingDigest } from "./sibling-digest.js";
 import { config, now } from "./config.js";
 import { githubService } from "./github/index.js";
+import { lockedSectionIds, taskBlockedByRoadmapLock } from "./roadmap/proposals.js";
 import type { Hub } from "./hub.js";
 import { MergeEngine, FEATURE_BRANCH_PREFIX, type MergeRequest } from "./merge.js";
 import { loadModuleMap, type ModuleMap } from "./modules-map.js";
@@ -5250,8 +5251,18 @@ export class Orchestrator {
             //    serializes in call order — grants idle agents to the
             //    highest-priority tasks first instead of array/insertion order.
             if (p.autonomy && (await this.underDailyBudget(p, runs))) {
+              // TASK 28, Rule 4 — a roadmap section held in `held_conflict`
+              // (two agents' proposals contradicted each other) locks out
+              // further auto-picked work tied to it via RoadmapLine.taskIds,
+              // until a human resolves the conflict. Cheap when nothing's
+              // locked (the common case): one held-conflict list read, no
+              // roadmap doc read at all unless something's actually locked.
+              const heldConflicts = await this.store.listRoadmapProposalsForProject(p.id, { state: "held_conflict" });
+              const locked = lockedSectionIds(heldConflicts);
+              const roadmapDoc = locked.size > 0 ? await this.store.getRoadmapDoc(p.id) : undefined;
               const pickable = mine
                 .filter((t) => t.state === "todo" && t.autoPick && (t.assignment?.mode ?? "unassigned") !== "unassigned")
+                .filter((t) => !taskBlockedByRoadmapLock(roadmapDoc, locked, t.id))
                 // S7: a task generated from a brief decomposition may declare
                 // dependencies on other tasks from the same plan — skip it
                 // until every one of those is `done`. `mine` already holds

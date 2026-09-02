@@ -9,7 +9,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from "node:fs";
 import { dirname } from "node:path";
 import type { GithubConnection, WorkspaceSettings } from "@skynet/shared";
-import { Agent, AuditRecord, AutonomyBreaker, AutonomyOverride, Checkpoint, Dependency, Feature, HitlItem, Milestone, Module, PendingRuleAction, PolicyVersion, Project, ProjectContextEntry, Proposal, RoadmapDoc, Rule, SolutionBrief, Task, TaskRun, Transition } from "@skynet/shared";
+import { Agent, AuditRecord, AutonomyBreaker, AutonomyOverride, Checkpoint, Dependency, Feature, HitlItem, Milestone, Module, PendingRuleAction, PolicyVersion, Project, ProjectContextEntry, Proposal, RoadmapDoc, RoadmapProposal, Rule, SolutionBrief, Task, TaskRun, Transition } from "@skynet/shared";
 import type { z } from "zod";
 import { MemoryStore } from "./memory.js";
 
@@ -120,6 +120,7 @@ export class FileStore extends MemoryStore {
       // Roadmap doc cache (Phase 24) — keyed by projectId, same pattern as the
       // autonomy breaker/override above.
       for (const rd of fillArray(d.roadmapDocs, RoadmapDoc, "roadmap doc")) this.roadmapDocs.set(rd.projectId, rd);
+      fill(this.roadmapProposals, d.roadmapProposals, RoadmapProposal, "roadmap proposal");
     } catch {
       // Corrupt or empty file → start fresh; the next flush rewrites it cleanly.
     }
@@ -162,6 +163,7 @@ export class FileStore extends MemoryStore {
       autonomyBreakers: [...this.autonomyBreakers.values()],
       autonomyOverrides: [...this.autonomyOverrides.values()],
       roadmapDocs: [...this.roadmapDocs.values()],
+      roadmapProposals: [...this.roadmapProposals.values()],
     };
     try {
       const tmp = `${this.path}.tmp`;

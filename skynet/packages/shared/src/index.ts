@@ -9,3 +9,4 @@ export * from "./compatible-endpoints.js";
 export * from "./kanban.js";
 export * from "./autonomy.js";
 export * from "./roadmap-doc.js";
+export * from "./roadmap-proposals.js";

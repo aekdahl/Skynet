@@ -13,7 +13,7 @@ import type { Store } from "../store/store.js";
 import { MemoryGithubStore } from "./memory.js";
 import { GitHubProvider } from "./provider.js";
 import { evaluateSafety } from "./safety.js";
-import type { GitProvider, GithubConnectionStore, GithubIssue, MergeResult, PrStatus, PushRequest, PushResult } from "./types.js";
+import type { GitCommitAttribution, GitProvider, GithubConnectionStore, GithubIssue, MergeResult, PrStatus, PushRequest, PushResult } from "./types.js";
 
 export class GithubService {
   constructor(
@@ -198,9 +198,19 @@ export class GithubService {
     return this.provider.getFile(await this.projectToken(workspaceId, githubCredentialId), repo, path);
   }
   /** Commit an updated repo file (single-file Contents-API commit) — the repo-file
-   *  write-back path (flip a checklist item when a task completes/reopens). */
-  async commitRepoFile(workspaceId: string, repo: string, path: string, content: string, sha: string, message: string, githubCredentialId?: string | null): Promise<void> {
-    await this.provider.putFile(await this.projectToken(workspaceId, githubCredentialId), repo, path, content, sha, message);
+   *  write-back path (flip a checklist item when a task completes/reopens), and
+   *  (with `attribution` set) the TASK 28 roadmap-proposal apply path. */
+  async commitRepoFile(
+    workspaceId: string,
+    repo: string,
+    path: string,
+    content: string,
+    sha: string,
+    message: string,
+    githubCredentialId?: string | null,
+    attribution?: GitCommitAttribution,
+  ): Promise<void> {
+    await this.provider.putFile(await this.projectToken(workspaceId, githubCredentialId), repo, path, content, sha, message, attribution);
   }
 
   /** Repos a given GitHub account can bind to — a pinned credential's PAT lists
