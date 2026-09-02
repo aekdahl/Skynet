@@ -1077,12 +1077,21 @@ export function createOwnerControl(deps: OwnerControlDeps): {
       }
 
       // ①②③ Chose a decision option — resolve with that index; the agent resumes
-      // on the selected answer.
+      // on the selected answer. An `escalation` gate has no `option` action to
+      // resolve with (deliverEscalation only understands modify/reject/reassign/
+      // dismiss) — it resolves the SAME way the web app's escalation option
+      // buttons do: `modify` with the picked text as guidance. Resolving an
+      // escalation gate with `action:"option"` here used to silently discard
+      // the pick (deliverEscalation's catch-all relaunches with empty guidance).
       if (decision === "option") {
         await ackCallback(callbackQueryId).catch(() => undefined);
         const chosen = gate.options?.[optionIndex!];
         try {
-          await operations.resolveHitl(ws, gateId, { action: "option", optionIndex }, operatorId);
+          if (gate.kind === "escalation") {
+            await operations.resolveHitl(ws, gateId, { action: "modify", guidance: chosen ?? "" }, operatorId);
+          } else {
+            await operations.resolveHitl(ws, gateId, { action: "option", optionIndex }, operatorId);
+          }
           await notify(`✅ Chose${chosen ? ` “${esc(chosen)}”` : ` option ${optionIndex! + 1}`} — the agent is resuming.`, { parse_mode: "HTML" });
         } catch (err) {
           await notify(`Couldn't submit that choice: ${(err as Error).message}`);

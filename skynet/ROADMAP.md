@@ -592,6 +592,24 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   realistic merge-conflict item: title, why, and conflicting files all present and ordered BEFORE the raw
   (HTML-escaped) conflict text, not instead of it. All prior diff/command/question card tests unaffected —
   `title`/`why` are additive lines, never replacing the existing kind-specific content.
+- [x] **Fix: Telegram silently discarded an operator's pick on an escalation card — "answered" but nothing happened.**
+  Reported live: an agent handed off via `AskUserQuestion` (header "ESCALATE") with concrete choices
+  offered — `buildEscalationRaise` (`claude.ts`) preserves those on the resulting `escalation` HITL's
+  `options` specifically so the operator's one-click pick becomes guidance, exactly like the web queue
+  card's escalation option buttons (`queue.tsx`, which correctly resolve `action:"modify", guidance: opt`).
+  Root cause: `gateKeyboard` (`telegram/notices.ts`) only built per-option buttons for `kind === "question"`
+  — an `escalation` with the SAME shape of `options` fell through to the generic Approve/Request-changes/
+  Reject row. Tapping Approve resolved `action:"approve"`, which `deliverEscalation` (`orchestrator.ts`) has
+  no case for; it fell through to the catch-all `relaunchEscalated(runId, resolution.guidance?.trim() ||
+  "", …)` — and an "approve" resolution never carries `guidance`, so the agent relaunched with an EMPTY
+  string, silently discarding whichever choice was tapped. Fixed by extending `gateKeyboard`'s per-option
+  branch to cover both kinds, and by having `handleCallback`'s `option` decision resolve an escalation gate
+  as `action:"modify", guidance: <picked option text>` (mirroring the web app exactly) instead of
+  `action:"option"`, which `deliverEscalation` doesn't understand either. An escalation with NO offered
+  choices (e.g. the autonomy-paused notice, `options: null`) is untouched — still the generic row.
+  Regression-proofed in `tests/telegram-decision-cards.test.ts` (4 new cases): the keyboard renders per-
+  option buttons for an options-bearing escalation and omits Approve; a bare escalation still gets Approve;
+  tapping an escalation option resolves as `modify` with the option's text as guidance, not `option`.
 - [x] **Fix: answering a triage clarifying question could loop forever — same question, every time.**
   Reported live right after clarifying questions shipped: answer the question → task returns to `backlog`
   for re-triage (by design, since the answer can change the effort/risk/grouping read) → triage runs again

@@ -321,7 +321,17 @@ export function gateKeyboard(it: HitlItem, projectName = "", link?: string): Inl
   // A decision (AskUserQuestion) is a SELECTION, not an approve/reject gate — give
   // it one tappable button PER option (numbered to match the message body) so it's
   // obviously "pick one". Free-text answer + refuse still available below.
-  if (it.kind === "question" && it.options?.length) {
+  //
+  // An `escalation` carries the SAME kind of options (the agent's own offered
+  // choices — see claude.ts's buildEscalationRaise) and needs the same
+  // per-option buttons, or a tap only ever reaches the generic Approve/Reject
+  // below: Approve resolves `action:"approve"`, which deliverEscalation has no
+  // case for, so it falls through to the catch-all relaunch with EMPTY
+  // guidance — the operator's pick is silently discarded and the agent
+  // resumes not knowing what was decided. handleCallback's `option` branch
+  // resolves an escalation gate as `modify` (guidance = the picked option's
+  // text), mirroring the web app's escalation option buttons exactly.
+  if ((it.kind === "question" || it.kind === "escalation") && it.options?.length) {
     const rows: InlineKeyboardMarkup["inline_keyboard"] = it.options.map((opt, i) => [
       { text: `${i + 1}. ${clipBtn(opt)}`, callback_data: `hitl:option:${i}:${it.id}` },
     ]);
