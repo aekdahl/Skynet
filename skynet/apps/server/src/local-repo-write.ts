@@ -105,3 +105,47 @@ export async function commitLocalRepoFile(
   const sha = await git(repoPath, "rev-parse", "HEAD");
   return { committed: true, sha };
 }
+
+/**
+ * `git revert <sha> --no-edit` against `repoPath`'s current HEAD — a real
+ * inverse commit, not a hand-rolled undo, so it plays correctly with
+ * whatever else has happened to the file since (a clean revert, or a real
+ * conflict git itself reports rather than one silently mis-resolved).
+ * `attribution.authorName/authorEmail` sets the revert's AUTHOR (the
+ * operator who clicked "revert the commit" — TASK 29's roadmap-line revert);
+ * committer stays the flat Skynet identity, same convention as
+ * `commitLocalRepoFile` above.
+ *
+ * Unlike `git commit`, `git revert` has NO `--author` flag — the only way to
+ * override just the author (leaving the committer as Skynet's own service
+ * identity) is the `GIT_AUTHOR_NAME`/`GIT_AUTHOR_EMAIL` env vars git itself
+ * reads, which `-c user.name=/-c user.email=` alone would set for BOTH
+ * author and committer. `GIT_COMMITTER_*` stays unset here so the inherited
+ * `-c user.name=Skynet -c user.email=skynet@local` config keeps governing
+ * the committer, exactly as `commitLocalRepoFile`'s plain (no-attribution)
+ * commits already do.
+ *
+ * On a conflict, aborts the revert (leaves the worktree exactly as it was)
+ * and throws `LocalRepoWriteError` with git's own message rather than
+ * leaving a half-applied revert on disk.
+ */
+export async function revertCommitInLocalRepo(
+  repoPath: string,
+  sha: string,
+  attribution?: CommitAttribution,
+): Promise<{ committed: boolean; sha?: string }> {
+  if (!existsSync(join(repoPath, ".git"))) {
+    throw new LocalRepoWriteError(`${repoPath} doesn't look like a git checkout (no .git).`);
+  }
+  const env = attribution
+    ? { ...process.env, GIT_AUTHOR_NAME: attribution.authorName, GIT_AUTHOR_EMAIL: attribution.authorEmail }
+    : undefined;
+  try {
+    await exec(gitBin(), ["-C", repoPath, "-c", "user.name=Skynet", "-c", "user.email=skynet@local", "revert", "--no-edit", sha], { env });
+  } catch (err) {
+    await git(repoPath, "revert", "--abort").catch(() => undefined);
+    throw new LocalRepoWriteError(`Couldn't cleanly revert ${sha.slice(0, 8)}: ${(err as Error).message}`);
+  }
+  const newSha = await git(repoPath, "rev-parse", "HEAD");
+  return { committed: true, sha: newSha };
+}

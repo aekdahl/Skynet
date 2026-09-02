@@ -26,6 +26,7 @@ import type {
   ProviderInfo,
   Agent,
   RoadmapDoc,
+  RoadmapLineClaim,
   RoadmapProposal,
   RoadmapProposalState,
   Rule,
@@ -198,6 +199,13 @@ export interface Store {
   putRoadmapProposal(proposal: RoadmapProposal): Promise<RoadmapProposal>;
   deleteRoadmapProposal(id: string): Promise<void>;
   listRoadmapProposalsForProject(projectId: string, opts?: { state?: RoadmapProposalState }): Promise<RoadmapProposal[]>;
+
+  // roadmap line claims (Phase 26 — TASK 29). One claim per lineId per
+  // project — "claim as mine" is idempotent (a repeat claim by the same or a
+  // different operator just replaces the row), so no delete is needed.
+  getRoadmapLineClaim(projectId: string, lineId: string): Promise<RoadmapLineClaim | undefined>;
+  putRoadmapLineClaim(claim: RoadmapLineClaim): Promise<RoadmapLineClaim>;
+  listRoadmapLineClaimsForProject(projectId: string): Promise<RoadmapLineClaim[]>;
 
   // Command policy versions — versioned, per-workspace, git-like history of the
   // command-safety classification policy. listPolicyVersions is newest-first;

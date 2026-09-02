@@ -58,6 +58,13 @@ export const RoadmapLine = z.object({
   promisedDate: Timestamp.nullable().default(null),
   forecast: RoadmapLineForecast.nullable().default(null),
   questionIds: z.array(z.string()).default([]),
+  // Phase 26 (TASK 29) — the commit that git-blame currently attributes this
+  // line's text to, filled in at READ time only (apps/server/src/roadmap/
+  // enrich.ts), never persisted onto the parsed doc: like author/authorRef/
+  // addedAt above, a reparse resets this to null (identity.ts's
+  // assignLineIdentity only ever carries `id` forward). "Revert the commit"
+  // reverts THIS sha.
+  blameSha: z.string().nullable().default(null),
 });
 export type RoadmapLine = z.infer<typeof RoadmapLine>;
 
@@ -191,3 +198,25 @@ export const RoadmapStateBlock = z.object({
   entries: z.array(RoadmapStateBlockEntry),
 });
 export type RoadmapStateBlock = z.infer<typeof RoadmapStateBlock>;
+
+// ─── line claims (Phase 26 — TASK 29) ───────────────────────────────────────
+// "KEEP · CLAIM AS MINE" on an agent-added line — an operator explicitly
+// taking display ownership of a line git-blame otherwise attributes to an
+// agent/Skynet identity. Deliberately NOT stored on RoadmapLine/RoadmapDoc
+// itself: a reparse resets those fields to null (identity.ts's
+// assignLineIdentity only ever carries `id` forward — see RoadmapLine's own
+// doc comment), so a claim needs its own persistence, keyed by the STABLE
+// line id, overlaid onto the freshly-parsed+blamed doc at read time
+// (apps/server/src/operations.ts's getProjectRoadmapDoc). This does NOT
+// rewrite git history or blame — it's a display-layer override only, exactly
+// like git blame itself can't represent "reassigned ownership" without an
+// actual commit.
+export const RoadmapLineClaim = z.object({
+  id: z.string(),
+  workspaceId: z.string(),
+  projectId: z.string(),
+  lineId: z.string(),
+  operatorId: z.string(),
+  claimedAt: Timestamp,
+});
+export type RoadmapLineClaim = z.infer<typeof RoadmapLineClaim>;

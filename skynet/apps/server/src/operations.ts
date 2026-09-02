@@ -50,7 +50,10 @@ import type {
   ProviderInfo,
   ResolveRequest,
   Resolution,
+  RoadmapAstNode,
+  RoadmapChecklistItemNode,
   RoadmapDoc,
+  RoadmapLineClaim,
   RoadmapProposal,
   ProposeRoadmapChangeRequest,
   SourceRef,
@@ -127,7 +130,9 @@ import { scanRepo } from "./quality/scan.js";
 import { condenseProjectContext } from "./steward/context.js";
 import { prioritizeColumn, suggestAnyAgentEligible } from "./steward/organize.js";
 import { extractText } from "./steward/extract.js";
-import { commitLocalRepoFile } from "./local-repo-write.js";
+import { commitLocalRepoFile, revertCommitInLocalRepo } from "./local-repo-write.js";
+import { enrichRoadmapDocWithBlame } from "./roadmap/enrich.js";
+import { roadmapHistory, type RoadmapHistoryEntry } from "./roadmap/history.js";
 import { generateSignedComplianceReport } from "./compliance/index.js";
 import { classifyApprover } from "./compliance/report.js";
 import type { CapturedDiff, Hub } from "./hub.js";
@@ -3468,6 +3473,89 @@ export class Operations {
 
     const approved = await this.store.putRoadmapProposal({ ...proposal, state: "approved" });
     return { proposal: approved, committed, sha };
+  }
+
+  // ── roadmap doc view (Phase 26 — TASK 29) ─────────────────────────────────
+  /** The parsed RoadmapDoc, real per-line git-blame provenance overlaid
+   *  (local checkout only — best-effort, see enrich.ts), and any "claim as
+   *  mine" overrides applied on top. Always resyncs fresh (same freshness
+   *  contract getProjectRoadmap's raw-text sibling already has) rather than
+   *  trusting the store's cached parse — a local SOURCE-mode save or a
+   *  roadmap-proposal apply doesn't itself trigger a resync, and this is the
+   *  one place that matters for line-level state to be current. */
+  async getProjectRoadmapDoc(ws: string, projectId: string): Promise<RoadmapDoc> {
+    const project = await this.store.getProject(projectId);
+    if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
+    let doc = await this.syncProjectRoadmap(ws, projectId);
+    if (project.repoPath) doc = await enrichRoadmapDocWithBlame(doc, project.repoPath);
+
+    const claims = await this.store.listRoadmapLineClaimsForProject(projectId);
+    if (claims.length === 0) return doc;
+    const byLineId = new Map(claims.map((c) => [c.lineId, c]));
+    return {
+      ...doc,
+      ast: doc.ast.map((node) => {
+        if (node.type !== "checklistItem") return node;
+        const claim = byLineId.get(node.id);
+        if (!claim) return node;
+        return { ...node, claimedByHuman: true, author: claim.operatorId, authorRef: claim.operatorId };
+      }),
+    };
+  }
+
+  async listRoadmapProposals(ws: string, projectId: string): Promise<RoadmapProposal[]> {
+    const project = await this.store.getProject(projectId);
+    if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
+    return this.store.listRoadmapProposalsForProject(projectId);
+  }
+
+  /** "KEEP · CLAIM AS MINE" — an operator taking display ownership of a line
+   *  git-blame otherwise attributes to an agent/Skynet identity. Idempotent
+   *  (a repeat claim, even by a different operator, just replaces the row) —
+   *  see RoadmapLineClaim's own doc comment for why this never touches git
+   *  history or blame itself, only a display-layer override. */
+  async claimRoadmapLine(ws: string, projectId: string, lineId: string, operatorId: string): Promise<RoadmapLineClaim> {
+    const project = await this.store.getProject(projectId);
+    if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
+    const doc = await this.store.getRoadmapDoc(projectId);
+    const exists = doc?.ast.some((n) => n.type === "checklistItem" && n.id === lineId) ?? false;
+    if (!exists) throw new NotFoundError("Roadmap line");
+    const claim: RoadmapLineClaim = { id: this.uid("rlc"), workspaceId: ws, projectId, lineId, operatorId, claimedAt: now() };
+    return this.store.putRoadmapLineClaim(claim);
+  }
+
+  /** "REVERT THE COMMIT" — reverts whatever commit git-blame currently
+   *  attributes this line's text to. Local-repo-bound projects only: a
+   *  GitHub-bound project has no local checkout to run `git revert` against
+   *  (mirrors blame.ts/history.ts's own local-only contract) — throws a
+   *  clear, actionable error rather than silently no-op-ing. Resyncs the
+   *  doc afterward so the line's state/blame reflect the revert immediately,
+   *  not on the next unrelated read. */
+  async revertRoadmapLineCommit(ws: string, projectId: string, lineId: string, operatorId: string): Promise<{ committed: boolean; sha?: string }> {
+    const project = await this.store.getProject(projectId);
+    if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
+    if (!project.repoPath) throw new Error("Reverting a roadmap line's commit needs a local checkout — this project is GitHub-bound.");
+    const doc = await this.getProjectRoadmapDoc(ws, projectId);
+    const isChecklistItem = (n: RoadmapAstNode): n is RoadmapChecklistItemNode => n.type === "checklistItem";
+    const line = doc.ast.filter(isChecklistItem).find((n) => n.id === lineId);
+    if (!line) throw new NotFoundError("Roadmap line");
+    if (!line.blameSha) throw new Error("No blamed commit found for this line — nothing to revert.");
+    const result = await revertCommitInLocalRepo(project.repoPath, line.blameSha, operatorGitIdentity(operatorId));
+    await this.syncProjectRoadmap(ws, projectId).catch(() => undefined);
+    return result;
+  }
+
+  /** HISTORY tab — real `git log` for the project's roadmap doc path.
+   *  Local-repo-bound projects only, same reasoning as
+   *  revertRoadmapLineCommit; an empty array (not an error) for a
+   *  GitHub-bound project — there's nothing actionable to retry the way a
+   *  real failure would be. */
+  async getRoadmapHistory(ws: string, projectId: string, opts: { limit?: number } = {}): Promise<RoadmapHistoryEntry[]> {
+    const project = await this.store.getProject(projectId);
+    if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
+    if (!project.repoPath) return [];
+    const path = project.roadmapPath ?? ROADMAP_PATHS[0]!;
+    return roadmapHistory(project.repoPath, path, opts.limit);
   }
 
   // ── fleet ──────────────────────────────────────────────────────────────

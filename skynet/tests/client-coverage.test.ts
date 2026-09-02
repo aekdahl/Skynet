@@ -321,6 +321,17 @@ const ALLOW = new Set<string>([
   // Operations wrapper is covered server-side by fleet-stop-all-route.test.ts,
   // and orchestrator.stopAll itself by orchestrator-stopall.test.ts.
   "stopAllRuns",
+  // Phase 26 (TASK 29) — the roadmap doc view's actions that need a REAL
+  // local git checkout to mean anything (a real blamed commit to revert, a
+  // real commit log to read) — acceptance.ts runs against whatever project
+  // state already exists via the live REST API only, with no filesystem
+  // access to stand up a throwaway repo the way a server-side vitest test
+  // can (see tests/roadmap-blame.test.ts / roadmap-doc-view-routes.test.ts,
+  // which do exactly that, real git end to end). fetchProjectRoadmapDoc/
+  // fetchRoadmapProposals/applyRoadmapProposal ARE covered by the
+  // "roadmap-doc-view" acceptance check above (control-plane shape, no repo
+  // needed for those three).
+  "claimRoadmapLine", "revertRoadmapLine", "fetchRoadmapHistory",
 ]);
 
 describe("client API coverage", () => {
