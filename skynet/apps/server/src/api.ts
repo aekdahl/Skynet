@@ -31,6 +31,8 @@ import {
   UpdateMilestoneRequest,
   UpdateProjectRequest,
   UpdateProjectRoadmapRequest,
+  ProposeRoadmapChangeRequest,
+  CommitRoadmapLineEditRequest,
   RoadmapConflictResolveRequest,
   UpdateWorkspaceSettingsRequest,
   UpdateRunnerRequest,
@@ -1438,6 +1440,21 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
       return fail(reply, err);
     }
   });
+  // TASK 31 — the Drift dashboard's ORPHANS panel ("propose N roadmap lines
+  // to cover these") rides the exact same governed creation path an agent's
+  // own proposal uses (Operations.proposeRoadmapChange — one open proposal
+  // per section, raises a roadmap_edit Inbox card); the operator supplies
+  // which fleet agent to attribute it to (the dashboard picks one, since
+  // there's no "the operator proposed this as an agent" identity).
+  app.post<{ Params: { id: string } }>("/api/projects/:id/roadmap/proposals", async (req, reply) => {
+    const body = ProposeRoadmapChangeRequest.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+    try {
+      return await ops.proposeRoadmapChange(ws(req), req.params.id, body.data);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
   app.post<{ Params: { id: string; pid: string } }>("/api/projects/:id/roadmap/proposals/:pid/apply", async (req, reply) => {
     try {
       return await ops.applyRoadmapProposal(ws(req), req.params.id, req.params.pid, { operatorId: req.principal!.operatorId });
@@ -1463,6 +1480,19 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     const limit = req.query.limit ? Number(req.query.limit) : undefined;
     try {
       return await ops.getRoadmapHistory(ws(req), req.params.id, { limit });
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+  // TASK 31 — the Drift dashboard's ONE DECISION panel ("MOVE IT TO Q4" /
+  // "KEEP AND RE-DATE Q3"): a single-line edit the operator decided directly,
+  // committed straight through TASK 28's attributed-commit path with no
+  // proposal/HITL detour (see Operations.commitRoadmapLineEdit).
+  app.post<{ Params: { id: string } }>("/api/projects/:id/roadmap/commit-edit", async (req, reply) => {
+    const body = CommitRoadmapLineEditRequest.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+    try {
+      return await ops.commitRoadmapLineEdit(ws(req), req.params.id, body.data, req.principal!.operatorId);
     } catch (err) {
       return fail(reply, err);
     }

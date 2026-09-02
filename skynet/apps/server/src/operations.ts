@@ -56,6 +56,7 @@ import type {
   RoadmapLineClaim,
   RoadmapProposal,
   ProposeRoadmapChangeRequest,
+  CommitRoadmapLineEditRequest,
   RoadmapEditResolveRequest,
   RoadmapConflictResolveRequest,
   RoadmapWorkspaceRollup,
@@ -3609,6 +3610,41 @@ export class Operations {
 
     const approved = await this.store.putRoadmapProposal({ ...proposal, state: "approved" });
     return { proposal: approved, committed, sha };
+  }
+
+  /**
+   * TASK 31 — commit a single-line roadmap edit directly, on the operator's
+   * OWN authority (the Drift dashboard's "MOVE IT TO Q4"/"KEEP AND RE-DATE
+   * Q3" actions). Reuses applyRoadmapProposal's exact diff-splice +
+   * attributed-commit machinery, but writes no RoadmapProposal and needs no
+   * agentId: nothing "proposed" this, the operator decided it right here —
+   * the same "a human's own edit just commits" precedent
+   * resolveRoadmapConflict's "write_own" action already established, not an
+   * agent proposal for governance to route through the Inbox. No
+   * Co-authored-by trailer either, for the same reason.
+   */
+  async commitRoadmapLineEdit(ws: string, projectId: string, input: CommitRoadmapLineEditRequest, operatorId: string): Promise<{ committed: boolean; sha?: string }> {
+    const project = await this.store.getProject(projectId);
+    if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
+    if (!project.repoPath && !project.repo) throw new Error("This project has no bound repo to commit to.");
+
+    const current = await resolveRoadmapDoc(ws, project);
+    if (!current) throw new RoadmapConflictError();
+    const newContent = applyRoadmapProposalDiff(current.content, input.diff);
+    const authorIdentity = operatorGitIdentity(operatorId);
+
+    if (project.repoPath) {
+      return commitLocalRepoFile(project.repoPath, current.path, newContent, current.content, input.message, authorIdentity);
+    }
+    if (!current.sha) throw new RoadmapConflictError();
+    try {
+      await githubService.commitRepoFile(ws, project.repo!, current.path, newContent, current.sha, input.message, project.githubCredentialId, authorIdentity);
+    } catch (err) {
+      const msg = (err as Error).message;
+      if (/→ (409|422):/.test(msg)) throw new RoadmapConflictError();
+      throw err;
+    }
+    return { committed: true };
   }
 
   // ── roadmap doc view (Phase 26 — TASK 29) ─────────────────────────────────

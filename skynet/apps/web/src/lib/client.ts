@@ -51,6 +51,8 @@ import {
   type RoadmapProposal,
   type HitlItem,
   type RoadmapConflictResolveRequest,
+  type ProposeRoadmapChangeRequest,
+  type CommitRoadmapLineEditRequest,
   type RoadmapWorkspaceRollup,
 } from "@skynet/shared";
 import { parseStewardStream, type StewardReply } from "./steward-stream";
@@ -535,6 +537,14 @@ export function fetchRoadmapProposals(projectId: string) {
   return req<RoadmapProposal[]>("GET", `/api/projects/${projectId}/roadmap/proposals`);
 }
 
+/** Open a new governed roadmap proposal — the Drift dashboard's ORPHANS
+ *  panel ("propose N roadmap lines to cover these"), riding the exact same
+ *  agent-proposal path (Operations.proposeRoadmapChange) an autonomous
+ *  agent's own proposal uses. */
+export function proposeRoadmapChange(projectId: string, body: ProposeRoadmapChangeRequest) {
+  return req<RoadmapProposal>("POST", `/api/projects/${projectId}/roadmap/proposals`, body);
+}
+
 export function applyRoadmapProposal(projectId: string, proposalId: string) {
   return req<{ proposal: RoadmapProposal; committed: boolean; sha?: string }>(
     "POST",
@@ -565,6 +575,13 @@ export interface RoadmapHistoryEntry {
 export function fetchRoadmapHistory(projectId: string, opts?: { limit?: number }) {
   const qs = opts?.limit != null ? `?limit=${opts.limit}` : "";
   return req<RoadmapHistoryEntry[]>("GET", `/api/projects/${projectId}/roadmap/history${qs}`);
+}
+
+/** The Drift dashboard's ONE DECISION panel ("MOVE IT TO Q4"/"KEEP AND
+ *  RE-DATE Q3") — a single-line edit the operator decided directly, committed
+ *  through TASK 28's attributed-commit path with no proposal/HITL detour. */
+export function commitRoadmapLineEdit(projectId: string, body: CommitRoadmapLineEditRequest) {
+  return req<{ committed: boolean; sha?: string }>("POST", `/api/projects/${projectId}/roadmap/commit-edit`, body);
 }
 
 /** "Without a file there is no roadmap — create one from the board." */

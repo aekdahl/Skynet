@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
-import type { Project, RoadmapChecklistItemNode, RoadmapDoc, RoadmapProposal } from "@skynet/shared";
+import type { Project, RoadmapChecklistItemNode, RoadmapDoc, RoadmapProposal, Task } from "@skynet/shared";
 import * as api from "../lib/client";
 import type { RoadmapHistoryEntry } from "../lib/client";
 import { useStore } from "../lib/store";
 import { inline } from "../components/markdown";
 import { groupRoadmapSections, machineBlocks, classifyMachineLine, type RoadmapSectionView } from "../kanban/roadmap-view";
+import { RoadmapDrift } from "../kanban/roadmap-drift";
 
 // The project-detail "Roadmap" tab — Phase 26 (TASK 29) rebuild. Was a
 // single rendered-markdown view (RoadmapPhase, a progress ring, a
@@ -32,7 +33,7 @@ import { groupRoadmapSections, machineBlocks, classifyMachineLine, type RoadmapS
 // schema's own doc comment) — rendered when present, cleanly omitted when
 // not, never a fabricated placeholder.
 
-type RoadmapMode = "rendered" | "source" | "history";
+type RoadmapMode = "rendered" | "source" | "history" | "drift";
 
 /** Typed a path + saved it, or cleared the override back to the default
  *  candidates. The empty state for "not_found" — shown either because
@@ -515,7 +516,7 @@ function RoadmapHistoryView({ history, loading }: { history: RoadmapHistoryEntry
 }
 
 // ─── shell: mode switch + data orchestration ──────────────────────────────
-export function RoadmapDocView({ project }: { project: Project }) {
+export function RoadmapDocView({ project, tasks }: { project: Project; tasks: Task[] }) {
   const [mode, setMode] = useState<RoadmapMode>("rendered");
   const [raw, setRaw] = useState<api.ProjectRoadmapResult | null>(null); // null = loading
   const [doc, setDoc] = useState<RoadmapDoc | null>(null);
@@ -584,7 +585,7 @@ export function RoadmapDocView({ project }: { project: Project }) {
           synced from {raw.path} · {raw.source === "local" ? "local checkout" : "GitHub"}
         </div>
         <div className="lens-switch rdv-modeswitch">
-          {(["rendered", "source", "history"] as const).map((m) => (
+          {(["rendered", "source", "history", "drift"] as const).map((m) => (
             <button key={m} className={"lens-btn" + (mode === m ? " on" : "")} onClick={() => setMode(m)}>
               {m.toUpperCase()}
             </button>
@@ -600,6 +601,8 @@ export function RoadmapDocView({ project }: { project: Project }) {
         ))}
       {mode === "source" && <RoadmapSource project={project} doc={raw} onSaved={refresh} />}
       {mode === "history" && <RoadmapHistoryView history={history} loading={historyLoading} />}
+      {mode === "drift" &&
+        (doc ? <RoadmapDrift project={project} doc={doc} tasks={tasks} /> : <div className="kb-empty">Loading roadmap…</div>)}
     </div>
   );
 }
