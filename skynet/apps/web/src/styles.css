@@ -2310,7 +2310,17 @@ button.rb-proj:hover { color: var(--accent); }
 .op-avatar { width: 26px; height: 26px; border-radius: 50%; background: linear-gradient(135deg, #2A3140, #1A1F29); border: 1px solid var(--line); display: flex; align-items: center; justify-content: center; font-size: var(--fz-11); font-weight: 600; color: var(--muted); flex: none; }
 
 .op-shell { flex: 1; display: flex; min-height: 0; }
-.op-side { width: 220px; flex: none; background: var(--panel); border-right: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; }
+/* overflow-y: auto is a safety net for the icon-rail (steward-open) state
+   below — .op-plist (the section that normally scrolls) is hidden there, so
+   without this the bare nav lists had no overflow handling at all and got
+   clipped with no way to reach items below the fold on a short viewport
+   (reported live: Roadmap/Settings unreachable when minimized). Harmless at
+   the normal 220px width too: .op-plist's own flex:1/overflow-y:auto still
+   handles its own scroll first, and this outer one only ever engages as a
+   fallback if the FIXED chrome around it (nav items + footer, not the
+   project list) alone is taller than an unusually short viewport — the
+   same failure mode as the icon-rail case, just rarer. */
+.op-side { width: 220px; flex: none; background: var(--panel); border-right: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; overflow-y: auto; }
 .op-ws { display: flex; align-items: center; gap: 9px; padding: 13px 14px; border-bottom: 1px solid var(--line-soft); }
 .op-ws-logo { width: 24px; height: 24px; border-radius: 6px; background: var(--accent); color: #0B0D11; font-weight: 700; display: flex; align-items: center; justify-content: center; font-size: var(--fz-13); flex: none; }
 .op-ws-name { font-size: var(--fz-13); font-weight: 600; flex: 1; }
