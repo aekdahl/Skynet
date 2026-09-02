@@ -11,7 +11,7 @@ import { execFile } from "node:child_process";
 import { createSign } from "node:crypto";
 import { promisify } from "node:util";
 import type { GithubInstallation, GithubRepo } from "@skynet/shared";
-import type { GitProvider, GithubIssue, MergeResult, PrRef, PrStatus } from "./types.js";
+import type { GitCommitAttribution, GitProvider, GithubIssue, MergeResult, PrRef, PrStatus } from "./types.js";
 import { gitBin } from "../git-bin.js";
 
 const exec = promisify(execFile);
@@ -222,11 +222,19 @@ export class GitHubProvider implements GitProvider {
     }
   }
 
-  async putFile(token: string, repo: string, path: string, content: string, sha: string, message: string): Promise<void> {
+  async putFile(token: string, repo: string, path: string, content: string, sha: string | undefined, message: string, attribution?: GitCommitAttribution): Promise<void> {
+    const trailer = attribution?.coAuthor ? `\n\nCo-authored-by: ${attribution.coAuthor.name} <${attribution.coAuthor.email}>` : "";
     await this.api(token, "PUT", `/repos/${repo}/contents/${path.replace(/^\/+/, "")}`, {
-      message,
+      message: `${message}${trailer}`,
       content: Buffer.from(content, "utf8").toString("base64"),
+      // `sha: undefined` is dropped by JSON.stringify — the Contents API
+      // creates a new file when it's absent, updates when it's present.
       sha,
+      // Contents API accepts an explicit author/committer identity per commit
+      // (docs.github.com/rest/repos/contents) — the approving human when set,
+      // else GitHub falls back to the token's own account, unchanged behavior
+      // for every caller that doesn't pass attribution.
+      ...(attribution ? { author: { name: attribution.authorName, email: attribution.authorEmail } } : {}),
     });
   }
 
@@ -255,12 +263,22 @@ export class GitHubProvider implements GitProvider {
     return repos.map((r) => ({ id: r.id, name: r.full_name, defaultBranch: r.default_branch, private: r.private, selected: false }));
   }
 
+  // Redacts the token from any error git surfaces (git echoes the authed
+  // remote URL — and Node's execFile puts the full command line, token
+  // included, into the thrown error's message/cmd on failure) since this
+  // error propagates into the run log, which is both persisted and
+  // broadcast live to the operator's UI.
   async pushBranch(token: string, repo: string, worktreePath: string, branch: string, force: boolean): Promise<void> {
     // Token-authenticated HTTPS remote; the worktree is checked out on `branch`.
     const remote = `https://x-access-token:${token}@github.com/${repo}.git`;
     const args = ["-C", worktreePath, "push", remote, `${branch}:refs/heads/${branch}`];
     if (force) args.push("--force-with-lease");
-    await exec(gitBin(), args);
+    try {
+      await exec(gitBin(), args);
+    } catch (err) {
+      const msg = (err as { stderr?: string; message?: string }).stderr || (err as Error).message || String(err);
+      throw new Error(redactToken(msg, token));
+    }
   }
 
   /** Clone `repo` (owner/name) into `dest` over a token-authenticated HTTPS
@@ -347,7 +365,12 @@ export class GitHubProvider implements GitProvider {
 
   async syncBase(token: string, repo: string, worktreePath: string, baseBranch: string): Promise<void> {
     const remote = `https://x-access-token:${token}@github.com/${repo}.git`;
-    await exec(gitBin(), ["-C", worktreePath, "fetch", remote, baseBranch]);
-    await exec(gitBin(), ["-C", worktreePath, "merge", "--no-edit", "FETCH_HEAD"]);
+    try {
+      await exec(gitBin(), ["-C", worktreePath, "fetch", remote, baseBranch]);
+      await exec(gitBin(), ["-C", worktreePath, "merge", "--no-edit", "FETCH_HEAD"]);
+    } catch (err) {
+      const msg = (err as { stderr?: string; message?: string }).stderr || (err as Error).message || String(err);
+      throw new Error(redactToken(msg, token));
+    }
   }
 }

@@ -5,7 +5,22 @@
 // apps/server/src/compliance/signing.ts); safe to run in the browser so the
 // web client can render + download without a second server round-trip.
 
-import type { ComplianceReportEntry, SignedComplianceReport } from "./contracts.js";
+import type { ComplianceApproverType, ComplianceReportEntry, SignedComplianceReport } from "./contracts.js";
+
+// TASK 21 — the bare actor-TYPE half of apps/server/src/compliance/report.ts's
+// classifyApprover, lifted out here so it's callable with no Store/Task access:
+// GET /api/audit (operations.ts#listAudit) uses the real classifyApprover for
+// its server-fetched rows (full fidelity — an "autonomy" operatorId resolves
+// to the real reviewing agent via the task's reviewVerdict); the Audit view
+// ALSO synthesizes rows client-side from live HITL resolutions it never
+// round-trips through that endpoint (views/audit.tsx's `merged`), and needs
+// the identical classification for those — this is the one function both
+// call, so a policy/agent-review/human split can't drift between the two.
+export function classifyOperatorId(operatorId: string): ComplianceApproverType {
+  if (operatorId.startsWith("policy:")) return "policy";
+  if (operatorId === "autonomy") return "agent-review";
+  return "human";
+}
 
 const APPROVER_LABEL: Record<ComplianceReportEntry["approverType"], string> = {
   human: "Human operator",

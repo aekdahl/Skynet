@@ -22,7 +22,7 @@ import { existsSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { EndpointSmokeResult, ModelRates, PlanStep, ProviderId, Resolution, SmokeCheck, SmokeStatus } from "@skynet/shared";
+import type { EndpointSmokeResult, LogVerb, ModelRates, PlanStep, ProviderId, Resolution, SmokeCheck, SmokeStatus } from "@skynet/shared";
 import { endpointLabel, priceUsage, ratesFor, vendorForBaseUrl } from "@skynet/shared";
 import { fmtDuration, idleCapMs, runtimeCapMs } from "./caps.js";
 import type {
@@ -922,6 +922,19 @@ function describeTool(name: string, input: Record<string, unknown>): string {
   return name;
 }
 
+// Coarse structured verb for the Run Detail live log's fixed verb column —
+// additive alongside describeTool's free-text line, which stays the fallback
+// rendering. "gate"/"idle" aren't produced here: "gate" is logged where a
+// HITL actually raises (Orchestrator.raise), "idle" is a synthetic UI-only
+// trailing row.
+function toolVerb(name: string): LogVerb {
+  if (name === "Bash") return "shell";
+  if (/^(Glob|Grep)$/.test(name)) return "grep";
+  if (/^(Read|NotebookRead)$/.test(name)) return "read";
+  if (/^(Write|Edit|NotebookEdit)$/.test(name)) return "edit";
+  return "think";
+}
+
 // A specific, human title for the gate — what the operator is being asked to
 // allow — instead of a generic "Approve: Bash".
 function actionTitle(name: string, input: Record<string, unknown>): string {
@@ -1407,6 +1420,7 @@ class ClaudeRunnerHandle implements RunnerHandle {
       if (toolName === "ExitPlanMode") {
         return new Promise<PermissionResult>((resolve) => {
           this.gate = resolve;
+          this.pauseIdle(); // parked on a human — not stalled (see pauseIdle)
           this.gateInput = input;
           this.gateTool = toolName;
           this.gateQuestion = null;
@@ -1445,6 +1459,7 @@ class ClaudeRunnerHandle implements RunnerHandle {
         // (auto-approve policy / fast operator) can re-enter during onHitl, and
         // if the resolver isn't stored yet it would miss the gate → permanent stall.
         this.gate = resolve;
+        this.pauseIdle(); // parked on a human — not stalled (see pauseIdle)
         this.gateInput = input;
         this.gateTool = toolName;
         // An escalation is NOT an answerable question: resume() delivers the
@@ -1606,6 +1621,29 @@ class ClaudeRunnerHandle implements RunnerHandle {
    *  timer that keeps ticking for a hung run, so the server reaper can't catch
    *  this; this closes that gap. Force-fail → onFailed → needs-attention (review),
    *  never a silent "running" forever or a false "done". */
+  /**
+   * PAUSE the idle watchdog while a gate is open — a run waiting on a HUMAN is
+   * not stalled.
+   *
+   * The watchdog only resets on SDK messages (see bumpIdle's callers), and no
+   * messages flow while `canUseTool` is parked. So an agent that asked its
+   * operator a question was force-failed after idleCapMs — while the product's
+   * own default is to wait for a human INDEFINITELY
+   * (config.hitlQuestionTimeoutMs = 0). Two defaults contradicting each other,
+   * with the 8-minute one silently winning.
+   *
+   * The cost of that is not the waiting, which is free: it's that the kill
+   * turned a paused, RESUMABLE run into a dead one, whose replacement then paid
+   * again to re-derive everything the first agent knew.
+   *
+   * The total-runtime cap (see `cap`) is deliberately left armed, so a genuinely
+   * wedged run still dies on the outer bound.
+   */
+  private pauseIdle() {
+    if (this.idle) clearTimeout(this.idle);
+    this.idle = undefined;
+  }
+
   private bumpIdle() {
     if (this.finished) return;
     const ms = idleCapMs();
@@ -1797,7 +1835,7 @@ class ClaudeRunnerHandle implements RunnerHandle {
             // classified as transient even if its subtype is generic.
             if (isTransientApiError(text)) this.lastApiError = text;
             if (this.pendingChat) { this.pendingChat = false; this.events.onChatReply(this.runId, text); }
-            else { this.lastRationale = text; this.events.onLog(this.runId, text); }
+            else { this.lastRationale = text; this.events.onLog(this.runId, text, undefined, { verb: "think" }); }
           }
           for (const t of tools) {
             if (t.id) this.pendingTools.set(t.id, { name: t.name, input: t.input });
@@ -1809,7 +1847,7 @@ class ClaudeRunnerHandle implements RunnerHandle {
               continue;
             }
             // Log line carries the call's full input as expandable detail.
-            this.events.onLog(this.runId, `▸ ${describeTool(t.name, t.input)}`, approvalText(t.name, t.input));
+            this.events.onLog(this.runId, `▸ ${describeTool(t.name, t.input)}`, approvalText(t.name, t.input), { verb: toolVerb(t.name) });
             this.bump();
           }
         } else if (msg.type === "user") {
@@ -1833,7 +1871,10 @@ class ClaudeRunnerHandle implements RunnerHandle {
             // ..." line resume() already logged. Not a real failure — skip the
             // redundant, misleading duplicate rather than mislabel it.
             if (name !== "AskUserQuestion") {
-              this.events.onLog(this.runId, `↳ ${name}${b.is_error ? " failed" : ""}`, clip(out, 6000) || "(no output)");
+              this.events.onLog(this.runId, `↳ ${name}${b.is_error ? " failed" : ""}`, clip(out, 6000) || "(no output)", {
+                verb: toolVerb(name),
+                resultKind: b.is_error ? "error" : "ok",
+              });
             }
             if (pending && !b.is_error) {
               const src = untrustedReadSource(pending.name, pending.input);
@@ -1923,6 +1964,10 @@ class ClaudeRunnerHandle implements RunnerHandle {
       this.gateInput = null;
       this.gateTool = null;
       this.gateQuestion = null;
+      // Working again → the stall watchdog is meaningful again. Re-arming here
+      // (rather than waiting for the next SDK message) means a resume that
+      // wedges immediately is still caught.
+      this.bumpIdle();
       this.events.onStatus(this.runId, "running");
       // AskUserQuestion: there's no interactive frontend to render the picker, so
       // we never actually run the tool — we deny it and hand the operator's answer

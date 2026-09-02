@@ -47,6 +47,17 @@ class QuietProvider implements RunnerProvider {
   }
 }
 
+// Same shape as QuietProvider, but its stateless consult() always throws the
+// exact raw shape a model-alias resolution failure produces — exercises the
+// friendlyConsultError translation end-to-end through chat()'s stateless path.
+class ThrowingConsultProvider extends QuietProvider {
+  async consult(): Promise<string> {
+    throw new Error(
+      'HTTP 404: {"type":"error","error":{"type":"not_found_error","message":"model: claude-sonnet"},"request_id":"req_1"}',
+    );
+  }
+}
+
 const mkFixtures = async (store: MemoryStore) => {
   const project: Project = {
     id: "p1", workspaceId: DEFAULT_WORKSPACE, name: "Proj", goal: "", runIds: [], status: "active",
@@ -173,5 +184,16 @@ describe("DEF-002: chat reply reflects the agent's actual status", () => {
     expect(reply).not.toBe(CANNED_FINISHED);
     expect(reply.toLowerCase()).not.toContain("finished");
     expect(reply.toLowerCase()).toContain("running");
+  });
+
+  it("a stateless consult failing on a model-resolution 404 gets a plain, actionable reply — not the raw JSON blob", async () => {
+    const throwingOrchestrator = new Orchestrator(store, hub, new ThrowingConsultProvider());
+    const agent = await throwingOrchestrator.assignTask("p1", "t1");
+    await throwingOrchestrator.stopAgent(agent.id); // force the stateless (consultFinished) path
+
+    const reply = await throwingOrchestrator.chat(agent.id, "hi");
+    expect(reply).toContain('the model "claude-sonnet" isn\'t recognized');
+    expect(reply).not.toContain("request_id");
+    expect(reply).not.toContain("not_found_error");
   });
 });

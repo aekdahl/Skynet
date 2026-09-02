@@ -282,19 +282,37 @@ function addRun(roll: UsageRollup, r: TaskRun): void {
   if (u.durationMs != null) roll.durationMs = (roll.durationMs ?? 0) + u.durationMs;
 }
 
-/** Sums token/cost/duration usage across runs, grouped by project and by agent. Archived runs are excluded, matching the rest of the UI's roll-ups. */
+/** The credential a run actually billed against — a named credential id when
+ *  set, else the provider's own default credential (id === provider). Mirrors
+ *  the convention documented on Project.enabledRunnerCredentialIds ("a
+ *  runner's effective id is credentialId ?? provider"), so a Keys & Budget
+ *  view and the fleet-assignment gate agree on what "this credential" means. */
+export const effectiveCredentialId = (r: TaskRun): string => r.credentialId ?? r.provider;
+
+/** Sums token/cost/duration usage across runs, grouped by project, agent,
+ *  provider, and credential (byCredential keyed by {@link effectiveCredentialId}
+ *  — a named credential when the run used one, else the provider's own
+ *  default). Archived runs are excluded, matching the rest of the UI's
+ *  roll-ups. Pure derivation over data already recorded on every TaskRun
+ *  (`provider`/`credentialId`) — no new collection. */
 export function computeUsageRollup(runs: TaskRun[]): {
   byProject: Record<string, UsageRollup>;
   byAgent: Record<string, UsageRollup>;
+  byProvider: Record<string, UsageRollup>;
+  byCredential: Record<string, UsageRollup>;
 } {
   const byProject: Record<string, UsageRollup> = {};
   const byAgent: Record<string, UsageRollup> = {};
+  const byProvider: Record<string, UsageRollup> = {};
+  const byCredential: Record<string, UsageRollup> = {};
   for (const r of runs) {
     if (r.archived) continue;
     addRun((byProject[r.projectId] ??= emptyRollup()), r);
     if (r.agentId) addRun((byAgent[r.agentId] ??= emptyRollup()), r);
+    addRun((byProvider[r.provider] ??= emptyRollup()), r);
+    addRun((byCredential[effectiveCredentialId(r)] ??= emptyRollup()), r);
   }
-  return { byProject, byAgent };
+  return { byProject, byAgent, byProvider, byCredential };
 }
 
 export function fmtNum(n: number): string {
@@ -328,6 +346,39 @@ export function conflictModulesForAgent(agent: TaskRun, runs: TaskRun[]): string
         familyOf(other) !== familyOf(agent) &&
         other.modules.includes(mod),
     ),
+  );
+}
+
+// File-level companion to conflictModulesForAgent — same family-aware rule,
+// but compares TaskRun.modifiedFiles paths directly (mirrors the server's
+// computeFileCollisions in apps/server/src/derive/conflicts.ts) instead of
+// architectural module ids, and is scoped to the SAME PROJECT since a bare
+// path is only comparable within one repo.
+export function fileCollisionsForAgent(agent: TaskRun, runs: TaskRun[]): string[] {
+  if (agent.status === "done") return [];
+  return agent.modifiedFiles.filter((file) =>
+    runs.some(
+      (other) =>
+        other.id !== agent.id &&
+        other.status !== "done" &&
+        other.projectId === agent.projectId &&
+        familyOf(other) !== familyOf(agent) &&
+        other.modifiedFiles.includes(file),
+    ),
+  );
+}
+
+/** Which OTHER run also touched `file` — the run behind a fileCollisionsForAgent
+ *  entry, for a "· also edited by run #X" annotation (Review & Merge, Phase 15).
+ *  Same family-aware rule; first match when more than one other run collides. */
+export function contendedFileOwner(file: string, agent: TaskRun, runs: TaskRun[]): TaskRun | undefined {
+  return runs.find(
+    (other) =>
+      other.id !== agent.id &&
+      other.status !== "done" &&
+      other.projectId === agent.projectId &&
+      familyOf(other) !== familyOf(agent) &&
+      other.modifiedFiles.includes(file),
   );
 }
 
@@ -391,6 +442,10 @@ export const KIND_META: Record<HitlKind, { label: string; color: string }> = {
   merge: { label: "MERGE CONFLICT", color: "var(--danger)" },
   escalation: { label: "NEEDS HELP", color: "var(--danger)" },
   verifier: { label: "CHECKS FAILED", color: "var(--danger)" },
+  // TASK 30 — the rich card lives in kanban/inbox.tsx; a roadmap_edit item
+  // reaching the legacy per-project queue.tsx (untouched by this task) just
+  // needs a non-crashing, sensible-enough label/color, not the full anatomy.
+  roadmap_edit: { label: "ROADMAP EDIT", color: "var(--info)" },
 };
 
 /** A `stuck-review` escalation (orchestrator.ts's reapStuckReviews) means the
@@ -400,6 +455,17 @@ export const KIND_META: Record<HitlKind, { label: string; color: string }> = {
  *  label instead of KIND_META's alarm-red "NEEDS HELP". */
 export function isStuckReview(item: HitlItem): boolean {
   return item.kind === "escalation" && (item.flags ?? []).includes("stuck-review");
+}
+
+/** An `autonomy-paused` escalation (orchestrator.ts's noteAutonomyBadOutcome)
+ *  is a PROJECT-level notice — the sweep tripped its circuit breaker — only
+ *  carrying a `runId` because `HitlItem` requires one; it isn't "about" that
+ *  run or any single task/agent, and resolving it (any action) just dismisses
+ *  the notice server-side, since the real lever is the project's own
+ *  Autonomy toggle. Used to keep it off a task/agent's own card/page, where
+ *  it would read as something that run could act on. */
+export function isAutonomyPaused(item: HitlItem): boolean {
+  return item.kind === "escalation" && (item.flags ?? []).includes("autonomy-paused");
 }
 
 export function hitlHeadline(item: HitlItem): { label: string; color: string } {
@@ -587,4 +653,55 @@ export function spendEfficiency(runs: TaskRun[]): SpendEfficiency {
     pricedShare: runs.length > 0 ? priced / runs.length : 1,
     runs: runs.length,
   };
+}
+
+
+// ─── Cache hit rate ────────────────────────────────────────────────────────
+// The share of a run's input tokens that were CACHE READS rather than fresh
+// input. This is the number that decides which cost fix is the right one, and
+// the two answers call for opposite work:
+//
+//   HIGH (say >80%) — caching is doing its job. Spend is a VOLUME problem:
+//     long runs re-reading a large context. The levers are fewer turns, less
+//     injected context, a tighter tool surface.
+//   LOW             — something invalidates the cached prefix, so we pay fresh
+//     input prices (~10x cache reads) on the dominant token class. The lever is
+//     finding what varies early in the prompt.
+//
+// Reported as null rather than 0 when the tiers are absent — a run recorded
+// before the tiers were persisted has an UNKNOWN hit rate, and showing that as
+// "0% cached" would invent an alarming fact out of missing data.
+export function cacheHitRate(u: { inputTokens: number; cacheReadTokens?: number; cacheWriteTokens?: number } | null | undefined): number | null {
+  if (!u || u.inputTokens <= 0) return null;
+  const read = u.cacheReadTokens ?? 0;
+  const write = u.cacheWriteTokens ?? 0;
+  if (read === 0 && write === 0) return null; // never recorded — not "no hits"
+  return read / u.inputTokens;
+}
+
+/** "72% cached" — or null when unknown. */
+export function fmtCacheHitRate(u: Parameters<typeof cacheHitRate>[0]): string | null {
+  const r = cacheHitRate(u);
+  return r == null ? null : `${Math.round(r * 100)}% cached`;
+}
+
+// ─── sidebar "OPEN NOW" (TASK 24) ────────────────────────────────────────────
+
+export type OpenNowDot = "human" | "warn" | "track";
+
+/** The sidebar's OPEN NOW row label — WHY a project is interesting right now,
+ *  most urgent first: an open gate (needs YOU) > a stuck run (no gate, but
+ *  stale — needs a LOOK) > an ordinary running run (ambient) > nothing.
+ *  Reuses `classifyRun` (the same pure classifier the Runs dashboard uses)
+ *  for "stuck" rather than re-deriving it — a run whose heartbeat has gone
+ *  stale with no open gate is exactly classifyRun's "blocked" no-hitl branch. */
+export function openNowStatus(p: Project, runs: TaskRun[], queue: HitlItem[], now: number): { text: string; dot: OpenNowDot } {
+  const projectRuns = runs.filter((r) => r.projectId === p.id && r.status !== "done");
+  const gateCount = projectRuns.filter((r) => hitlFor(queue, r.id)).length;
+  if (gateCount > 0) return { text: `${gateCount} gate${gateCount === 1 ? "" : "s"}`, dot: "human" };
+  const stuckCount = projectRuns.filter((r) => classifyRun(r, undefined, now, STALE_HEARTBEAT_SEC).tag === "blocked").length;
+  if (stuckCount > 0) return { text: "stuck", dot: "warn" };
+  const runningCount = projectRuns.filter((r) => r.status === "running").length;
+  if (runningCount > 0) return { text: `${runningCount} run${runningCount === 1 ? "" : "s"}`, dot: "track" };
+  return { text: "idle", dot: "track" };
 }

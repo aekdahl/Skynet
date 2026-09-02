@@ -31,6 +31,7 @@ const agent: TaskRun = {
   model: "opus-4.5",
   endpoint: null,
   merge: null,
+  handoff: null,
   branch: "agent/billing-hooks",
   modules: ["api/billing", "db/migrations"],
   progress: 0.45,
@@ -213,7 +214,7 @@ describe("contracts round-trip", () => {
       id: "q1", workspaceId: DEFAULT_WORKSPACE, runId: "billing", kind: "approval",
       title: "t", why: "w", risk: "medium", raisedAt: 1, expiresAt: null, resolvedAt: null, resolution: null,
       command: "deploy", options: null, recommended: null, steps: null, diff: null, output: null, rationale: null, flags: [],
-      sourceBranchOverride: null,
+      sourceBranchOverride: null, projectId: null, roadmapProposalId: null,
     };
     const events: ServerEvent[] = [
       { type: "run.started", run: agent },
@@ -248,7 +249,7 @@ describe("contracts round-trip", () => {
   it("Snapshot validates a full default-provider catalog and WsMessage wraps it", () => {
     const snapshot: Snapshot = {
       runs: [agent], queue: [], projects: [], tasks: [], features: [], milestones: [], solutionBriefs: [brief], fleet: [],
-      modules: [], deps: [], providers: DEFAULT_PROVIDERS, serverTime: 42,
+      modules: [], deps: [], providers: DEFAULT_PROVIDERS, rules: [], proposals: [], serverTime: 42,
     };
     expect(Snapshot.parse(wire(snapshot))).toEqual(snapshot);
     expect(WsMessage.parse(wire({ type: "snapshot", state: snapshot }))).toBeTruthy();

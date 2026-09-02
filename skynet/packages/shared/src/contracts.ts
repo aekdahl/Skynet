@@ -44,7 +44,7 @@ export type PlanStepState = z.infer<typeof PlanStepState>;
 // already approved and the merge itself succeeded — the merge commit is undone
 // (MergeEngine.process's bounce) pending this decision: approve retries the
 // merge+check, reject/modify bounces the agent to revise with the check output.
-export const HitlKind = z.enum(["approval", "question", "plan", "diff", "merge", "escalation", "verifier"]);
+export const HitlKind = z.enum(["approval", "question", "plan", "diff", "merge", "escalation", "verifier", "roadmap_edit"]);
 export type HitlKind = z.infer<typeof HitlKind>;
 
 /** Default single-tenant workspace until real provisioning lands. */
@@ -133,8 +133,20 @@ export type FlyDeployment = z.infer<typeof FlyDeployment>;
 export const PlanStep = z.object({
   text: z.string(),
   state: PlanStepState,
+  // Best-effort UI hint: this step's text looks like it will hit an existing
+  // gate (off-allowlist command / merge / data-infra) — see Hub.annotateApproval
+  // in apps/server. Never itself gates, blocks, or auto-approves anything; the
+  // real gate is classifyCommand at Orchestrator.raise() time against the
+  // actual tool call. Omitted (not false) when not yet derived.
+  requiresApproval: z.boolean().optional(),
 });
 export type PlanStep = z.infer<typeof PlanStep>;
+
+// A tool call's coarse shape, for the Run Detail live log's fixed verb column.
+// "gate" = the call itself raised a HITL approval; "idle" = a synthetic
+// trailing row, not a real tool call.
+export const LogVerb = z.enum(["read", "grep", "edit", "shell", "think", "gate", "idle"]);
+export type LogVerb = z.infer<typeof LogVerb>;
 
 // ─── Token usage & cost ─────────────────────────────────────────────────────
 // What a runner has spent so far, reported by the vendor (Claude's result
@@ -143,6 +155,14 @@ export type PlanStep = z.infer<typeof PlanStep>;
 export const Usage = z.object({
   inputTokens: z.number().int().nonnegative().default(0),
   outputTokens: z.number().int().nonnegative().default(0),
+  // Cache tiers, BOTH also counted inside `inputTokens`. Kept separately
+  // because they are priced ~10x apart, which makes the split — not the total —
+  // the number that says whether spend is a caching problem or a volume one.
+  // The runner has always computed these (RunnerUsage); they used to be dropped
+  // here, so "what is our cache hit rate?" was unanswerable. Same failure as
+  // the original under-reporting meter: the data existed, nothing kept it.
+  cacheReadTokens: z.number().int().nonnegative().default(0),
+  cacheWriteTokens: z.number().int().nonnegative().default(0),
   costUsd: z.number().nonnegative().nullable().default(null),
   turns: z.number().int().nonnegative().default(0),
   durationMs: z.number().int().nonnegative().nullable().default(null),
@@ -189,6 +209,11 @@ export const LogLine = z.object({
   // Optional expandable detail (e.g. a tool call's full input or output). When
   // present, the UI renders the line as a fold/unfold entry.
   detail: z.string().optional(),
+  // Additive structured fields alongside `line` (kept intact as the fallback
+  // rendering for any line these aren't derived for). See LogVerb above.
+  verb: LogVerb.optional(),
+  // Set only on a tool-result ("↳") line, once the call has actually finished.
+  resultKind: z.enum(["ok", "error"]).optional(),
 });
 export type LogLine = z.infer<typeof LogLine>;
 
@@ -290,6 +315,33 @@ export const PullRequest = z.object({
 });
 export type PullRequest = z.infer<typeof PullRequest>;
 
+// Momentum Rollout, phase 1a — the semantic signal a GitHub PR/review/check/
+// deploy webhook resolves to, NOT the raw event+action pair (a `pull_request`
+// event's `action` alone is ambiguous — "closed" means merged or abandoned
+// depending on `pull_request.merged` — so the parser already collapses that
+// here, once, rather than making every downstream consumer re-derive it).
+// The rule engine (a later phase) matches on these; this vocabulary is the
+// stable contract between the webhook parser and everything that reacts to it.
+export const GithubSignalKind = z.enum([
+  "pr_opened",
+  "pr_closed",
+  "pr_merged",
+  "pr_ready_for_review",
+  "review_approved",
+  "review_changes_requested",
+  "check_succeeded",
+  "check_failed",
+  "deploy_succeeded",
+  "deploy_failed",
+]);
+export type GithubSignalKind = z.infer<typeof GithubSignalKind>;
+
+// JSON-safe scalar bag of whatever the parsed webhook payload had worth
+// keeping (PR number/url, check name, sha, environment, …) — evidence for
+// later UI/rules, not meant to be exhaustively typed per signal kind.
+export const GithubSignalPayload = z.record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.null()]));
+export type GithubSignalPayload = z.infer<typeof GithubSignalPayload>;
+
 // ─── TaskRun ──────────────────────────────────────────────────────────────────
 
 export const TaskRun = z.object({
@@ -339,6 +391,18 @@ export const TaskRun = z.object({
   // GitHub PR merely opened (not yet merged), this is the one field that means a
   // real merge happened. Null → never merged.
   mergedAt: Timestamp.nullable().default(null),
+  // What the previous agent had figured out when this run escalated or stalled.
+  // Read by a RESTARTED session so it doesn't have to re-derive the situation by
+  // re-reading the repo from zero — which is the expensive half of an escalation
+  // resume. Composed from the agent's own words (its escalation reason) plus its
+  // recent log; no extra model call. Null until a run escalates.
+  handoff: z
+    .object({
+      summary: z.string(),
+      at: Timestamp,
+    })
+    .nullable()
+    .default(null),
   // Where the merge landed and what commit it made — recorded so a merge can be
   // UNDONE with one click. That reversibility is what makes unattended merging
   // tolerable: approval stops being final, so it stops needing to be perfect.
@@ -430,6 +494,22 @@ export const ApprovalRule = z.object({
 });
 export type ApprovalRule = z.infer<typeof ApprovalRule>;
 
+// Guardrails a rule (see kanban.ts's Rule.safety) or a project's DEFAULT for
+// new rules carries, so an automated move is never a silent surprise:
+// announce before acting, a window to undo it, and a circuit breaker that
+// pauses after too many undos in a row. `excludePriorities` carves out e.g.
+// "never touch P0" without disabling the rule entirely. Lives here (not
+// kanban.ts, which imports it) because Project.ruleSafetyDefaults needs it
+// too and contracts.ts is the base module kanban.ts already depends on —
+// the other direction would be circular.
+export const RuleSafety = z.object({
+  announceBeforeActing: z.boolean().default(true),
+  undoWindowMin: z.number().default(10),
+  pauseAfterUndos: z.number().default(3),
+  excludePriorities: z.array(z.string()).default([]),
+});
+export type RuleSafety = z.infer<typeof RuleSafety>;
+
 // ─── Project Charter ──────────────────────────────────────────────────────
 // LLM-drafted at project creation (Gate G-1). The operator corrects/approves
 // before the project is created. Source of truth the whole auto-dev team plans
@@ -483,6 +563,22 @@ export const Project = z.object({
   // "approve always" exact-command allowances (see ApprovalRule).
   approvalLevel: ApprovalLevel.default("trusted"),
   approvalRules: z.array(ApprovalRule).default([]),
+  // The counterpart to approvalRules: exact (normalized) commands that must
+  // ALWAYS gate for a human, overriding whatever the approval LEVEL or a
+  // standing approvalRules entry would otherwise auto-approve (see
+  // approval-policy.ts's decideAutoApproval — checked before any standing
+  // rule, so a rule can never silently outrun it). An operator's explicit
+  // "no, never this one" — distinct from the safety FLOOR's own always-gated
+  // high-risk/deny commands (command-safety.ts), which no project can widen
+  // in the other direction either.
+  alwaysGateCommands: z.array(z.string()).default([]),
+  // Project-level DEFAULT for a NEW automation rule's safety rails (see
+  // kanban.ts's Rule.safety) — "boundaries set once" instead of re-typing the
+  // same undo-window/pause-count/excluded-priorities on every rule built in
+  // the Automation Builder. Purely a default for rule CREATION: an existing
+  // rule's own `safety` is independent once set, and editing this later never
+  // retroactively changes rules already built.
+  ruleSafetyDefaults: RuleSafety.default({ announceBeforeActing: true, undoWindowMin: 10, pauseAfterUndos: 3, excludePriorities: [] }),
   // Opt-in: start each run in the Claude Agent SDK's plan mode
   // (`permissionMode: "plan"`) — the agent must propose a plan and call
   // ExitPlanMode before making any edits; that call is intercepted and raised
@@ -634,6 +730,23 @@ export const Project = z.object({
   // directly via UpdateProjectRequest.
   contextSummary: z.string().nullable().default(null),
   contextSummaryUpdatedAt: Timestamp.nullable().default(null),
+  // Momentum Board (Phase 4 — see apps/web/src/kanban/board.tsx): opt-in to
+  // the new 4-column board (intake/queued/in-flight/landed) driven by
+  // Transition/Rule/Proposal data, replacing the current six-state kanban
+  // view for this project only. TASK 14 (Phase 11) flips this to ON by
+  // default for newly-created projects — the new board has run clean on a
+  // real project for the required window (see ROADMAP.md's TASK 14 entry
+  // for the documented removal criteria for the old board + this flag).
+  // Every EXISTING project keeps whatever value it already has; this
+  // default only takes effect via `.default(true)` for a row that omits
+  // the field entirely, and — the value that actually matters for a fresh
+  // project — Operations.createProject now sets it explicitly (see there).
+  newBoardEnabled: z.boolean().default(true),
+  // Momentum Board's Queued-column WIP limit: once that many tasks are
+  // queued, further incoming tasks render as "held" instead of silently
+  // queuing, and auto-promote when a slot frees. null = no limit (today's
+  // behavior). Only meaningful when newBoardEnabled is on.
+  queuedWipLimit: z.number().int().positive().nullable().default(null),
 });
 export type Project = z.infer<typeof Project>;
 
@@ -932,6 +1045,19 @@ export const Task = z.object({
   // orchestrator/derive/conflicts.ts) — this is task-to-task ordering of
   // not-yet-started work. Default [] = no dependency, today's behavior.
   dependsOnTaskIds: z.array(z.string()).default([]),
+  // The subtask relation (Momentum Rollout kanban rebuild, Phase 0 — see
+  // docs/momentum-rollout.md): a task's PARENT task, if it's a subtask of one.
+  // Distinct from dependsOnTaskIds (ordering between siblings, doesn't imply
+  // containment) — Skynet has no subtask hierarchy today; this is purely
+  // additive scaffolding for a later phase's UI. Null = a top-level task
+  // (today's only shape).
+  parentTaskId: z.string().nullable().default(null),
+  // Freeform priority label (e.g. "P0"/"P1"/"P2") — Momentum Rollout Phase 1b's
+  // rule engine needs a concrete task attribute to check its `excludePriorities`
+  // safety rail ("never touch P0") against; nothing in Task named this before.
+  // Unvalidated beyond being a string (no fixed vocabulary enforced here) —
+  // null = no priority set, today's only shape.
+  priority: z.string().nullable().default(null),
   // Operator-saved provider/model preference for auto-pick — set via the Start
   // picker. Null (the default) leaves acquisition exactly as it's always been:
   // the first idle, usable runner in fleet order. When set, acquireAgent tries
@@ -962,6 +1088,11 @@ export const Feature = z.object({
   milestoneId: z.string().nullable().default(null),
   // Manual order within the project (lower = higher). Unset sorts as 0.
   order: z.number().int().optional(),
+  // Epic color for the new kanban board (Momentum Rollout, Phase 0) — a lane/
+  // chip accent later UI can key off. Optional and unvalidated beyond being a
+  // string (no hex/named-color format check here — the picker owns that);
+  // null = no color assigned, today's only shape.
+  color: z.string().nullable().default(null),
   archived: z.boolean().default(false),
   createdAt: Timestamp,
   // The aggregate PR for this feature's batched tasks — feature-scoped branch
@@ -1119,8 +1250,25 @@ export type DiffWalkthroughComment = z.infer<typeof DiffWalkthroughComment>;
 export const DiffWalkthrough = z.object({
   summary: z.string(),
   comments: z.array(DiffWalkthroughComment).default([]),
+  // Required part of the walkthrough prompt (Review & Merge, Phase 15): what
+  // the agent itself is least confident is correct — never omitted going
+  // forward. Nullable only for backward-compat with a walkthrough drafted
+  // before this field existed.
+  uncertainty: z.string().nullable().default(null),
 });
 export type DiffWalkthrough = z.infer<typeof DiffWalkthrough>;
+
+// A diff grouped by likely INTENT rather than by file — a mechanical
+// derivation over the diff hunks (per-file +/- parsed from the patch,
+// files bucketed by the project's own module map), not an LLM semantic
+// grouper. See apps/server/src/diff-groups.ts.
+export const DiffGroup = z.object({
+  title: z.string(),
+  files: z.array(z.string()),
+  add: z.number().int().nonnegative(),
+  del: z.number().int().nonnegative(),
+});
+export type DiffGroup = z.infer<typeof DiffGroup>;
 
 // Guided merge (see Orchestrator.raiseDiffReview / draftMergeBrief): a
 // plain-English risk/mitigation read of the diff, drafted once alongside the
@@ -1150,6 +1298,9 @@ export const DiffSummary = z.object({
   files: z.array(z.string()).default([]),
   walkthrough: DiffWalkthrough.nullable().default(null),
   mergeBrief: MergeBrief.nullable().default(null),
+  // Files grouped by likely intent (see DiffGroup) — empty for a gate raised
+  // before this existed, or when the patch was empty/unparseable.
+  groups: z.array(DiffGroup).default([]),
   // The branch a diff/merge APPROVAL integrates into if the operator doesn't
   // choose a different one — the project's local integration branch
   // (`skynet/integration/<projectId>`), or, when GitHub-connected, the PR
@@ -1246,8 +1397,37 @@ export const HitlItem = z.object({
   // retry — same as `agent.branch` already does today). Null for every HITL
   // today — additive, no behavior change to existing records.
   sourceBranchOverride: z.string().nullable().default(null),
+  // `roadmap_edit` only (TASK 30) — a roadmap proposal has no TaskRun behind
+  // it (it's raised at the fleet-agent level, not tied to one task run), so
+  // `runId` above carries an inert `roadmap:<proposalId>` placeholder for
+  // this kind instead of a real run id — never matches an actual TaskRun,
+  // and deliberately never routed through Orchestrator.deliver() (see
+  // Operations.resolveRoadmapEditHitl), which assumes a live run/handle
+  // behind every item it's handed. `projectId` is the one place this kind's
+  // project is actually reachable from (Operations.listDecisions falls back
+  // to it instead of resolving through a run); `roadmapProposalId` is the
+  // live-fetch key the card renders from (GET .../roadmap-proposals/:id) —
+  // the card never trusts a frozen snapshot, so a Rule 1 join or a Rule 3
+  // supersede that happens after this was raised is picked up for free.
+  projectId: z.string().nullable().default(null),
+  roadmapProposalId: z.string().nullable().default(null),
 });
 export type HitlItem = z.infer<typeof HitlItem>;
+
+// A HitlItem is per-run and carries no projectId of its own (TASK 15,
+// Decision backbone) — `GET /api/decisions` joins it against the run/task/
+// project it actually belongs to so a cross-project decision list doesn't
+// need a second round-trip per item. `costOfWaiting` is `idleMs` (since
+// `raisedAt`) weighted by the project's autonomy detent — every project
+// weighs ×1 until TASK 19 lands the composed detent value (see
+// Operations.listDecisions).
+export const Decision = HitlItem.extend({
+  projectId: z.string(),
+  projectName: z.string(),
+  taskTitle: z.string().nullable(),
+  costOfWaiting: z.number(),
+});
+export type Decision = z.infer<typeof Decision>;
 
 // ─── Fleet runner · Module · Dependency · Provider catalog ──────────────────
 
@@ -1331,6 +1511,19 @@ export type AuditRecord = z.infer<typeof AuditRecord>;
 
 export const ComplianceApproverType = z.enum(["human", "policy", "agent-review"]);
 export type ComplianceApproverType = z.infer<typeof ComplianceApproverType>;
+
+// TASK 21 — GET /api/audit's own row shape: the stored AuditRecord plus
+// `actorType`, computed at RESPONSE time from `operatorId`
+// (apps/server/src/compliance/report.ts's classifyApprover, reused — not a
+// second classifier) — no schema change to the persisted record itself, this
+// is a read-time projection. Reuses ComplianceApproverType rather than a
+// second lime/blue/amber enum, since it's the exact same three-way split.
+// Optional for back-compat with a server that predates this field (same
+// convention as AuditRecord's own `archived`/`hash` above) — a caller missing
+// it can always recompute the SAME value client-side via the bare
+// `classifyOperatorId` (compliance.ts), which needs only `operatorId`.
+export const AuditRecordWithActor = AuditRecord.extend({ actorType: ComplianceApproverType.optional() });
+export type AuditRecordWithActor = z.infer<typeof AuditRecordWithActor>;
 
 export const ComplianceReportEntry = z.object({
   hitlId: z.string(),
@@ -1499,6 +1692,24 @@ export const ResolveRequest = z.object({
 });
 export type ResolveRequest = z.infer<typeof ResolveRequest>;
 
+// A plain (non-conflict) roadmap_edit HITL's two actions — deliberately its
+// OWN request type rather than reusing ResolveRequest's full action set
+// (option/reassign/push/modify don't apply to a proposal with no live agent
+// behind it; see Operations.resolveRoadmapEditHitl).
+export const RoadmapEditResolveRequest = z.object({ action: z.enum(["approve", "reject"]) });
+export type RoadmapEditResolveRequest = z.infer<typeof RoadmapEditResolveRequest>;
+
+// A held_conflict roadmap_edit HITL's three actions: pick one side
+// (chosenProposalId — the OTHER proposal in the pair is rejected), or reject
+// both and write it yourself (the card's "WRITE MY OWN" — degrades to the
+// existing Steward-dock/Roadmap-tab manual edit path until TASK 29's inline
+// SOURCE editor lands; see Operations.resolveRoadmapConflict).
+export const RoadmapConflictResolveRequest = z.discriminatedUnion("action", [
+  z.object({ action: z.literal("choose"), chosenProposalId: z.string() }),
+  z.object({ action: z.literal("write_own") }),
+]);
+export type RoadmapConflictResolveRequest = z.infer<typeof RoadmapConflictResolveRequest>;
+
 export const ChatRequest = z.object({ text: z.string().min(1) });
 
 // `inform` — a third interaction type alongside chat (a real extra turn) and
@@ -1605,13 +1816,37 @@ export const UpdateProjectRequest = z.object({
   enabledRunnerCredentialIds: z.array(z.string()).optional(),
   syncSourceStatus: z.boolean().optional(), // write status changes back to the source of truth
   roadmapPath: z.string().nullable().optional(), // see Project.roadmapPath; null clears → default candidates
+  newBoardEnabled: z.boolean().optional(), // see Project.newBoardEnabled
+  queuedWipLimit: z.number().int().positive().nullable().optional(), // see Project.queuedWipLimit; null clears → no limit
+  // See Project.alwaysGateCommands — whole-array replace, same as disallowedTools.
+  alwaysGateCommands: z.array(z.string()).optional(),
+  // See Project.ruleSafetyDefaults — whole-object replace.
+  ruleSafetyDefaults: RuleSafety.optional(),
 });
 export type UpdateProjectRequest = z.infer<typeof UpdateProjectRequest>;
+
+// Add a standing "approve always" allowance directly (not via a live HITL's
+// "remember" checkbox — see operations.ts's addApprovalRule / rememberApproval).
+// The risk cap is DERIVED server-side from the live classifier
+// (rememberableRisk), never client-supplied — a client that could name its
+// own riskCap could smuggle a high-risk command in as "approved".
+export const AddApprovalRuleRequest = z.object({ command: z.string().min(1) });
+export type AddApprovalRuleRequest = z.infer<typeof AddApprovalRuleRequest>;
+
+// Toggle a credential's org-owned governance flag (see SecretMeta.orgOwned).
+export const SetOrgOwnedRequest = z.object({ orgOwned: z.boolean() });
+export type SetOrgOwnedRequest = z.infer<typeof SetOrgOwnedRequest>;
 
 export const CreateTaskRequest = z.object({
   text: z.string().min(1),
   description: z.string().optional(),
   source: TaskSource.optional(), // set when importing from a source of truth
+  // Momentum Rollout kanban rebuild — set only when this task is being
+  // created AS a subtask (e.g. accepting a suggested_subtask Proposal), so
+  // the relation lands atomically with the task's other defaults instead of
+  // a separate updateTask follow-up. Omitted/undefined for every ordinary
+  // task creation, which stays top-level exactly as before.
+  parentTaskId: z.string().nullable().optional(),
 });
 export type CreateTaskRequest = z.infer<typeof CreateTaskRequest>;
 
@@ -1749,6 +1984,26 @@ export type MoveTaskRequest = z.infer<typeof MoveTaskRequest>;
 export const ReorderTaskRequest = z.object({ beforeId: z.string().nullable() });
 export type ReorderTaskRequest = z.infer<typeof ReorderTaskRequest>;
 
+// ─── Steward source citations (TASK 21) ────────────────────────────────────
+// "No claim without a chip": Steward's reply protocol already lets the model
+// append a trailing `{"proposeActions": [...]}` tag (see assistant.ts's
+// splitProposedAction) — this extends the SAME trailing object with an
+// optional `"sources"` list naming what backs up a specific claim in the
+// reply. The SHAPE lives here (server-validated on the way out of
+// splitProposedAction); resolving a ref into an actual href/label is a
+// client concern (apps/web/src/lib/source-chips.ts) — it already has
+// TASK 17's run-detail route (`#/agent/<runId>`) and the project/run data
+// (repo, branch, PR url) needed for a commit link, all without a second
+// server round-trip. `commit` reuses `runId` — the commit in question is
+// "whatever landed for this run" (its PR, or its branch pre-merge), not a
+// bare sha Steward has no reliable way to know.
+export const SourceRef = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("run"), runId: z.string() }),
+  z.object({ kind: z.literal("commit"), runId: z.string() }),
+  z.object({ kind: z.literal("breaker"), projectId: z.string() }),
+]);
+export type SourceRef = z.infer<typeof SourceRef>;
+
 // ─── Execution intents (S10): start/queue composites ───────────────────────
 // The strict request contract for POST /api/projects/:id/steward/actions —
 // distinct from (and narrower than) Steward's own free-form AssistantAction
@@ -1783,6 +2038,11 @@ export const ExecuteStewardActionRequest = z.object({
   // Resolve feasibility and report what WOULD happen — never mutates
   // anything. What S11's confirm chip and S12's MCP `dryRun` param render.
   dryRun: z.boolean().optional(),
+  // TASK 21 — "JUST #01"-style partial acceptance: 0-indexed positions into
+  // the action's own batch (`queue_tasks.taskIds`, or the feature's/backlog's
+  // resolved task list, in the SAME order a dry-run preview already showed)
+  // to act on. Omitted/empty = every item in the batch, today's behavior.
+  onlyIndices: z.array(z.number().int().nonnegative()).optional(),
 });
 export type ExecuteStewardActionRequest = z.infer<typeof ExecuteStewardActionRequest>;
 
@@ -1866,6 +2126,17 @@ export const SecretMeta = z.object({
     })
     .nullable()
     .default(null),
+  // Governance flag, never inferred: is this key the workspace's OWN (a
+  // company/team-issued key an operator would want flagged if it silently
+  // stopped being org-owned), or someone's personal key running agent work
+  // that bills to them? No credential-provisioning path in this codebase
+  // hands Skynet a key without the operator typing/pasting it (there's no
+  // OAuth-brokered "connect" flow for LLM/GitHub/Fly credentials today,
+  // cliLogin providers like Cursor/Copilot authenticate outside the secret
+  // store entirely) — so this defaults false uniformly at creation rather
+  // than being auto-detected from a signal that doesn't exist, and the
+  // operator sets it explicitly when it IS a shared/org key.
+  orgOwned: z.boolean().default(false),
   updatedAt: Timestamp,
   updatedBy: z.string(), // operator id — audit trail
 });
@@ -1896,7 +2167,7 @@ export const SecretAuditEntry = z.object({
   credentialId: z.string(),
   provider: CredentialProvider,
   label: z.string(), // display name at the time of the event ("" = default)
-  action: z.enum(["created", "rotated", "removed", "paused", "resumed"]),
+  action: z.enum(["created", "rotated", "removed", "paused", "resumed", "org-owned-changed"]),
   operatorId: z.string(),
   at: Timestamp,
 });
@@ -2018,6 +2289,13 @@ export const WorkspaceSettings = z.object({
   // reclaimed instead of accumulating. Operator-added runners are never touched.
   // 0 = never auto-retire. Default 30.
   retireIdleRunnersAfterMinutes: z.number().int().min(0).default(30),
+  // Model for PRE-WORK exploration (grounding a solution brief against the
+  // repo). It has no run or agent to inherit a model from, so it was hardcoded
+  // — and hardcoded to Opus, which kept an expensive model in the loop for
+  // every workspace no matter what the fleet was set to. Now a setting, and
+  // defaulted to a mid-tier model: this reads code and reports, it does not
+  // need the strongest model available.
+  exploreModel: z.string().min(1).default("sonnet-5"),
   // Opt-in: equip Claude runners with a real browser (a Playwright/Chrome MCP
   // server) so an agent can drive a browser inside a coding task — reproduce a
   // bug, verify a UI change end-to-end, read live docs. Off by default; when on,
@@ -2042,6 +2320,7 @@ export const UpdateWorkspaceSettingsRequest = z.object({
   autoProvisionRunners: z.boolean().optional(),
   maxRunners: z.number().int().min(0).optional(),
   retireIdleRunnersAfterMinutes: z.number().int().min(0).optional(),
+  exploreModel: z.string().min(1).optional(),
   browserTools: z.boolean().optional(),
   requireLoginVerification: z.boolean().optional(),
 });

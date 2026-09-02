@@ -39,6 +39,21 @@ const ALLOW = new Set<string>([
   "archiveAllAudit", "clearAudit",
   // low-value control-plane (runner rename/model tweak)
   "updateAgent",
+  // TASK 30 — roadmap_edit decision-card actions. proposeRoadmapChange (the
+  // only thing that ever creates a RoadmapProposal) has no agent-facing
+  // trigger yet — no MCP tool, no chat action — so no offline journey can
+  // produce a proposal for a Simulation/Acceptance click-through to act on.
+  // The full server-side round trip (raise → live-fetch → resolve → real
+  // commit with attribution, plus the held_conflict choose/write_own path)
+  // is covered by tests/roadmap-decision-cards.test.ts instead.
+  "fetchRoadmapProposal", "resolveRoadmapConflict",
+  // TASK 32 — workspace roadmap roll-up + "create one from the board". Both
+  // need a project genuinely bound to a real git repo (scaffold additionally
+  // needs one with NO roadmap file yet) — no offline journey has that
+  // fixture. The full round trip (access scoping, the dashed no-roadmap row,
+  // a real scaffolded+attributed commit, cross-repo milestone grouping) is
+  // covered server-side by tests/roadmap-workspace-rollup.test.ts instead.
+  "fetchWorkspaceRoadmapRollup", "scaffoldProjectRoadmap",
   // add a second named credential for a provider — needs a real key + the secret
   // store (master key), so no offline journey; the route is guarded server-side
   // and the set/delete-by-id paths it shares ARE journey-covered.
@@ -213,6 +228,12 @@ const ALLOW = new Set<string>([
   // the card makes on mount, not a state-changing action a journey would drive.
   // Covered server-side by ready-merge.test.ts's prChecksForRun/ForFeature tests.
   "fetchPrChecks", "fetchFeaturePrChecks",
+  // Review & Merge's READY TO MERGE panel — a real API call the screen makes
+  // on mount, not a state-changing action a journey would drive. Covered
+  // server-side by merge-queue.test.ts's Orchestrator.mergeQueueSnapshot tests
+  // (real approvals through a real merge queue) and merge.test.ts's
+  // MergeEngine.queueFor test (the underlying position bookkeeping).
+  "fetchMergeQueue",
   // Checkpoint / snapshot-restore — creates a real git commit + pinned ref and,
   // on restore, stops the live handle and relaunches the provider with a
   // resumed SDK session. No offline journey can exercise the worktree
@@ -281,6 +302,59 @@ const ALLOW = new Set<string>([
   // and the refusal when nothing is open) is covered server-side in
   // triage-clarification.test.ts, and the round trip was verified live.
   "answerClarification",
+  // Automation Builder (Momentum Rollout Phase 6a, TASK 07) — rule CRUD +
+  // live backtest. No offline journey builds/edits a rule (there's no
+  // fleet-journey shape for "author an automation"), so these are
+  // allowlisted here rather than dropped into a Simulation journey. The full
+  // HTTP surface (create/update/delete, backtest against real Transition
+  // history, workspace scoping) is exercised directly against a real
+  // Fastify app + store in tests/kanban-api-surface.test.ts's "rules CRUD" /
+  // "rules/backtest" suites, and the engine semantics they wrap
+  // (matchCondition/applyAction, the undo→auto-pause breaker) in
+  // tests/rule-engine.test.ts. Verified live end-to-end too: a rule built
+  // through the Automation Builder UI matched a real triggered signal and
+  // moved the task, and 3 real undos auto-paused it with the live rules
+  // list reflecting "Paused" with no reload.
+  // createRule is exercised directly by the "hardening-retry-rule-action"
+  // acceptance scenario now (TASK 13) — dropped from this list.
+  "updateRule", "deleteRule", "backtestRule",
+  // Keys & Budget panel (TASK 20) — org-owned governance flag and the panel's
+  // direct "+ add pattern" write. No offline journey sets a credential's
+  // provenance or hand-adds a standing rule outside the HITL "remember"
+  // checkbox flow; both are exercised against a real store + hub in
+  // secrets-audit.test.ts's "SecretService orgOwned" suite and
+  // approval-rules-ops.test.ts respectively.
+  "setCredentialOrgOwned", "addApprovalRule",
+  // TASK 23 hardening — the fleet-level depleted-key banner (App.tsx's
+  // DepletedKeyBanner) polls this directly on a fixed interval, not from a
+  // journey-driven user action. Server-side covered by
+  // orchestrator-depleted-keys.test.ts.
+  "fetchDepletedKeys",
+  // TASK 24 — the command palette's destructive "Pause the whole fleet"
+  // action. No offline journey triggers a real fleet-wide kill switch (it
+  // stops every run and pauses autonomy workspace-wide); the route/
+  // Operations wrapper is covered server-side by fleet-stop-all-route.test.ts,
+  // and orchestrator.stopAll itself by orchestrator-stopall.test.ts.
+  "stopAllRuns",
+  // Phase 26 (TASK 29) — the roadmap doc view's actions that need a REAL
+  // local git checkout to mean anything (a real blamed commit to revert, a
+  // real commit log to read) — acceptance.ts runs against whatever project
+  // state already exists via the live REST API only, with no filesystem
+  // access to stand up a throwaway repo the way a server-side vitest test
+  // can (see tests/roadmap-blame.test.ts / roadmap-doc-view-routes.test.ts,
+  // which do exactly that, real git end to end). fetchProjectRoadmapDoc/
+  // fetchRoadmapProposals/applyRoadmapProposal ARE covered by the
+  // "roadmap-doc-view" acceptance check above (control-plane shape, no repo
+  // needed for those three).
+  "claimRoadmapLine", "revertRoadmapLine", "fetchRoadmapHistory",
+  // Phase 28 (TASK 31) — the Drift dashboard's two write actions, same "needs
+  // a real local git checkout" reasoning as the roadmap-doc-view actions
+  // just above: proposeRoadmapChange needs a real fleet agent + section id to
+  // mean anything, commitRoadmapLineEdit needs a real commit to verify
+  // against. Both exercised end to end (real Fastify app + real repo, real
+  // attributed commit parsed back out of the git object) in
+  // tests/roadmap-drift.test.ts.
+  "proposeRoadmapChange", "commitRoadmapLineEdit",
 ]);
 
 describe("client API coverage", () => {

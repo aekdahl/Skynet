@@ -4,7 +4,7 @@
 // pin-the-node-docker-image-to-a-d-1 needs attention").
 import { describe, it, expect } from "vitest";
 import type { HitlItem } from "@skynet/shared";
-import { gateNotice, decisionCardHtml, gateHead, reviewNotice, completedNotice, runLink, desktopRunLink } from "../apps/server/src/telegram/notices.js";
+import { gateNotice, decisionCardHtml, gateHead, gateKeyboard, reviewNotice, completedNotice, runLink, desktopRunLink } from "../apps/server/src/telegram/notices.js";
 
 const UGLY_RUN_ID = "pin-the-node-docker-image-to-a-d-1";
 const UGLY_GATE_ID = "q-diff-pin-the-node-docker-image-to-a-d-1-20";
@@ -165,6 +165,82 @@ describe("reviewNotice / completedNotice", () => {
     expect(msg).toContain("Pin the Node Docker image to a digest");
     expect(msg).toContain("Takeoff");
     expect(msg).not.toContain(UGLY_RUN_ID);
+  });
+});
+
+describe("decisionCardHtml — bubble structure (kind label, consequence line, context line)", () => {
+  it("leads with an all-caps kind label, project, and a short run tag", () => {
+    const html = decisionCardHtml(item({ kind: "approval", command: "npm test", diff: null, title: "x" }), NAMES, true);
+    expect(html).toContain("<b>APPROVAL NEEDED</b> · Takeoff · RUN #");
+  });
+
+  it("flags medium/high risk with ⚠️, and reads as reassurance at low risk", () => {
+    const high = decisionCardHtml(item({ risk: "high" }), NAMES, true);
+    expect(high).toContain("⚠️ High risk");
+    const medium = decisionCardHtml(item({ risk: "medium" }), NAMES, true);
+    expect(medium).toContain("⚠️ Medium risk");
+    const low = decisionCardHtml(item({ risk: "low" }), NAMES, true);
+    expect(low).toContain("Low risk — reversible");
+    expect(low).not.toContain("⚠️");
+  });
+
+  it("always states the run is blocked until answered", () => {
+    const html = decisionCardHtml(item({}), NAMES, true);
+    expect(html).toContain("Agent is idle until you answer.");
+  });
+
+  it("a stuck-review escalation gets its own calm kind label, not the generic alarm one", () => {
+    const html = decisionCardHtml(item({ kind: "escalation", diff: null, flags: ["stuck-review"], title: "x" }), NAMES, true);
+    expect(html).toContain("<b>AWAITING REVIEW</b>");
+  });
+});
+
+// TASK 30 — a roadmap_edit gate compresses to headline + why + actions, and a
+// deletion-flavored proposal (or a held_conflict pair, which always carries
+// one — see notices.ts's roadmapEditCardHtml doc comment) gets NO approve
+// button on Telegram at all, only "Open in Skynet".
+describe("roadmap_edit — compressed card, deletion-safe keyboard", () => {
+  const roadmapItem = (o: Partial<HitlItem> = {}) =>
+    item({
+      kind: "roadmap_edit",
+      diff: null,
+      command: null,
+      title: "Add a note to Phase 1",
+      why: "Tracking the follow-up work discussed in review.",
+      flags: [],
+      ...o,
+    });
+
+  it("decisionCardHtml compresses to headline + why, no run-tag/diff-stat header", () => {
+    const html = decisionCardHtml(roadmapItem(), NAMES, true);
+    expect(html).toContain("ROADMAP EDIT · NEEDS YOUR YES");
+    expect(html).toContain("Add a note to Phase 1");
+    expect(html).toContain("Tracking the follow-up work discussed in review.");
+    expect(html).not.toContain("RUN #"); // no run behind a roadmap_edit item
+  });
+
+  it("a non-deletion proposal offers Approve & commit / Reject in the keyboard", () => {
+    const kb = gateKeyboard(roadmapItem());
+    const datas = kb.inline_keyboard.flat().map((b) => b.callback_data);
+    expect(datas).toContain(`hitl:approve:${UGLY_GATE_ID}`);
+    expect(datas).toContain(`hitl:reject:${UGLY_GATE_ID}`);
+  });
+
+  it("a deletion-flavored proposal gets NO approve action at all — only Open in Skynet", () => {
+    const withLink = gateKeyboard(roadmapItem({ flags: ["has_deletion"] }), "", "https://skynet.example.com/#/project/p1");
+    const flat = withLink.inline_keyboard.flat();
+    expect(flat.some((b) => "callback_data" in b)).toBe(false); // no tappable decision button
+    expect(flat.some((b) => "url" in b && b.text.includes("Open in Skynet"))).toBe(true);
+    expect(withLink.inline_keyboard).toHaveLength(1); // exactly the one open-link row
+
+    const html = decisionCardHtml(roadmapItem({ flags: ["has_deletion"] }), NAMES, true);
+    expect(html).toContain("Removes content");
+    expect(html).not.toContain("Tap below");
+  });
+
+  it("with no link and a deletion flag, the keyboard is empty — never falls back to an approve button", () => {
+    const kb = gateKeyboard(roadmapItem({ flags: ["has_deletion"] }));
+    expect(kb.inline_keyboard).toHaveLength(0);
   });
 });
 

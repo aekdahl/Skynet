@@ -1,0 +1,24 @@
+/* ─── Self-hosted fonts ─────────────────────────────────────────────────────
+   Space Grotesk (this app's existing --font-ui) and JetBrains Mono (the new
+   "Automated Kanban" board's --ak-font-mono — see styles.css) served from
+   /fonts, not the Google Fonts CDN — this ships to production, not an
+   artifact. Both files are variable fonts (Google's own served @font-face
+   for these families repeats the SAME woff2 URL across every discrete weight
+   entry — one file covers the whole weight axis), so ONE @font-face per
+   family with a weight RANGE covers every weight this app uses instead of
+   requesting a separate file per weight.
+   Source: Google Fonts (OFL), downloaded once — see apps/web/public/fonts/. */
+@font-face {
+  font-family: 'Space Grotesk';
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url('/fonts/SpaceGrotesk-Variable.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 400 600;
+  font-display: swap;
+  src: url('/fonts/JetBrainsMono-Variable.woff2') format('woff2');
+}

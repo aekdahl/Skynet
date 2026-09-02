@@ -57,7 +57,9 @@ describe("composeFeatureBrief — system-composed facts, from fixtures", () => {
       mkRun({ id: "r3", usage: null }), // never reported — excluded, not treated as zero spend
     ];
     const brief = composeFeatureBrief([], runs, null, false);
-    expect(brief.spend).toEqual({ inputTokens: 3000, outputTokens: 500, costUsd: 0.13, turns: 8, durationMs: 10000 });
+    expect(brief.spend).toEqual({ cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      inputTokens: 3000, outputTokens: 500, costUsd: 0.13, turns: 8, durationMs: 10000 });
   });
 
   it("costUsd/durationMs stay null in the aggregate when NO run in the batch ever reported them", () => {
@@ -66,7 +68,9 @@ describe("composeFeatureBrief — system-composed facts, from fixtures", () => {
       mkRun({ id: "r2", usage: { inputTokens: 200, outputTokens: 40, costUsd: null, turns: 2, durationMs: null } }),
     ];
     const brief = composeFeatureBrief([], runs, null, false);
-    expect(brief.spend).toEqual({ inputTokens: 300, outputTokens: 60, costUsd: null, turns: 3, durationMs: null });
+    expect(brief.spend).toEqual({ cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      inputTokens: 300, outputTokens: 60, costUsd: null, turns: 3, durationMs: null });
   });
 
   it("spend is null when no sibling run reported usage at all", () => {

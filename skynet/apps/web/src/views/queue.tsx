@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useState } from "react";
 import type { TaskRun, HitlItem } from "@skynet/shared";
 import { useStore } from "../lib/store";
-import { fmtWait, hitlHeadline, KIND_META, needsReviewConfirm, openQueue, projectName, sortForInbox, waitedSecs } from "../lib/derive";
+import { fmtWait, hitlHeadline, isAutonomyPaused, KIND_META, needsReviewConfirm, openQueue, projectName, sortForInbox, waitedSecs } from "../lib/derive";
 import { isTypingTarget } from "../lib/keys";
 import { useChoice, useConfirm } from "../components/confirm";
 import { RiskChip } from "../components/hitl-context";
@@ -172,7 +172,18 @@ export function QueueCard({
         </label>
       )}
 
-      {item.kind === "escalation" ? (
+      {item.kind === "escalation" ? isAutonomyPaused(item) ? (
+        // A project-level circuit-breaker trip, not a real per-run escalation
+        // (see orchestrator.ts's noteAutonomyBadOutcome) — Help & resume /
+        // Reassign / Stop / Open agent would all imply acting on a specific
+        // run, but there's no run here to act on; resolving it any way just
+        // dismisses the notice server-side, so Dismiss is the only honest action.
+        <div className="qcard-actions">
+          <button className="btn" disabled={readOnly} onClick={() => resolveHitl(item.id, "dismiss")}>
+            Dismiss
+          </button>
+        </div>
+      ) : (
         <div className="qcard-actions">
           {/* An escalating agent usually offered concrete choices; picking one
               resumes it with that choice as the operator's directive — the same

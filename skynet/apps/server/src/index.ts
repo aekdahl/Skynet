@@ -13,6 +13,7 @@ import type { Bus } from "./bus.js";
 import { Hub } from "./hub.js";
 import { Orchestrator } from "./orchestrator.js";
 import { Operations } from "./operations.js";
+import { RuleEngine } from "./rules/engine.js";
 import { registerApi } from "./api.js";
 import { registerMcp } from "./mcp/http.js";
 import { registerOpenAiCompat } from "./interop/openai.js";
@@ -68,8 +69,14 @@ async function main() {
   }
   const hub = new Hub(store, bus);
   const orchestrator = new Orchestrator(store, hub);
+  // Momentum Rollout Phase 1b — the board-management layer alongside the
+  // orchestrator (reacts to signals, moves cards, writes Transitions; never
+  // touches agents/worktrees). Subscribing is inert on its own: it only acts
+  // once a project has at least one `state:"live"` Rule.
+  const ruleEngine = new RuleEngine({ store, hub, bus });
+  await ruleEngine.start();
   // The shared service layer behind both the HTTP API and the MCP server.
-  const operations = new Operations({ store, hub, orchestrator });
+  const operations = new Operations({ store, hub, orchestrator, ruleEngine });
   // Persist the GitHub connection in the same Store as the rest of the domain
   // (file for the desktop app, Postgres for hosted) — durable, no side-store.
   configureGithub(store);
@@ -327,6 +334,45 @@ async function main() {
       orchestrator.tickAutonomy().catch((err) => app.log.warn(`autonomy: ${(err as Error).message}`));
     const every = Math.max(8_000, Math.min(config.autonomyMs, 60_000));
     setInterval(tick, every).unref();
+  }
+
+  // Rule engine resolver sweep: finalizes announce-before-acting
+  // PendingRuleActions once their undo window elapses. Kept frequent by
+  // default — the sweep is cheap (a no-op unless something's actually ready)
+  // and a short cadence keeps the "signal in → ... → window elapses" loop
+  // tight for demo/test purposes. 0 disables.
+  if (config.ruleEngineSweepMs > 0) {
+    const sweepPending = () =>
+      ruleEngine.sweepPendingActions().catch((err) => app.log.warn(`rule engine sweep: ${(err as Error).message}`));
+    await sweepPending();
+    setInterval(sweepPending, Math.max(5_000, config.ruleEngineSweepMs)).unref();
+  }
+
+  // Stall detection: a separate, slower scheduled job (same reaper pattern)
+  // — flags ongoing/review tasks with no signal in stallNudgeHours, escalates
+  // at stallEscalateHours. 0 disables.
+  if (config.stallSweepMs > 0) {
+    const sweepStall = () =>
+      ruleEngine.sweepStallDetection().catch((err) => app.log.warn(`stall detection: ${(err as Error).message}`));
+    await sweepStall();
+    setInterval(sweepStall, Math.max(60_000, config.stallSweepMs)).unref();
+  }
+
+  // TASK 10 — pattern-spotted automation onboarding: scans human Transitions
+  // for a repeated manual move and proposes it as a rule (same reaper
+  // pattern as the sweeps above). Separately, a watch-state rule left
+  // unmodified for a week auto-promotes to live. Both 0 disables.
+  if (config.patternDetectSweepMs > 0) {
+    const sweepPatterns = () =>
+      ruleEngine.sweepPatternDetection().catch((err) => app.log.warn(`pattern detection: ${(err as Error).message}`));
+    await sweepPatterns();
+    setInterval(sweepPatterns, Math.max(60_000, config.patternDetectSweepMs)).unref();
+  }
+  if (config.watchPromoteSweepMs > 0) {
+    const sweepWatchPromotion = () =>
+      ruleEngine.sweepWatchPromotion().catch((err) => app.log.warn(`watch promotion: ${(err as Error).message}`));
+    await sweepWatchPromotion();
+    setInterval(sweepWatchPromotion, Math.max(60_000, config.watchPromoteSweepMs)).unref();
   }
 
   // Telegram messaging bridge + remote kill switch: connects OUT to Telegram

@@ -5,21 +5,34 @@
 
 import type {
   TaskRun,
+  AutonomyBreaker,
+  AutonomyOverride,
   Checkpoint,
   Dependency,
   Feature,
   GithubConnection,
   HitlItem,
+  LogVerb,
   Milestone,
   Module,
+  PendingRuleAction,
+  PendingRuleActionStatus,
   PolicyVersion,
   Project,
   ProjectContextEntry,
+  Proposal,
+  ProposalStatus,
   ProviderInfo,
   Agent,
+  RoadmapDoc,
+  RoadmapLineClaim,
+  RoadmapProposal,
+  RoadmapProposalState,
+  Rule,
   Snapshot,
   SolutionBrief,
   Task,
+  Transition,
   WorkspaceSettings,
 } from "@skynet/shared";
 import type { AuditRecord } from "@skynet/shared";
@@ -40,15 +53,24 @@ export class MemoryStore implements Store {
   protected milestones = new Map<string, Milestone>();
   protected contextEntries = new Map<string, ProjectContextEntry>();
   protected solutionBriefs = new Map<string, SolutionBrief>();
+  protected transitions = new Map<string, Transition>();
+  protected rules = new Map<string, Rule>();
+  protected proposals = new Map<string, Proposal>();
+  protected pendingRuleActions = new Map<string, PendingRuleAction>();
   protected fleet = new Map<string, Agent>();
   protected modules: Module[] = [];
   protected deps: Dependency[] = [];
   protected audit: AuditRecord[] = [];
   protected github = new Map<string, GithubConnection>(); // keyed by workspaceId
   protected workspaceSettings = new Map<string, WorkspaceSettings>(); // keyed by workspaceId
+  protected roadmapDocs = new Map<string, RoadmapDoc>(); // keyed by projectId
+  protected roadmapProposals = new Map<string, RoadmapProposal>();
+  protected roadmapLineClaims = new Map<string, RoadmapLineClaim>(); // keyed by `${projectId}:${lineId}`
   protected policyVersions = new Map<string, PolicyVersion>(); // keyed by id
   protected githubTokens = new Map<string, string>(); // workspaceId → sealed PAT ciphertext
   protected serviceTokens = new Map<string, StoredServiceToken>(); // keyed by id (holds a hash, never the raw token)
+  protected autonomyBreakers = new Map<string, AutonomyBreaker>(); // keyed by projectId
+  protected autonomyOverrides = new Map<string, AutonomyOverride>(); // keyed by projectId
   private providers: ProviderInfo[] = PROVIDERS;
 
   /** Hook called after every mutation. No-op in memory; FileStore overrides it
@@ -72,6 +94,8 @@ export class MemoryStore implements Store {
       modules: this.modules,
       deps: this.deps,
       providers: this.providers,
+      rules: await this.listRulesForWorkspace(workspaceId),
+      proposals: await this.listProposalsForWorkspace(workspaceId),
       serverTime: now(),
     };
   }
@@ -80,9 +104,12 @@ export class MemoryStore implements Store {
   async listAllRuns() { return [...this.runs.values()]; }
   async getRun(id: string) { return this.runs.get(id); }
   async putRun(agent: TaskRun) { this.runs.set(agent.id, agent); this.persist(); return agent; }
-  async appendLog(runId: string, at: number, line: string, detail?: string) {
+  async appendLog(runId: string, at: number, line: string, detail?: string, meta?: { verb?: LogVerb; resultKind?: "ok" | "error" }) {
     const a = this.runs.get(runId);
-    if (a) { a.log.push(detail ? { at, line, detail } : { at, line }); this.persist(); }
+    if (a) {
+      a.log.push({ at, line, ...(detail ? { detail } : {}), ...(meta?.verb ? { verb: meta.verb } : {}), ...(meta?.resultKind ? { resultKind: meta.resultKind } : {}) });
+      this.persist();
+    }
   }
 
   async listCheckpoints(runId: string) {
@@ -126,6 +153,53 @@ export class MemoryStore implements Store {
   async putSolutionBrief(b: SolutionBrief) { this.solutionBriefs.set(b.id, b); this.persist(); return b; }
   async deleteSolutionBrief(id: string) { this.solutionBriefs.delete(id); this.persist(); }
 
+  async createTransition(t: Transition) { this.transitions.set(t.id, t); this.persist(); return t; }
+  async listTransitionsForTask(taskId: string) {
+    return [...this.transitions.values()].filter((t) => t.taskId === taskId).sort((a, b) => a.at - b.at);
+  }
+  async listTransitionsForProject(projectId: string, opts: { since?: number; limit?: number } = {}) {
+    let list = [...this.transitions.values()]
+      .filter((t) => t.projectId === projectId)
+      .sort((a, b) => b.at - a.at); // newest first, matching listAudit's convention
+    if (opts.since != null) list = list.filter((t) => t.at >= opts.since!);
+    if (opts.limit != null) list = list.slice(0, opts.limit);
+    return list;
+  }
+  async listTransitionsForWorkspace(ws: string, opts: { since?: number; limit?: number } = {}) {
+    let list = [...this.transitions.values()]
+      .filter((t) => t.workspaceId === ws)
+      .sort((a, b) => b.at - a.at); // newest first, matching listTransitionsForProject's convention
+    if (opts.since != null) list = list.filter((t) => t.at >= opts.since!);
+    if (opts.limit != null) list = list.slice(0, opts.limit);
+    return list;
+  }
+
+  async getRule(id: string) { return this.rules.get(id); }
+  async putRule(rule: Rule) { this.rules.set(rule.id, rule); this.persist(); return rule; }
+  async deleteRule(id: string) { this.rules.delete(id); this.persist(); }
+  async listRulesForProject(projectId: string) { return [...this.rules.values()].filter((r) => r.projectId === projectId); }
+  async listRulesForWorkspace(ws: string) { return [...this.rules.values()].filter((r) => r.workspaceId === ws); }
+
+  async getProposal(id: string) { return this.proposals.get(id); }
+  async putProposal(proposal: Proposal) { this.proposals.set(proposal.id, proposal); this.persist(); return proposal; }
+  async deleteProposal(id: string) { this.proposals.delete(id); this.persist(); }
+  async listProposalsForProject(projectId: string, opts: { status?: ProposalStatus } = {}) {
+    let list = [...this.proposals.values()].filter((p) => p.projectId === projectId);
+    if (opts.status != null) list = list.filter((p) => p.status === opts.status);
+    return list;
+  }
+  async listProposalsForWorkspace(ws: string) { return [...this.proposals.values()].filter((p) => p.workspaceId === ws); }
+
+  async getPendingRuleAction(id: string) { return this.pendingRuleActions.get(id); }
+  async putPendingRuleAction(action: PendingRuleAction) { this.pendingRuleActions.set(action.id, action); this.persist(); return action; }
+  async deletePendingRuleAction(id: string) { this.pendingRuleActions.delete(id); this.persist(); }
+  async listPendingActionsForProject(projectId: string, opts: { status?: PendingRuleActionStatus } = {}) {
+    let list = [...this.pendingRuleActions.values()].filter((a) => a.projectId === projectId);
+    if (opts.status != null) list = list.filter((a) => a.status === opts.status);
+    return list;
+  }
+  async listAllPendingActions() { return [...this.pendingRuleActions.values()]; }
+
   async listAgents(ws: string) { return [...this.fleet.values()].filter((r) => r.workspaceId === ws); }
   async listAllAgents() { return [...this.fleet.values()]; }
   async getAgent(id: string) { return this.fleet.get(id); }
@@ -167,6 +241,28 @@ export class MemoryStore implements Store {
   async getWorkspaceSettings(ws: string) { return this.workspaceSettings.get(ws); }
   async putWorkspaceSettings(settings: WorkspaceSettings) { this.workspaceSettings.set(settings.workspaceId, settings); this.persist(); }
 
+  async getRoadmapDoc(projectId: string) { return this.roadmapDocs.get(projectId); }
+  async putRoadmapDoc(doc: RoadmapDoc) { this.roadmapDocs.set(doc.projectId, doc); this.persist(); return doc; }
+
+  async getRoadmapProposal(id: string) { return this.roadmapProposals.get(id); }
+  async putRoadmapProposal(proposal: RoadmapProposal) { this.roadmapProposals.set(proposal.id, proposal); this.persist(); return proposal; }
+  async deleteRoadmapProposal(id: string) { this.roadmapProposals.delete(id); this.persist(); }
+  async listRoadmapProposalsForProject(projectId: string, opts: { state?: RoadmapProposalState } = {}) {
+    let list = [...this.roadmapProposals.values()].filter((p) => p.projectId === projectId);
+    if (opts.state != null) list = list.filter((p) => p.state === opts.state);
+    return list;
+  }
+
+  async getRoadmapLineClaim(projectId: string, lineId: string) { return this.roadmapLineClaims.get(`${projectId}:${lineId}`); }
+  async putRoadmapLineClaim(claim: RoadmapLineClaim) {
+    this.roadmapLineClaims.set(`${claim.projectId}:${claim.lineId}`, claim);
+    this.persist();
+    return claim;
+  }
+  async listRoadmapLineClaimsForProject(projectId: string) {
+    return [...this.roadmapLineClaims.values()].filter((c) => c.projectId === projectId);
+  }
+
   async listPolicyVersions(ws: string) {
     return [...this.policyVersions.values()].filter((v) => v.workspaceId === ws).sort((a, b) => b.version - a.version);
   }
@@ -198,4 +294,12 @@ export class MemoryStore implements Store {
     return [...this.serviceTokens.values()].filter((t) => t.principal.workspaceId === ws);
   }
   async deleteServiceToken(id: string) { const had = this.serviceTokens.delete(id); if (had) this.persist(); return had; }
+
+  async getAutonomyBreaker(projectId: string) { return this.autonomyBreakers.get(projectId); }
+  async putAutonomyBreaker(breaker: AutonomyBreaker) { this.autonomyBreakers.set(breaker.projectId, breaker); this.persist(); }
+  async deleteAutonomyBreaker(projectId: string) { this.autonomyBreakers.delete(projectId); this.persist(); }
+
+  async getAutonomyOverride(projectId: string) { return this.autonomyOverrides.get(projectId); }
+  async putAutonomyOverride(override: AutonomyOverride) { this.autonomyOverrides.set(override.projectId, override); this.persist(); }
+  async deleteAutonomyOverride(projectId: string) { this.autonomyOverrides.delete(projectId); this.persist(); }
 }

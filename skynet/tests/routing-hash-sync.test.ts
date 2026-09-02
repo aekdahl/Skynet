@@ -63,6 +63,23 @@ describe("parseHash", () => {
     expect(r?.projectId).toBeUndefined();
   });
 
+  // TASK 21 — a breaker-event source chip's target: the project view with
+  // TASK 19's autonomy dial pre-opened (the dial itself has no route, it's a
+  // modal — see routing.ts's breakerPanelHref).
+  it("recognizes the /autonomy sub-route and flags autonomyOpen", () => {
+    location.hash = "#/project/p-1/autonomy";
+    const r = parseHash();
+    expect(r?.view).toBe("project");
+    expect(r?.projectId).toBe("p-1");
+    expect(r?.autonomyOpen).toBe(true);
+  });
+
+  it("a plain project URL leaves autonomyOpen unset", () => {
+    location.hash = "#/project/p-1";
+    const r = parseHash();
+    expect(r?.autonomyOpen).toBeUndefined();
+  });
+
   it("returns view-only for hashes that don't identify an entity", () => {
     for (const seg of ["queue", "audit", "projects", "settings", "acceptance", "simulation", "roadmap", "integrations"]) {
       location.hash = `#/${seg}`;

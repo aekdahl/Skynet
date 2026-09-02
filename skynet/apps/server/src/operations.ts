@@ -13,6 +13,11 @@
 import type {
   TaskRun,
   AuditRecord,
+  AuditRecordWithActor,
+  AutonomyDetentState,
+  AutonomyOverride,
+  AcceptSubtaskRequest,
+  BacktestRuleRequest,
   Checkpoint,
   CommandPolicy,
   ConfigureRunnerRequest,
@@ -20,13 +25,17 @@ import type {
   CreateMilestoneRequest,
   CreateProjectContextEntryRequest,
   CreateProjectRequest,
+  CreateRuleRequest,
   CreateSolutionBriefRequest,
   CreateTaskRequest,
+  Decision,
   DraftCharterRequest,
   DryRunPolicyRequest,
   Feature,
   FlyDeployment,
   GenerateComplianceReportRequest,
+  GithubSignalKind,
+  GithubSignalPayload,
   HitlItem,
   InformRequest,
   Milestone,
@@ -37,9 +46,22 @@ import type {
   ProjectCharter,
   ProjectQualityResult,
   ProjectContextEntry,
+  Proposal,
   ProviderInfo,
   ResolveRequest,
   Resolution,
+  RoadmapAstNode,
+  RoadmapChecklistItemNode,
+  RoadmapDoc,
+  RoadmapLineClaim,
+  RoadmapProposal,
+  ProposeRoadmapChangeRequest,
+  CommitRoadmapLineEditRequest,
+  RoadmapEditResolveRequest,
+  RoadmapConflictResolveRequest,
+  RoadmapWorkspaceRollup,
+  SourceRef,
+  Rule,
   SavePolicyVersionRequest,
   Agent,
   SignedComplianceReport,
@@ -48,11 +70,13 @@ import type {
   StewardActionOutcome,
   StewardExecutionAction,
   Task,
+  Transition,
   UpdateFeatureRequest,
   UpdateMilestoneRequest,
   UpdateProjectRequest,
   UpdateProjectRoadmapRequest,
   UpdateRunnerRequest,
+  UpdateRuleRequest,
   UpdateSolutionBriefRequest,
   UpdateTaskRequest,
   UpdateWorkspaceSettingsRequest,
@@ -60,6 +84,8 @@ import type {
   SecretMeta,
 } from "@skynet/shared";
 import { modelValidForProvider, ProjectCharter as ProjectCharterSchema, WorkspaceSettings } from "@skynet/shared";
+import { type AutonomyDetent, AUTONOMY_DETENT_COST_WEIGHT, detentFor, fieldsForDetent } from "@skynet/shared";
+import { DraftTaskPayload, SuggestedRulePayload, SuggestedSubtaskPayload } from "@skynet/shared";
 import { buildReplenishPrompt, parseProposedTasks } from "./steward/replenish.js";
 import { DEFAULT_AUTO_MERGE_POLICY } from "./merge-policy.js";
 import { sameTaskText } from "./steward/assistant.js";
@@ -91,19 +117,39 @@ import {
   type ChatTurn,
 } from "./project-assistant.js";
 import { askStewardWorkspace, askStewardWorkspaceStream, askStewardStream, resolveFocusProject } from "./steward/assistant.js";
-import { contentHash, readProjectDoc, resolveRoadmapDoc } from "./steward/docs.js";
+import { contentHash, readProjectDoc, resolveRoadmapDoc, ROADMAP_PATHS } from "./steward/docs.js";
+import { parseRoadmapDoc } from "./roadmap/sync.js";
+import { localRepoHeadSha } from "./roadmap/repo-commit.js";
+import {
+  applyRoadmapProposalDiff,
+  diffRequiresHumanApproval,
+  findOpenProposalForSection,
+  joinProposal,
+  proposalIsStale,
+  proposalsConflict,
+} from "./roadmap/proposals.js";
+import { agentCoAuthor, AUTONOMOUS_APPLY_IDENTITY, operatorGitIdentity } from "./roadmap/attribution.js";
 import { draftBriefFromConversation, summarizeConversation } from "./steward/crystallize.js";
 import { scanRepo } from "./quality/scan.js";
 import { condenseProjectContext } from "./steward/context.js";
 import { prioritizeColumn, suggestAnyAgentEligible } from "./steward/organize.js";
 import { extractText } from "./steward/extract.js";
-import { commitLocalRepoFile } from "./local-repo-write.js";
+import { commitLocalRepoFile, revertCommitInLocalRepo } from "./local-repo-write.js";
+import { enrichRoadmapDocWithBlame } from "./roadmap/enrich.js";
+import { roadmapHistory, type RoadmapHistoryEntry } from "./roadmap/history.js";
+import { computeRollupRow, groupMilestones, pendingProposalCount } from "./roadmap/rollup.js";
+import type { Principal } from "./auth.js";
+import { projectScope } from "./mcp/project-scope.js";
 import { generateSignedComplianceReport } from "./compliance/index.js";
+import { classifyApprover } from "./compliance/report.js";
 import type { CapturedDiff, Hub } from "./hub.js";
 import { CLARIFICATION_ANSWERED_MARKER, NoCapacityError, NothingToReviewError, RunnerNotConfiguredError, TaskAlreadyAssignedError, type Orchestrator } from "./orchestrator.js";
 import { resolveExecutable } from "./steward/execution.js";
 import { secretService, withSecretAvailability } from "./secrets/index.js";
 import type { Store } from "./store/store.js";
+import type { RuleEngine } from "./rules/engine.js";
+import { matchCondition, type EvalContext } from "./rules/engine.js";
+import type { PendingRuleAction, PendingRuleActionStatus } from "@skynet/shared";
 
 /** A referenced entity does not exist (or isn't in the caller's workspace). 404. */
 export class NotFoundError extends Error {
@@ -130,6 +176,37 @@ export class RoadmapConflictError extends Error {
   }
 }
 
+/** A RoadmapProposal isn't `open` — already resolved, or held for a human to
+ *  untangle a conflict (Rule 4). 409. */
+export class RoadmapProposalNotOpenError extends Error {
+  constructor(state: string) {
+    super(`This roadmap proposal is "${state}", not open — nothing left to apply.`);
+    this.name = "RoadmapProposalNotOpenError";
+  }
+}
+
+/** Rule 2: a diff that removes a line or touches a promised date can NEVER be
+ *  applied without an explicit human approver — thrown by
+ *  Operations.applyRoadmapProposal before it even looks at the project's
+ *  autonomy detent, regardless of caller. 403. */
+export class RoadmapProposalNeedsHumanApprovalError extends Error {
+  constructor() {
+    super("This proposal removes content or touches a promised date — it always needs an explicit human approval, at any autonomy detent.");
+    this.name = "RoadmapProposalNeedsHumanApprovalError";
+  }
+}
+
+/** An autonomous (no operatorId) apply attempt on a project not at the
+ *  `unattended` autonomy detent — own-diff auto-merge for a roadmap proposal
+ *  follows the exact same gate as an ordinary agent diff (see
+ *  packages/shared/src/autonomy.ts's `ownDiffAutoMerge`). 403. */
+export class RoadmapProposalAutonomyGateError extends Error {
+  constructor() {
+    super("This project isn't at the Unattended autonomy detent — a human must approve this roadmap proposal.");
+    this.name = "RoadmapProposalAutonomyGateError";
+  }
+}
+
 /** A kanban move that isn't a legal human transition. 400. */
 export class InvalidTransitionError extends Error {
   constructor(from: string, to: string) {
@@ -143,6 +220,26 @@ export class AssignmentRequiredError extends Error {
   constructor() {
     super("Set an agent (any, or specific agents) before moving this task out of backlog.");
     this.name = "AssignmentRequiredError";
+  }
+}
+
+/** A Proposal that's already been accepted or dismissed can't be resolved
+ *  again — the SAME failure mode as re-clicking a stale HITL card. 409. */
+export class ProposalAlreadyResolvedError extends Error {
+  constructor(status: string) {
+    super(`This proposal was already ${status} — nothing left to resolve.`);
+    this.name = "ProposalAlreadyResolvedError";
+  }
+}
+
+/** A command classifies as high-risk/deny and can never become a standing
+ *  "approve always" rule — the same floor rememberApproval's best-effort path
+ *  silently respects, surfaced loudly here since this is an explicit operator
+ *  action (the Keys & Budget panel's "+ add pattern"), not a background write. 422. */
+export class CommandNotRememberableError extends Error {
+  constructor() {
+    super("That command classifies as high-risk (or is denylisted) and can never become a standing auto-approval — it will always gate for a human.");
+    this.name = "CommandNotRememberableError";
   }
 }
 
@@ -170,6 +267,11 @@ export interface OperationsDeps {
   store: Store;
   hub: Hub;
   orchestrator: Orchestrator;
+  /** Momentum Rollout Phase 1b — undoRuleAction delegates here. Optional so
+   *  existing test fakes (which construct Operations without a RuleEngine)
+   *  keep working; undoRuleAction throws a clear error if it's ever called
+   *  without one wired. */
+  ruleEngine?: RuleEngine;
   // Test seam, mirroring Orchestrator's providerOverride/previewOverride: the
   // one-shot consult decomposeBrief uses to turn a brief into a plan. Defaults
   // to the real oneShotText. Injectable because it's a module-level function
@@ -205,6 +307,7 @@ export class Operations {
   private readonly store: Store;
   private readonly hub: Hub;
   private readonly orchestrator: Orchestrator;
+  private readonly ruleEngine?: RuleEngine;
   private readonly decomposeConsult: (opts: { prompt: string; model: string; apiKey?: string | null }) => Promise<string>;
   private readonly crystallizeAsk?: (prompt: string) => Promise<string>;
   private readonly contextAsk?: (prompt: string) => Promise<string>;
@@ -231,6 +334,7 @@ export class Operations {
     this.store = deps.store;
     this.hub = deps.hub;
     this.orchestrator = deps.orchestrator;
+    this.ruleEngine = deps.ruleEngine;
     // The project driver may re-pull a bound source when a board runs dry. It
     // lives on the orchestrator (which ticks) but the pull lives here, so it's
     // injected rather than imported — the orchestrator must not depend on this
@@ -267,7 +371,7 @@ export class Operations {
     question: string,
     history?: ChatTurn[],
     focusProjectId?: string,
-  ): Promise<{ reply: string; actions: AssistantAction[]; projectId: string | null }> {
+  ): Promise<{ reply: string; actions: AssistantAction[]; projectId: string | null; sources: SourceRef[] }> {
     // An explicit page focus wins; otherwise resolve the project from the
     // conversation so the workspace dock can act on it, not just report on it.
     let project = focusProjectId ? await this.store.getProject(focusProjectId) : null;
@@ -278,11 +382,11 @@ export class Operations {
       project = id ? projects.find((p) => p.id === id) ?? null : null;
     }
     if (project) {
-      const { reply, actions } = await answerProjectQuestion(this.store, { workspaceId, project, question, history });
-      return { reply, actions, projectId: project.id };
+      const { reply, actions, sources } = await answerProjectQuestion(this.store, { workspaceId, project, question, history });
+      return { reply, actions, projectId: project.id, sources };
     }
     const { reply, actions } = await askStewardWorkspace(this.store, { workspaceId, question, history });
-    return { reply, actions, projectId: null };
+    return { reply, actions, projectId: null, sources: [] };
   }
 
   /** Streaming form of {@link stewardChat} — yields the reply as text deltas, then
@@ -293,7 +397,7 @@ export class Operations {
     question: string,
     history?: ChatTurn[],
     focusProjectId?: string,
-  ): AsyncGenerator<string, { reply: string; actions: AssistantAction[]; projectId: string | null }> {
+  ): AsyncGenerator<string, { reply: string; actions: AssistantAction[]; projectId: string | null; sources: SourceRef[] }> {
     let project = focusProjectId ? await this.store.getProject(focusProjectId) : null;
     if (project && project.workspaceId !== workspaceId) project = null;
     if (!project) {
@@ -302,11 +406,11 @@ export class Operations {
       project = id ? projects.find((p) => p.id === id) ?? null : null;
     }
     if (project) {
-      const { reply, actions } = yield* askStewardStream(this.store, { workspaceId, project, question, history });
-      return { reply, actions, projectId: project.id };
+      const { reply, actions, sources } = yield* askStewardStream(this.store, { workspaceId, project, question, history });
+      return { reply, actions, projectId: project.id, sources };
     }
     const { reply, actions } = yield* askStewardWorkspaceStream(this.store, { workspaceId, question, history });
-    return { reply, actions, projectId: null };
+    return { reply, actions, projectId: null, sources: [] };
   }
 
   // ── reads (workspace-scoped) ──────────────────────────────────────────────
@@ -378,6 +482,72 @@ export class Operations {
   listHitl(ws: string): Promise<HitlItem[]> {
     return this.store.listQueue(ws);
   }
+
+  /** TASK 15 — every open (unresolved) decision across every project in the
+   *  workspace, joined with the project/task it belongs to and sorted by
+   *  cost-of-waiting (highest first). `store.listQueue`/the bus are already
+   *  workspace-scoped, not project-scoped, so this is a join + sort over data
+   *  that already exists — no new storage. */
+  async listDecisions(ws: string): Promise<Decision[]> {
+    const [queue, tasks, projects, runs] = await Promise.all([
+      this.store.listQueue(ws),
+      this.store.listTasks(ws),
+      this.store.listProjects(ws),
+      this.store.listRuns(ws),
+    ]);
+    const projectById = new Map(projects.map((p) => [p.id, p]));
+    const runById = new Map(runs.map((r) => [r.id, r]));
+    const taskByRunId = new Map(tasks.filter((t): t is Task & { runId: string } => !!t.runId).map((t) => [t.runId, t]));
+    const nowTs = now();
+    const decisions: Decision[] = [];
+    for (const item of queue) {
+      if (item.resolution !== null) continue; // only open decisions belong on this list
+      // Every OTHER kind has a real run behind it (HitlItem.runId is
+      // required, never null) — a `roadmap_edit` item is the one exception
+      // (TASK 30: no TaskRun behind a roadmap proposal), resolved via its
+      // own `projectId` instead of through a run. Skip defensively rather
+      // than throw if the run/project a normal item pointed to was since
+      // deleted, so one dangling item can't 500 the list.
+      const run = runById.get(item.runId);
+      const project = item.kind === "roadmap_edit" && item.projectId ? projectById.get(item.projectId) : run ? projectById.get(run.projectId) : undefined;
+      if (!project) continue;
+      if (item.kind !== "roadmap_edit" && !run) continue;
+      // TASK 19 — weight by the project's composed autonomy detent: a
+      // higher notch means less human attention is already in the loop, so
+      // an open decision idling there costs more, not less.
+      const weight = AUTONOMY_DETENT_COST_WEIGHT[detentFor(project)];
+      decisions.push({
+        ...item,
+        projectId: project.id,
+        projectName: project.name,
+        taskTitle: run ? (taskByRunId.get(item.runId)?.text ?? null) : null,
+        costOfWaiting: (nowTs - item.raisedAt) * weight,
+      });
+    }
+    decisions.sort((a, b) => b.costOfWaiting - a.costOfWaiting);
+    return decisions;
+  }
+
+  /** Every provider key currently out of credits/quota for the workspace — the
+   *  fleet-level banner's one source, distinct from the per-run billing
+   *  escalation each affected run still separately raises (Orchestrator.
+   *  tripKeyBreaker). Thin passthrough; the breaker state lives on the
+   *  Orchestrator (in-memory, per-process — same footing as the autonomy
+   *  streak counter before TASK 19 made it durable). */
+  listDepletedKeys(ws: string): { credentialId: string; reason: string; at: number }[] {
+    return this.orchestrator.listDepletedKeys(ws);
+  }
+
+  /** Remote kill switch, exposed to the web app (Telegram's `/stop` already
+   *  called `orchestrator.stopAll` directly — this is the same call, reached
+   *  from the command palette's "Pause the whole fleet" action instead of a
+   *  chat command). Genuinely global (every workspace, per `stopAll`'s own
+   *  doc comment) — pauses autonomy AND halts every in-flight run. Returns
+   *  how many runs were actually stopped. */
+  async stopAllRuns(operatorId: string): Promise<number> {
+    return this.orchestrator.stopAll(`command palette — ${operatorId}`);
+  }
+
   /** Fetch ONE HITL item scoped to the workspace, or throw NotFoundError (404)
    *  — the full-record counterpart to a summarized queue listing (the MCP
    *  list_hitl → get_hitl drill-in). */
@@ -386,8 +556,16 @@ export class Operations {
     if (!item || item.workspaceId !== ws) throw new NotFoundError("HITL item");
     return item;
   }
-  listAudit(ws: string): Promise<AuditRecord[]> {
-    return this.store.listAudit(ws);
+  /** GET /api/audit's rows — the stored trail plus `actorType` (TASK 21),
+   *  computed at response time via classifyApprover (compliance/report.ts) —
+   *  the SAME classifier the evidence pack uses, not a second one. Joins in
+   *  each record's task (by runId) so an "autonomy" operatorId resolves to
+   *  the real reviewing agent/reason, same as classifyApprover already does
+   *  for the compliance report. */
+  async listAudit(ws: string): Promise<AuditRecordWithActor[]> {
+    const [records, tasks] = await Promise.all([this.store.listAudit(ws), this.store.listTasks(ws)]);
+    const taskByRunId = new Map(tasks.filter((t) => t.runId).map((t) => [t.runId as string, t]));
+    return records.map((r) => ({ ...r, actorType: classifyApprover(r.operatorId, taskByRunId.get(r.runId)).approverType }));
   }
 
   // ── audit maintenance (archive/restore + delete, per-record and bulk) ─────
@@ -643,6 +821,21 @@ export class Operations {
   async resolveHitl(ws: string, hitlId: string, input: ResolveRequest, operatorId: string): Promise<HitlItem> {
     const item = await this.store.getHitl(hitlId);
     if (!item || item.workspaceId !== ws) throw new NotFoundError("HITL item");
+    // TASK 30 — a roadmap_edit gate has no live agent/run behind it, so it
+    // never goes through orchestrator.deliver() (which assumes one) — this
+    // branches off before any of that machinery, straight to the real
+    // commit path (Operations.applyRoadmapProposal). A held_conflict pair's
+    // richer choose/write_own actions don't fit ResolveRequest's shape at
+    // all — those go through the dedicated resolveRoadmapConflict instead,
+    // never here (see the web card's/Telegram's own action wiring).
+    if (item.kind === "roadmap_edit") {
+      if (input.action !== "approve" && input.action !== "reject") {
+        throw new Error(
+          `A roadmap proposal can only be approved or rejected here (got "${input.action}") — a held_conflict pair resolves via a different action.`,
+        );
+      }
+      return await this.resolveRoadmapEditHitl(ws, item, input.action, operatorId);
+    }
     // A catastrophic command can NEVER be approved, even if an operator
     // fat-fingers "approve" on the gate — re-validate the command against the
     // denylist server-side and refuse before recording any decision. GATE-risk
@@ -966,6 +1159,12 @@ export class Operations {
       budgetPacing: input.budgetPacing ?? false,
       approvalLevel: input.approvalLevel ?? config.defaultApprovalLevel,
       approvalRules: [],
+      // No standing "always gate" overrides at creation — set later. See
+      // Project.alwaysGateCommands.
+      alwaysGateCommands: [],
+      // "Boundaries set once" default for a NEW automation rule's safety
+      // rails — set later. See Project.ruleSafetyDefaults.
+      ruleSafetyDefaults: { announceBeforeActing: true, undoWindowMin: 10, pauseAfterUndos: 3, excludePriorities: [] },
       // Plan-mode gating is off by default — set later in project settings.
       planModeGate: false,
       // No tool restriction at creation — set later in project settings.
@@ -1009,13 +1208,28 @@ export class Operations {
       // the operator pastes/uploads something.
       contextSummary: null,
       contextSummaryUpdatedAt: null,
+      // TASK 14 (Phase 11) — the new board is now the default for every
+      // freshly-created project (see Project.newBoardEnabled's own comment
+      // for the documented rollout/removal criteria). Still per-project, not
+      // global: an operator can flip it off in settings for a project that
+      // genuinely needs the old board, and every EXISTING project keeps
+      // whatever value it already had — this only changes what a NEW project
+      // starts with.
+      newBoardEnabled: true,
+      queuedWipLimit: null,
     };
     const created = await this.hub.upsertProject(project);
+    // A brand-new workspace's first-ever project isn't covered by the rule
+    // engine's boot-time scan (RuleEngine.start() only saw whatever projects
+    // already existed at server start) — without this, that workspace's
+    // rules/proposals/transitions would silently never react to anything
+    // until the next restart. Safe no-op if already subscribed.
+    this.ruleEngine?.ensureSubscribed(ws);
     this.maybeAutoClone(ws, created);
     this.maybeAutoImportIssues(ws, created, input.importGithubIssues);
     return created;
   }
-  async updateProject(ws: string, id: string, patch: UpdateProjectRequest): Promise<Project> {
+  async updateProject(ws: string, id: string, patch: UpdateProjectRequest, operatorId: string): Promise<Project> {
     const existing = await this.store.getProject(id);
     if (!existing || existing.workspaceId !== ws) throw new NotFoundError("Project");
     // Rebinding the local folder recomputes git-backing (null clears it).
@@ -1049,11 +1263,80 @@ export class Operations {
     this.maybeAutoClone(ws, updated); // binding a repo on a server clones it
     // Re-enabling autonomy (whether the operator turned it off themselves, or
     // the session circuit-breaker did) starts the streak fresh — otherwise an
-    // already-at-threshold in-memory count could re-trip on the very next bad
-    // outcome instead of giving the project a clean run.
-    if (patch.autonomy === true) this.orchestrator.resetAutonomyStreak(id);
+    // already-tripped persisted breaker could re-trip on the very next bad
+    // outcome instead of giving the project a clean run. Also cancels any
+    // pending override (see Orchestrator.clearAutonomyBreaker) — a fresh
+    // manual "on" decision supersedes an earlier bypass either way.
+    if (patch.autonomy === true) await this.orchestrator.resetAutonomyStreak(updated, operatorId);
     return updated;
   }
+  /** TASK 19 — the composite autonomy dial: notch + underlying fields +
+   *  persisted breaker/override, everything the dial + breaker panel render
+   *  in one round trip. */
+  async getAutonomyDetent(ws: string, id: string): Promise<AutonomyDetentState> {
+    const project = await this.store.getProject(id);
+    if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
+    const [breaker, override] = await Promise.all([
+      this.store.getAutonomyBreaker(id),
+      this.store.getAutonomyOverride(id),
+    ]);
+    return {
+      detent: detentFor(project),
+      autonomy: project.autonomy,
+      approvalLevel: project.approvalLevel,
+      maxConsecutiveFailures: config.autonomyMaxConsecutiveFailures,
+      breaker: breaker ?? null,
+      override: override ?? null,
+    };
+  }
+
+  /** Set the dial to a target notch — atomically writes both underlying
+   *  fields (see fieldsForDetent) through the same path a manual PATCH does,
+   *  so it gets the same streak-reset-on-re-enable + override-cancel
+   *  behavior for free (see updateProject). */
+  async setAutonomyDetent(ws: string, id: string, detent: AutonomyDetent, operatorId: string): Promise<Project> {
+    return this.updateProject(ws, id, fieldsForDetent(detent), operatorId);
+  }
+
+  /** The project's local merge queue (Review & Merge, Phase 15) — see
+   *  Orchestrator.mergeQueueSnapshot's own doc comment. Empty array (not an
+   *  error) for a project with no local git backend. */
+  async getMergeQueue(ws: string, id: string): Promise<Array<{ runId: string; position: number; mode: "human" | "auto"; reason: string | null }>> {
+    const project = await this.store.getProject(id);
+    if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
+    return this.orchestrator.mergeQueueSnapshot(project);
+  }
+
+  /** "OVERRIDE — I'LL WATCH IT": a temporary manual bypass of a tripped
+   *  breaker. Turns autonomy back on immediately; sweepAutonomyOverrides
+   *  (orchestrator.ts) reverts it at expiry unless a real lift already
+   *  cleared the breaker by then. */
+  async createAutonomyOverride(ws: string, id: string, operatorId: string): Promise<AutonomyOverride> {
+    const project = await this.store.getProject(id);
+    if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
+    const at = now();
+    const override: AutonomyOverride = {
+      projectId: id,
+      overriddenBy: operatorId,
+      overriddenAt: at,
+      expiresAt: at + config.autonomyOverrideDurationMs,
+    };
+    await this.hub.putAutonomyOverride(ws, override);
+    if (!project.autonomy) await this.hub.upsertProject({ ...project, autonomy: true });
+    await this.store
+      .recordAudit({
+        workspaceId: ws,
+        hitlId: this.uid("q-autonomy-override"),
+        runId: "none",
+        action: "autonomy-override-created",
+        operatorId,
+        at,
+        payload: { expiresAt: override.expiresAt },
+      })
+      .catch(() => undefined);
+    return override;
+  }
+
   /** Remove one standing "approve always" rule from a project (the operator
    *  revoking a previously-remembered auto-approval). No-op if it's already gone. */
   async removeApprovalRule(ws: string, id: string, ruleId: string): Promise<Project> {
@@ -1061,6 +1344,28 @@ export class Operations {
     if (!existing || existing.workspaceId !== ws) throw new NotFoundError("Project");
     const approvalRules = (existing.approvalRules ?? []).filter((r) => r.id !== ruleId);
     return this.hub.upsertProject({ ...existing, approvalRules });
+  }
+  /**
+   * Add a standing "approve always" rule directly (the Keys & Budget panel's
+   * "+ add pattern" — not the HITL "remember" checkbox, see rememberApproval,
+   * though both read/write the identical `Project.approvalRules` field, so a
+   * pattern added either way shows up in both places with no reload). The
+   * risk cap is DERIVED from the live classifier (rememberableRisk), never
+   * client-supplied. Throws (rather than rememberApproval's silent no-op)
+   * since this is an explicit operator action, not a best-effort background
+   * write — the operator should know immediately if what they typed can
+   * never be remembered. Idempotent: re-adding an already-standing command
+   * is a no-op, not a duplicate row.
+   */
+  async addApprovalRule(ws: string, id: string, command: string, operatorId: string): Promise<Project> {
+    const existing = await this.store.getProject(id);
+    if (!existing || existing.workspaceId !== ws) throw new NotFoundError("Project");
+    const cap = rememberableRisk(command, await resolveActivePolicy(this.store, ws));
+    if (!cap) throw new CommandNotRememberableError();
+    const norm = normalizeCommand(command);
+    if (existing.approvalRules.some((r) => normalizeCommand(r.command) === norm)) return existing; // already standing
+    const rule = { id: this.uid("ar"), command: norm, riskCap: cap, createdBy: operatorId, createdAt: now() };
+    return this.hub.upsertProject({ ...existing, approvalRules: [...existing.approvalRules, rule] });
   }
   /**
    * A repo-bound project with no local checkout is cloned in the BACKGROUND so
@@ -1158,6 +1463,11 @@ export class Operations {
       // Ordering intent starts empty — only a brief decomposition (S7) sets
       // this, at creation time, directly (bypassing this generic constructor).
       dependsOnTaskIds: [],
+      // No subtask relation at creation, UNLESS this task is being created AS
+      // a subtask (see CreateTaskRequest.parentTaskId's own comment) — the
+      // ordinary case still sets this later, if ever, via updateTask.
+      parentTaskId: input.parentTaskId ?? null,
+      priority: null,
       lint: null,
       // Start-picker preference starts unset — plain auto-pick until an operator
       // saves one via updateTask.
@@ -1344,6 +1654,53 @@ export class Operations {
       created++;
     }
     return { created };
+  }
+
+  /**
+   * Momentum Rollout, phase 1a: resolve an already-parsed PR/review/check/
+   * deploy webhook signal (github/webhook.ts's `parseGithubSignal`) to the
+   * task it's about and publish it onto that task's workspace bus. This
+   * phase's job stops at verify → parse → resolve → publish — TASK 02's rule
+   * engine subscribes to `github.signal` and is the one that turns it into a
+   * persisted Transition; nothing here writes one.
+   *
+   * No workspace context arrives with a webhook (same shape as
+   * handleGithubIssueEvent above), so resolution fans out:
+   *   - PR-keyed signals (pull_request, pull_request_review, a check_run with
+   *     a linked PR) look up the TaskRun whose OWN `pr.repo`+`pr.number`
+   *     matches — that linkage is already established the moment a run's
+   *     diff is approved and its PR opens (TaskRun.pr), so this reuses it
+   *     rather than inventing a second one.
+   *   - deployment_status carries no PR number, only a ref — resolved by
+   *     repo+branch instead (Project.repo to find candidate projects, then
+   *     TaskRun.branch within them).
+   * A signal that can't be resolved to a task (a PR/branch Skynet never
+   * opened, or the owning task's run was later detached) is a silent no-op —
+   * the caller acks 202 either way, matching the route's "never error a
+   * webhook GitHub might disable" contract.
+   */
+  async publishGithubSignal(input: {
+    repo: string;
+    kind: GithubSignalKind;
+    payload: GithubSignalPayload;
+    prNumber?: number;
+    branch?: string;
+  }): Promise<{ published: boolean }> {
+    let run: TaskRun | undefined;
+    if (input.prNumber != null) {
+      run = (await this.store.listAllRuns()).find((r) => r.pr?.repo === input.repo && r.pr.number === input.prNumber);
+    } else if (input.branch != null) {
+      const projects = (await this.store.listAllProjects()).filter((p) => p.repo === input.repo);
+      for (const project of projects) {
+        run = (await this.store.listRuns(project.workspaceId)).find((r) => r.projectId === project.id && r.branch === input.branch);
+        if (run) break;
+      }
+    }
+    if (!run) return { published: false };
+    const task = (await this.store.listTasks(run.workspaceId)).find((t) => t.runId === run!.id);
+    if (!task) return { published: false };
+    this.hub.publishGithubSignal(run.workspaceId, task.id, input.kind, input.payload);
+    return { published: true };
   }
 
   /** Import a repo file's OPEN checklist items (`- [ ] …`) as backlog tasks, each
@@ -1732,6 +2089,7 @@ export class Operations {
       );
       if (open) {
         await this.resolveHitl(ws, open.id, { action: "approve" }, operatorId);
+        await this.recordHumanTransition(ws, task, to, operatorId);
         return (await this.store.getTask(tid)) ?? task;
       }
     }
@@ -1750,28 +2108,18 @@ export class Operations {
     if (preserveWork && task.runId) {
       await this.orchestrator.pauseRun(task.runId).catch(() => undefined);
     } else if (abandonsRun && task.runId) {
-      await this.orchestrator.stopAgent(task.runId, "task moved off the run by an operator").catch(() => undefined);
-      await this.hub.setRunArchived(task.runId, true).catch(() => undefined);
-      // Any HITL gate still open for this run (e.g. a diff/verifier/approval
-      // gate raised while it was ongoing/review) is now unanswerable — the run
+      // Kanban redesign, stage 1: retireRun is the shared "this run is over"
+      // teardown — stop, retire the worktree, archive, mark terminal, and
+      // dismiss every HITL gate still open for it (a diff/verifier/approval
+      // gate raised while it was ongoing/review is now unanswerable — the run
       // is stopped and the task is starting fresh elsewhere, so leaving the
-      // card would strand it in the Inbox pointing at dead work. Dismissed
-      // directly via the Hub (not Operations.resolveHitl, which calls
-      // orchestrator.deliver — meaningless for a handle stopAgent just tore
-      // down), same lower-level pattern settleArchivedRun uses for the
-      // direct-archive path. This path can't reuse settleArchivedRun wholesale:
-      // it deliberately keeps the worktree (reversible archive), while an
-      // abandoned kanban move is a genuine "start over," correctly retired via
-      // stopAgent above.
-      const open = (await this.store.listQueue(ws)).filter((h) => h.runId === task.runId && !h.resolvedAt);
-      for (const h of open) {
-        await this.hub
-          .resolveHitl(h.id, {
-            action: "dismiss", by: operatorId, at: now(), optionIndex: null, guidance: null,
-            targetBranch: null, memoryNote: null, resetWork: false,
-          })
-          .catch(() => undefined);
-      }
+      // card would strand it in the Inbox pointing at dead work). `unstrand:
+      // false` because THIS function already knows the operator's chosen
+      // destination column (`to`, below) — which may not be `todo` (the
+      // done→triage/backlog demotion case) — and writes the task itself.
+      await this.orchestrator
+        .retireRun(task.runId, "task moved off the run by an operator", { by: operatorId, unstrand: false })
+        .catch(() => undefined);
     }
 
     const updated = await this.hub.upsertTask({
@@ -1791,7 +2139,34 @@ export class Operations {
     if (to === "done" && !abandonsRun && updated.runId) {
       await this.hub.runStatus(updated.runId, "done").catch(() => undefined);
     }
+    await this.recordHumanTransition(ws, task, to, operatorId);
     return updated;
+  }
+
+  /** Append-only Transition record (kanban.ts) for a HUMAN-driven kanban
+   *  move — transitionTask's own `task.state === to` no-op guard means this
+   *  is only ever called on a genuine move. Mirrors the rule engine's own
+   *  recordTransition calls (rules/engine.ts) but with `actor: "human"` and
+   *  `ruleId: null`, so a project's Transition feed — and anything reading
+   *  it (the Momentum Board's automation pill "% touched by hand", a task's
+   *  own trail) — actually reflects human moves, not just rule/orchestrator
+   *  ones. Best-effort: never blocks the move itself. */
+  private async recordHumanTransition(ws: string, task: Task, to: Task["state"], operatorId: string): Promise<void> {
+    await this.hub
+      .recordTransition({
+        id: this.uid("tr"),
+        workspaceId: ws,
+        projectId: task.projectId,
+        taskId: task.id,
+        from: task.state,
+        to,
+        actor: "human",
+        actorId: operatorId,
+        ruleId: null,
+        evidence: [],
+        at: now(),
+      })
+      .catch(() => undefined);
   }
 
   /**
@@ -1821,10 +2196,24 @@ export class Operations {
     projectId: string,
     action: StewardExecutionAction,
     operatorId: string,
-    opts: { dryRun?: boolean } = {},
+    opts: { dryRun?: boolean; onlyIndices?: number[] } = {},
   ): Promise<StewardActionOutcome> {
     const project = await this.getProject(ws, projectId); // throws NotFoundError
     const dryRun = opts.dryRun ?? false;
+    // TASK 21 — "JUST #01"-style partial acceptance: `queue_tasks`,
+    // `start_feature`, and `process_backlog` each resolve a BATCH of tasks
+    // and previously ran all-or-nothing (no way to act on only some of them).
+    // `onlyIndices` narrows that batch, BEFORE resolveExecutable runs, to the
+    // 0-indexed positions the caller picked — same ordering the caller's own
+    // dry-run preview showed, so "#01" in the UI is exactly index 0 here.
+    // Filtering before resolveExecutable (not after) means the excluded list
+    // only ever reports on what was actually requested — an unselected item
+    // is simply never considered, not misreported as "excluded".
+    const onlyIndices = opts.onlyIndices;
+    const pick = <T,>(items: T[]): T[] =>
+      onlyIndices && onlyIndices.length > 0
+        ? onlyIndices.map((i) => items[i]).filter((x): x is T => x !== undefined)
+        : items;
     // `operatorId` isn't consumed yet — each started/queued task's own
     // record (its run, or its state change) is today's audit trail; kept in
     // the signature since S11/S12 (Telegram/MCP callers) already have one
@@ -1867,13 +2256,14 @@ export class Operations {
 
       case "queue_tasks": {
         const all = await this.store.listTasks(ws);
-        const found = action.taskIds
+        const taskIds = pick(action.taskIds);
+        const found = taskIds
           .map((id) => all.find((t) => t.id === id && t.projectId === projectId))
           .filter((t): t is Task => !!t);
         // An id that doesn't resolve (wrong project, or doesn't exist) never
         // silently drops — reported the same way an in-scope but unstartable
         // task is, so the caller's count always adds up.
-        const unknown = action.taskIds.filter((id) => !found.some((t) => t.id === id));
+        const unknown = taskIds.filter((id) => !found.some((t) => t.id === id));
         const runs = await this.store.listRuns(ws);
         const { eligible, excluded } = resolveExecutable(project, found, runs, { atMs: now() });
         const allExcluded = [...excluded, ...unknown.map((taskId) => ({ taskId, reason: "not-in-scope" as const }))];
@@ -1886,7 +2276,7 @@ export class Operations {
         const feature = await this.store.getFeature(action.featureId);
         if (!feature || feature.workspaceId !== ws || feature.projectId !== projectId) throw new NotFoundError("Feature");
         const all = await this.store.listTasks(ws);
-        const tasks = all.filter((t) => t.featureId === feature.id);
+        const tasks = pick(all.filter((t) => t.featureId === feature.id));
         const runs = await this.store.listRuns(ws);
         const { eligible, excluded } = resolveExecutable(project, tasks, runs, {
           feasibleOnly: action.feasibleOnly,
@@ -1939,8 +2329,8 @@ export class Operations {
 
       case "process_backlog": {
         const all = await this.store.listTasks(ws);
-        const tasks = all.filter(
-          (t) => t.projectId === projectId && (t.state === "backlog" || t.state === "triage" || t.state === "todo"),
+        const tasks = pick(
+          all.filter((t) => t.projectId === projectId && (t.state === "backlog" || t.state === "triage" || t.state === "todo")),
         );
         const runs = await this.store.listRuns(ws);
         const { eligible, excluded } = resolveExecutable(project, tasks, runs, {
@@ -2067,6 +2457,297 @@ export class Operations {
     await this.orchestrator.reassignRunToAgent(task.runId, targetAgentId);
   }
 
+  /** Momentum Rollout Phase 1b — cancel a rule engine action within its
+   *  undo window: a still-pending (announce-before-acting) action simply
+   *  never applies; a just-finalized one has its task move reverted.
+   *  Either way bumps the rule's undo count and may auto-pause it. Throws
+   *  NotFoundError (workspace-scoped) or the RuleEngine's own honest reason
+   *  (already undone / window passed). */
+  async undoRuleAction(ws: string, pendingId: string, operatorId: string): Promise<PendingRuleAction> {
+    if (!this.ruleEngine) throw new Error("The rule engine isn't enabled on this server.");
+    const pending = await this.store.getPendingRuleAction(pendingId);
+    if (!pending || pending.workspaceId !== ws) throw new NotFoundError("Pending rule action");
+    return this.ruleEngine.undo(pendingId, operatorId);
+  }
+
+  /** Activity Feed (Phase 6b): which of a project's rule-engine actions are
+   *  still cancellable — a row's "undo · Xm left" is only rendered for a
+   *  FINALIZED action (it has a real Transition to show), matched back to
+   *  its Transition via `PendingRuleAction.transitionId`. Workspace-scoped
+   *  read, same shape as listTransitionsForProject. */
+  async listPendingActionsForProject(ws: string, projectId: string, opts: { status?: PendingRuleActionStatus } = {}): Promise<PendingRuleAction[]> {
+    const project = await this.store.getProject(projectId);
+    if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
+    return this.store.listPendingActionsForProject(projectId, opts);
+  }
+
+  /** TASK 13 hardening — the Activity Feed's "retry" action on a
+   *  `status:"failed"` row. Scope-checks both the rule and task belong to
+   *  this workspace before delegating to the engine (getRule/getTask already
+   *  throw NotFoundError on a workspace mismatch — nothing extra needed here). */
+  async retryFailedAction(ws: string, ruleId: string, taskId: string): Promise<Task> {
+    if (!this.ruleEngine) throw new Error("The rule engine isn't enabled on this server.");
+    await this.getRule(ws, ruleId);
+    await this.getTask(ws, taskId);
+    return this.ruleEngine.retryFailedAction(ruleId, taskId);
+  }
+
+  // ── rules (Momentum Rollout Phase 1c — CRUD) ─────────────────────────────
+  /** Fetch one rule scoped to the workspace, or throw NotFoundError (404). */
+  async getRule(ws: string, ruleId: string): Promise<Rule> {
+    const rule = await this.store.getRule(ruleId);
+    if (!rule || rule.workspaceId !== ws) throw new NotFoundError("Rule");
+    return rule;
+  }
+
+  async listRules(ws: string, projectId: string): Promise<Rule[]> {
+    await this.getProject(ws, projectId);
+    return this.store.listRulesForProject(projectId);
+  }
+
+  async createRule(ws: string, projectId: string, req: CreateRuleRequest): Promise<Rule> {
+    await this.getProject(ws, projectId);
+    const createdAt = now();
+    const state = req.state ?? "live";
+    const rule: Rule = {
+      id: this.uid("rule"),
+      workspaceId: ws,
+      projectId,
+      name: req.name,
+      when: req.when,
+      conditions: req.conditions,
+      actions: req.actions,
+      safety: req.safety ?? { announceBeforeActing: true, undoWindowMin: 10, pauseAfterUndos: 3, excludePriorities: [] },
+      stats: { moves: 0, undos: 0, watchMatches: 0 },
+      state,
+      pausedReason: null,
+      createdAt,
+      // TASK 10 — a rule created straight into watch starts its promotion
+      // clock immediately, same as one that enters watch via updateRule.
+      watchStartedAt: state === "watch" ? createdAt : null,
+      updatedAt: createdAt,
+      archived: false,
+    };
+    return this.hub.upsertRule(rule);
+  }
+
+  async updateRule(ws: string, ruleId: string, req: UpdateRuleRequest): Promise<Rule> {
+    const rule = await this.getRule(ws, ruleId);
+    const enteringWatch = req.state === "watch" && rule.state !== "watch";
+    const leavingWatch = req.state !== undefined && req.state !== "watch" && rule.state === "watch";
+    return this.hub.upsertRule({
+      ...rule,
+      ...(req.name !== undefined ? { name: req.name } : {}),
+      ...(req.when !== undefined ? { when: req.when } : {}),
+      ...(req.conditions !== undefined ? { conditions: req.conditions } : {}),
+      ...(req.actions !== undefined ? { actions: req.actions } : {}),
+      ...(req.safety !== undefined ? { safety: req.safety } : {}),
+      // A human explicitly choosing a new state here always clears
+      // `pausedReason` — that field only ever means "the auto-breaker did
+      // this", per Rule's own doc comment, and a fresh human decision
+      // supersedes whatever tripped it before.
+      ...(req.state !== undefined ? { state: req.state, pausedReason: null } : {}),
+      ...(req.archived !== undefined ? { archived: req.archived } : {}),
+      // TASK 10 — restart the promotion clock on every fresh entry into
+      // watch, clear it the moment the rule leaves watch either direction.
+      ...(enteringWatch ? { watchStartedAt: now() } : {}),
+      ...(leavingWatch ? { watchStartedAt: null } : {}),
+      // Any explicit edit counts as "touched" for sweepWatchPromotion's
+      // unmodified-for-a-week check — including a state-only change (an
+      // operator manually flipping watch→live IS a deliberate decision, so
+      // there's nothing left for the auto-promotion sweep to do anyway).
+      updatedAt: now(),
+    });
+  }
+
+  async deleteRule(ws: string, ruleId: string): Promise<void> {
+    await this.getRule(ws, ruleId); // scope check
+    await this.hub.deleteRule(ruleId);
+  }
+
+  /** Rail Graph's "pause rules" action (TASK 12, Phase 11): bulk-pauses every
+   *  LIVE rule for a project in one call, rather than the client looping N
+   *  individual PATCHes (N separate confirmations of the same intent, N
+   *  separate live WS events for what is really one operator decision).
+   *  Watch/already-paused rules are left untouched — nothing for this action
+   *  to do to them. `pausedReason: null` matches updateRule's own convention:
+   *  that field means "the auto-breaker did this", never a human's own
+   *  explicit pause (see Rule's doc comment). Returns exactly the rules this
+   *  call actually paused, so the caller can report a real count. */
+  async pauseAllRules(ws: string, projectId: string): Promise<Rule[]> {
+    await this.getProject(ws, projectId);
+    const live = (await this.store.listRulesForProject(projectId)).filter((r) => r.state === "live");
+    return Promise.all(live.map((r) => this.hub.upsertRule({ ...r, state: "paused", pausedReason: null, updatedAt: now() })));
+  }
+
+  /** Replay a DRAFT (not-yet-saved) rule's conditions against the project's
+   *  historical Transition log — reuses the exact `matchCondition` the live
+   *  engine dispatches through (rules/engine.ts), so this can never disagree
+   *  with what the real engine would do for the same conditions. Per-task
+   *  `lastSignalAt` is the previous transition on that same task (or the
+   *  transition's own time, for a task's first recorded transition) — a
+   *  reasonable historical stand-in for the live engine's own
+   *  last-real-signal lookup, not an exact replay of it (see EvalContext's
+   *  own doc comment on why `event` is always null here). */
+  async backtestRule(ws: string, projectId: string, req: BacktestRuleRequest): Promise<{ wouldHaveMoved: number; sample: Transition[] }> {
+    await this.getProject(ws, projectId);
+    const transitions = await this.store.listTransitionsForProject(projectId);
+    const tasks = await this.store.listTasks(ws);
+    const taskById = new Map(tasks.map((t) => [t.id, t]));
+    const chronological = [...transitions].sort((a, b) => a.at - b.at);
+    const lastSeenByTask = new Map<string, number>();
+    const matched: Transition[] = [];
+    for (const t of chronological) {
+      const lastSignalAt = lastSeenByTask.get(t.taskId) ?? t.at;
+      lastSeenByTask.set(t.taskId, t.at);
+      const task = taskById.get(t.taskId);
+      if (!task) continue; // task since deleted — nothing left to evaluate against
+      const ctx: EvalContext = { task: { ...task, state: t.to }, event: null, now: t.at, lastSignalAt };
+      if (req.conditions.every((c) => matchCondition(c, ctx))) matched.push(t);
+    }
+    matched.reverse(); // newest-first, matching listTransitionsForProject's own convention
+    return { wouldHaveMoved: matched.length, sample: matched.slice(0, 20) };
+  }
+
+  // ── transitions (Momentum Rollout Phase 1c — read) ───────────────────────
+  async listTransitionsForTask(ws: string, taskId: string): Promise<Transition[]> {
+    await this.getTask(ws, taskId);
+    return this.store.listTransitionsForTask(taskId);
+  }
+
+  async listTransitionsForProject(ws: string, projectId: string, opts: { since?: number; limit?: number } = {}): Promise<Transition[]> {
+    await this.getProject(ws, projectId);
+    return this.store.listTransitionsForProject(projectId, opts);
+  }
+
+  /** Momentum Rollout Phase 22 (Home rebuild) — the cross-project read a
+   *  per-project page has no need for (BoardHealth fetches per-project via
+   *  listTransitionsForProject above); Home's automation-rate/stalled-count
+   *  stats need the workspace's FULL transition history, not one project's. */
+  async listTransitionsForWorkspace(ws: string, opts: { since?: number; limit?: number } = {}): Promise<Transition[]> {
+    return this.store.listTransitionsForWorkspace(ws, opts);
+  }
+
+  // ── proposals (Momentum Rollout Phase 1c — accept / dismiss) ────────────
+  /** Fetch one proposal scoped to the workspace, or throw NotFoundError (404). */
+  async getProposal(ws: string, proposalId: string): Promise<Proposal> {
+    const proposal = await this.store.getProposal(proposalId);
+    if (!proposal || proposal.workspaceId !== ws) throw new NotFoundError("Proposal");
+    return proposal;
+  }
+
+  /** `opts.activate` only matters for a `suggested_rule` proposal (every
+   *  other kind ignores it): true is the pattern-onboarding card's "TURN IT
+   *  ON" action — creates the Rule straight into `state:"live"` instead of
+   *  the default `"watch"` (the onboarding card's "WATCH FIRST" action is
+   *  just a plain accept, `activate` omitted/false). Defaulting to false
+   *  keeps every existing caller's behavior — including SuggestedRulePayload's
+   *  own doc comment ("watch, never live") — unchanged. */
+  async acceptProposal(ws: string, projectId: string, proposalId: string, opts: { activate?: boolean } = {}): Promise<Proposal> {
+    const proposal = await this.getProposal(ws, proposalId);
+    if (proposal.projectId !== projectId) throw new NotFoundError("Proposal");
+    if (proposal.status !== "pending") throw new ProposalAlreadyResolvedError(proposal.status);
+    const { proposal: resolved } = await this.applyProposalAccept(proposal, opts);
+    return resolved;
+  }
+
+  async dismissProposal(ws: string, projectId: string, proposalId: string): Promise<Proposal> {
+    const proposal = await this.getProposal(ws, proposalId);
+    if (proposal.projectId !== projectId) throw new NotFoundError("Proposal");
+    if (proposal.status !== "pending") throw new ProposalAlreadyResolvedError(proposal.status);
+    // Marked dismissed, never deleted — for a suggested_rule specifically,
+    // this dismissed row is what a future pattern-detector should check
+    // before re-proposing the same rule (see ProposalKind's own doc
+    // comment). Every other kind gets identical treatment for consistency,
+    // not because anything reads it back yet.
+    return this.hub.upsertProposal({ ...proposal, status: "dismissed", resolvedAt: now() });
+  }
+
+  /** The kind-specific "implied action" behind accepting a Proposal — the
+   *  ONE place that logic lives, shared by acceptProposal and the
+   *  subtask-specific accept/accept-all below. Always marks the proposal
+   *  accepted; returns whichever new entity (if any) it created so callers
+   *  that care (acceptSubtask) can hand it back. */
+  private async applyProposalAccept(proposal: Proposal, opts: { activate?: boolean } = {}): Promise<{ proposal: Proposal; task?: Task; rule?: Rule }> {
+    let task: Task | undefined;
+    let rule: Rule | undefined;
+    switch (proposal.kind) {
+      case "draft_task": {
+        const parsed = DraftTaskPayload.safeParse(proposal.payload);
+        if (!parsed.success) throw new Error(`This proposal's payload doesn't match the expected shape for "draft_task".`);
+        task = await this.createTask(proposal.workspaceId, proposal.projectId, {
+          text: parsed.data.text,
+          description: parsed.data.description ?? undefined,
+        });
+        break;
+      }
+      case "suggested_subtask": {
+        const parsed = SuggestedSubtaskPayload.safeParse(proposal.payload);
+        if (!parsed.success) throw new Error(`This proposal's payload doesn't match the expected shape for "suggested_subtask".`);
+        task = await this.createTask(proposal.workspaceId, proposal.projectId, {
+          text: parsed.data.text,
+          description: parsed.data.description ?? undefined,
+          parentTaskId: parsed.data.parentTaskId,
+        });
+        break;
+      }
+      case "suggested_rule": {
+        const parsed = SuggestedRulePayload.safeParse(proposal.payload);
+        if (!parsed.success) throw new Error(`This proposal's payload doesn't match the expected shape for "suggested_rule".`);
+        // Default "watch", never "live" — see SuggestedRulePayload's own doc
+        // comment. `opts.activate` (TASK 10's "TURN IT ON" onboarding action)
+        // is the one deliberate, explicit override of that default.
+        rule = await this.createRule(proposal.workspaceId, proposal.projectId, {
+          ...parsed.data,
+          state: opts.activate ? "live" : "watch",
+        });
+        break;
+      }
+      case "suggested_reassignment":
+      case "stall_nudge":
+        // Advisory-only heads-up — nothing structural to create; accepting
+        // just acknowledges the operator saw it.
+        break;
+    }
+    const resolved = await this.hub.upsertProposal({ ...proposal, status: "accepted", resolvedAt: now() });
+    return { proposal: resolved, task, rule };
+  }
+
+  // ── suggested subtasks (Momentum Rollout Phase 1c) ───────────────────────
+  /** Every PENDING suggested_subtask proposal whose payload targets this
+   *  parent task — the shared lookup behind both acceptSubtask (one) and
+   *  acceptAllSubtasks (every). Filters in application code, not a store
+   *  query, since `parentTaskId` lives inside the untyped `payload`, not a
+   *  column/field the store can filter on. */
+  private async pendingSubtaskProposals(projectId: string, parentTaskId: string): Promise<Proposal[]> {
+    const pending = await this.store.listProposalsForProject(projectId, { status: "pending" });
+    return pending.filter((p) => {
+      if (p.kind !== "suggested_subtask") return false;
+      const parsed = SuggestedSubtaskPayload.safeParse(p.payload);
+      return parsed.success && parsed.data.parentTaskId === parentTaskId;
+    });
+  }
+
+  async acceptSubtask(ws: string, taskId: string, req: AcceptSubtaskRequest): Promise<Task> {
+    const parent = await this.getTask(ws, taskId);
+    const candidates = await this.pendingSubtaskProposals(parent.projectId, taskId);
+    const proposal = candidates.find((p) => p.id === req.proposalId);
+    if (!proposal) throw new NotFoundError("Suggested subtask proposal");
+    const { task } = await this.applyProposalAccept(proposal);
+    return task!; // always set for a suggested_subtask accept — see applyProposalAccept
+  }
+
+  async acceptAllSubtasks(ws: string, taskId: string): Promise<Task[]> {
+    const parent = await this.getTask(ws, taskId);
+    const candidates = await this.pendingSubtaskProposals(parent.projectId, taskId);
+    const created: Task[] = [];
+    for (const proposal of candidates) {
+      const { task } = await this.applyProposalAccept(proposal);
+      if (task) created.push(task);
+    }
+    return created;
+  }
+
   // ── features (task grouping) ───────────────────────────────────────────
   async createFeature(ws: string, projectId: string, input: CreateFeatureRequest): Promise<Feature> {
     const project = await this.store.getProject(projectId);
@@ -2085,6 +2766,7 @@ export class Operations {
       status: "active",
       milestoneId: input.milestoneId ?? null,
       order: inProject.length,
+      color: null,
       archived: false,
       createdAt: now(),
       pr: null,
@@ -2391,6 +3073,7 @@ export class Operations {
       status: "active",
       milestoneId: null,
       order: inFeatures.length,
+      color: null,
       archived: false,
       createdAt: at,
       pr: null,
@@ -2433,6 +3116,8 @@ export class Operations {
         milestoneId: null,
         source: { kind: "brief", briefId: brief.id },
         dependsOnTaskIds: t.dependsOnIndex.map((idx) => ids[idx]!),
+        parentTaskId: null,
+        priority: null,
         lint: null,
         preferredProvider: null,
         preferredModel: null,
@@ -2552,6 +3237,656 @@ export class Operations {
       throw err;
     }
     return { state: "ok", path: body.path, content: body.content, source: "github" };
+  }
+
+  /**
+   * TASK 27 — re-parse a project's roadmap doc and persist the result in
+   * `Store.getRoadmapDoc`/`putRoadmapDoc`. Called by the GitHub push webhook
+   * when a commit touches the project's roadmap path; also safe to call
+   * standalone (a future manual "resync" action would just call this).
+   *
+   * `opts.commitSha`, when the caller already knows it (the webhook's own
+   * push payload carries the new HEAD), is used directly — no extra lookup.
+   * Left unset, a local `repoPath` project resolves its own HEAD via `git
+   * rev-parse`; a GitHub-only project falls back to the previous cached
+   * doc's commitSha (a Contents-API read has no commit sha of its own to
+   * offer — see RoadmapDoc.commitSha's own doc comment).
+   *
+   * Writes an intermediate `repo_ahead` marker (new commitSha, syncState:
+   * "repo_ahead") BEFORE the actual read+parse, so a caller checking
+   * mid-flight — or a slow GitHub fetch — observes an honest "we know it
+   * moved, still catching up" state instead of stale `in_sync` data. Lands on
+   * `in_sync` on success, `unparseable` if the doc couldn't be read/parsed
+   * (an unbound project, a missing local checkout, a GitHub auth/network
+   * failure — the parser itself essentially never throws, see ast.ts's own
+   * "raw span, not reconstruction" design, so this is really "couldn't even
+   * fetch the content to parse").
+   */
+  async syncProjectRoadmap(ws: string, projectId: string, opts: { commitSha?: string } = {}): Promise<RoadmapDoc> {
+    const project = await this.store.getProject(projectId);
+    if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
+
+    const previous = await this.store.getRoadmapDoc(projectId);
+    const commitSha = opts.commitSha ?? (project.repoPath ? await localRepoHeadSha(project.repoPath) : (previous?.commitSha ?? null));
+
+    const ahead: RoadmapDoc = previous
+      ? { ...previous, commitSha, syncState: "repo_ahead", syncedAt: now() }
+      : {
+          workspaceId: ws,
+          projectId,
+          path: project.roadmapPath ?? ROADMAP_PATHS[0],
+          commitSha,
+          syncedAt: now(),
+          syncState: "repo_ahead",
+          raw: "",
+          ast: [],
+          sections: [],
+        };
+    await this.store.putRoadmapDoc(ahead);
+
+    try {
+      const doc = await resolveRoadmapDoc(ws, project);
+      if (!doc) return await this.store.putRoadmapDoc({ ...ahead, syncState: "unparseable" });
+      const parsed = parseRoadmapDoc({
+        workspaceId: ws,
+        projectId,
+        path: doc.path,
+        raw: doc.content,
+        commitSha,
+        syncedAt: now(),
+        previousAst: previous?.ast ?? null,
+      });
+      const saved = await this.store.putRoadmapDoc(parsed);
+      // TASK 28, Rule 3 — "the repo wins": a human's direct commit may have
+      // already changed exactly what an open proposal targets. Diff every
+      // open proposal against THIS fresh parse and supersede any that no
+      // longer match — never applied from here on, whatever their state
+      // would otherwise have let through.
+      await this.supersedeStaleRoadmapProposals(projectId, saved);
+      return saved;
+    } catch {
+      return await this.store.putRoadmapDoc({ ...ahead, syncState: "unparseable" });
+    }
+  }
+
+  /** Rule 3's own half of syncProjectRoadmap — split out so it's independently
+   *  callable (a future manual "resync" action, or a test) without re-running
+   *  the parse itself. */
+  private async supersedeStaleRoadmapProposals(projectId: string, doc: RoadmapDoc): Promise<void> {
+    const open = await this.store.listRoadmapProposalsForProject(projectId, { state: "open" });
+    for (const proposal of open) {
+      if (proposalIsStale(proposal, doc)) {
+        await this.store.putRoadmapProposal({ ...proposal, state: "superseded" });
+        // TASK 30 — a human's own direct commit already overtook this;
+        // whatever open roadmap_edit card was asking someone to approve it
+        // must go too, or it'd sit there un-actionable forever (the repo
+        // already moved on, so approving it now would throw
+        // RoadmapProposalStaleError anyway).
+        await this.dismissRoadmapEditHitlFor(doc.workspaceId, proposal.id, "system");
+      }
+    }
+  }
+
+  /**
+   * TASK 27 — a GitHub `push` webhook resolved to `{repo, commitSha,
+   * touchedPaths}` (github/webhook.ts's `parseGithubPush`); resyncs every
+   * project bound to that repo whose roadmap doc the push actually touched.
+   * Mirrors `publishGithubSignal`'s own shape (an inline parameter type, not
+   * an import from webhook.ts — operations.ts never imports from the webhook
+   * route file, only the other way around) and its "never error a webhook
+   * GitHub might disable" contract: a repo with no bound project, or a push
+   * that doesn't touch anyone's roadmap, is just an empty result, not a
+   * throw. A repo can be bound by more than one project (rare, but the same
+   * pattern `publishGithubSignal` already handles) — every match resyncs.
+   */
+  async handleGithubRoadmapPush(input: { repo: string; commitSha: string; touchedPaths: Set<string> }): Promise<{ syncedProjectIds: string[] }> {
+    const projects = (await this.store.listAllProjects()).filter((p) => p.repo === input.repo);
+    const syncedProjectIds: string[] = [];
+    for (const project of projects) {
+      // An explicit roadmapPath override is tried EXCLUSIVELY (matching
+      // resolveRoadmapDoc's own contract); unset falls back to the default
+      // ROADMAP_PATHS candidates.
+      const touches = project.roadmapPath ? input.touchedPaths.has(project.roadmapPath) : ROADMAP_PATHS.some((p) => input.touchedPaths.has(p));
+      if (!touches) continue;
+      await this.syncProjectRoadmap(project.workspaceId, project.id, { commitSha: input.commitSha });
+      syncedProjectIds.push(project.id);
+    }
+    return { syncedProjectIds };
+  }
+
+  // ── roadmap proposal governance (Phase 25 — TASK 28) ──────────────────────
+
+  /**
+   * An agent proposes a change to one roadmap section. Rule 1: a second agent
+   * proposing against a section that already has an OPEN proposal joins/
+   * amends it rather than creating a second row. Rule 4: if the section is
+   * currently locked by a `held_conflict` proposal, the caller is simply
+   * queued (`blockedAgents`) against that held proposal instead — no new
+   * proposal is created while a human hasn't resolved the standing conflict.
+   * Otherwise a genuinely incompatible join (Rule 4 mid-flight) forks the
+   * section's existing open proposal AND this new one both into
+   * `held_conflict`, cross-linked via `conflictsWith`.
+   */
+  async proposeRoadmapChange(ws: string, projectId: string, input: ProposeRoadmapChangeRequest): Promise<RoadmapProposal> {
+    const project = await this.store.getProject(projectId);
+    if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
+    if (!(await this.store.getAgent(input.agentId))) throw new NotFoundError("Agent");
+
+    const existingForProject = await this.store.listRoadmapProposalsForProject(projectId);
+
+    // Rule 4 — the section is already locked pending a human's call. Queue
+    // the agent against whichever held_conflict proposal targets it (first
+    // match; a section can in principle collect more than one held pair over
+    // time, but only ever one active resolution at once) rather than
+    // creating anything new.
+    const locked = existingForProject.find((p) => p.section === input.section && p.state === "held_conflict");
+    if (locked) {
+      const blockedAgents = locked.blockedAgents.includes(input.agentId) ? locked.blockedAgents : [...locked.blockedAgents, input.agentId];
+      return await this.store.putRoadmapProposal({ ...locked, blockedAgents });
+    }
+
+    const incomingAsProposal: RoadmapProposal = {
+      id: this.uid("rp"),
+      workspaceId: ws,
+      projectId,
+      agentId: input.agentId,
+      section: input.section,
+      headline: input.headline,
+      diff: input.diff,
+      reasoning: input.reasoning,
+      impact: input.impact ?? { tasksCreated: [], questionsResolved: [], dependencies: [] },
+      respectedBoundaries: input.respectedBoundaries ?? [],
+      state: "open",
+      conflictsWith: [],
+      createdAt: now(),
+      idleMs: 0,
+      blockedAgents: [],
+    };
+
+    const openExisting = findOpenProposalForSection(existingForProject, input.section);
+    if (!openExisting) {
+      // TASK 30 — every genuinely agent-initiated proposal (this method's
+      // only caller path) becomes a governed Inbox decision. An operator's
+      // OWN direct Steward-dock request never reaches this method at all —
+      // it commits straight via updateProjectRoadmap, a completely separate
+      // path — so no actor check is needed here: reaching this line IS the
+      // "agent-initiated" signal.
+      const saved = await this.store.putRoadmapProposal(incomingAsProposal);
+      await this.raiseRoadmapEditHitl(saved);
+      return saved;
+    }
+
+    // Rule 4 — an incompatible overlap with the section's existing open
+    // proposal: a blind join would silently pick a winner, so instead BOTH
+    // fork into held_conflict, cross-linked, and further agent work on the
+    // section locks (Orchestrator's auto-pick checks this via
+    // roadmap/proposals.js's lockedSectionIds/taskBlockedByRoadmapLock).
+    if (proposalsConflict(openExisting, incomingAsProposal)) {
+      const heldExisting: RoadmapProposal = { ...openExisting, state: "held_conflict", conflictsWith: [...new Set([...openExisting.conflictsWith, incomingAsProposal.id])] };
+      const heldIncoming: RoadmapProposal = { ...incomingAsProposal, state: "held_conflict", conflictsWith: [...new Set([...incomingAsProposal.conflictsWith, openExisting.id])] };
+      await this.store.putRoadmapProposal(heldExisting);
+      const saved = await this.store.putRoadmapProposal(heldIncoming);
+      // The plain "approve this" card `openExisting` already had (raised the
+      // moment IT went open) no longer applies — it's now half of a
+      // conflict, not a solo approve. Dismiss it and raise ONE new card for
+      // the pair, anchored on the incoming side; the card renders the
+      // CONFLICT variant by live-fetching this proposal and seeing
+      // `state: "held_conflict"`, then follows `conflictsWith` to fetch the
+      // other side too — never a second, duplicate card for the same pair.
+      await this.dismissRoadmapEditHitlFor(ws, openExisting.id, "system");
+      await this.raiseRoadmapEditHitl(saved);
+      return saved;
+    }
+
+    // Rule 1 — compatible: join into the existing open proposal, same row.
+    // No HITL change — the card already raised for `openExisting.id` stays
+    // anchored on the SAME id (joinProposal never changes it) and the web
+    // card live-fetches the proposal, so the merged diff/reasoning/impact
+    // show up automatically without a second raise (which would just spam
+    // Telegram for what the operator already has an open card for).
+    const joined = joinProposal(openExisting, input);
+    return await this.store.putRoadmapProposal(joined);
+  }
+
+  /**
+   * Raise a fresh `roadmap_edit` HITL anchored on `proposal` — TASK 30's
+   * Inbox integration. `runId` carries an inert `roadmap:<id>` placeholder
+   * (see HitlItem's own doc comment on why: no TaskRun exists behind a
+   * roadmap proposal) and this is NEVER routed through
+   * Orchestrator.deliver() — see `resolveHitl`'s roadmap_edit branch below,
+   * which resolves it directly instead. `title`/`why` are a snapshot for
+   * Telegram (which can't live-fetch); the web Inbox card ignores them and
+   * always fetches the live proposal by `roadmapProposalId` instead, so a
+   * later Rule 1 join or Rule 3 supersede is reflected there for free.
+   * `flags` carries "has_deletion" — computed once here — the one signal
+   * Telegram's compact card needs to withhold its approve button for.
+   */
+  private async raiseRoadmapEditHitl(proposal: RoadmapProposal): Promise<void> {
+    await this.hub.raiseHitl({
+      id: this.uid("q-roadmap"),
+      workspaceId: proposal.workspaceId,
+      runId: `roadmap:${proposal.id}`,
+      projectId: proposal.projectId,
+      roadmapProposalId: proposal.id,
+      kind: "roadmap_edit",
+      title: proposal.headline,
+      why: proposal.reasoning,
+      risk: proposal.diff.removed.length > 0 ? "medium" : "low",
+      raisedAt: now(),
+      expiresAt: null,
+      resolvedAt: null,
+      resolution: null,
+      rationale: null,
+      command: null,
+      options: null,
+      recommended: null,
+      steps: null,
+      diff: null,
+      output: null,
+      flags: proposal.diff.removed.length > 0 ? ["has_deletion"] : [],
+      sourceBranchOverride: null,
+    });
+  }
+
+  /**
+   * Dismiss whatever still-open `roadmap_edit` HITL is anchored on
+   * `proposalId` — Rule 3's supersede, or Rule 4 replacing a plain-open card
+   * with a fresh conflict one, both need this so a proposal that's moved on
+   * never leaves a stale, unanswerable card sitting in the Inbox pointing at
+   * dead work. Same "detach → dismiss any open gate" discipline as
+   * Orchestrator.retireRun; best-effort no-op when there isn't one (a
+   * proposal created via a join never got its own card).
+   */
+  private async dismissRoadmapEditHitlFor(ws: string, proposalId: string, by: string): Promise<void> {
+    const open = (await this.store.listQueue(ws)).find(
+      (q) => q.kind === "roadmap_edit" && q.roadmapProposalId === proposalId && !q.resolvedAt,
+    );
+    if (!open) return;
+    await this.hub.resolveHitl(open.id, {
+      action: "dismiss",
+      optionIndex: null,
+      guidance: null,
+      targetBranch: null,
+      memoryNote: null,
+      resetWork: false,
+      by,
+      at: now(),
+    });
+  }
+
+  /**
+   * Apply an approved (or auto-eligible) roadmap proposal: splices its diff
+   * onto the project's CURRENT roadmap doc and commits — via whichever write
+   * path the project already uses for a Steward roadmap edit
+   * (commitLocalRepoFile for a `repoPath` project, githubService.commitRepoFile
+   * for a GitHub-bound one) — with real attribution: the approving human (or,
+   * for an eligible autonomous apply, a distinct system identity — see
+   * roadmap/attribution.ts) as the commit AUTHOR, the proposing agent as a
+   * `Co-authored-by:` trailer.
+   *
+   * `opts.operatorId` set = an explicit human approval (the API route passes
+   * `req.principal!.operatorId`). Omitted = an autonomous/system attempt.
+   *
+   * Rule 2 is enforced FIRST, unconditionally, before this function reads
+   * the project's autonomy detent AT ALL: a diff that removes a line or
+   * touches a promised date throws RoadmapProposalNeedsHumanApprovalError
+   * the instant `opts.operatorId` is unset, full stop — there is no detent,
+   * override, or approvalLevel combination downstream of this check that can
+   * still reach the auto-apply branch for such a diff. Only once that's
+   * cleared does an operatorId-less call fall through to the ordinary
+   * own-diff auto-merge gate (`detentFor(project) === "unattended"` — the
+   * exact same notch packages/shared/src/autonomy.ts's `ownDiffAutoMerge`
+   * already uses for an agent's own code diff).
+   */
+  /**
+   * A live read of one roadmap proposal — TASK 30's Inbox/conflict card
+   * NEVER trusts the snapshot fields on its own HITL item (title/why only,
+   * a Telegram-only concession — see raiseRoadmapEditHitl); it fetches this
+   * instead, so a Rule 1 join, Rule 3 supersede, or Rule 4 conflict that
+   * happened after the card was raised is reflected the moment the operator
+   * opens it, not whatever was true when the gate first fired.
+   */
+  async getRoadmapProposal(ws: string, projectId: string, proposalId: string): Promise<RoadmapProposal> {
+    const project = await this.store.getProject(projectId);
+    if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
+    const proposal = await this.store.getRoadmapProposal(proposalId);
+    if (!proposal || proposal.projectId !== projectId) throw new NotFoundError("Roadmap proposal");
+    return proposal;
+  }
+
+  async applyRoadmapProposal(ws: string, projectId: string, proposalId: string, opts: { operatorId?: string } = {}): Promise<{ proposal: RoadmapProposal; committed: boolean; sha?: string }> {
+    const project = await this.store.getProject(projectId);
+    if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
+    const proposal = await this.store.getRoadmapProposal(proposalId);
+    if (!proposal || proposal.projectId !== projectId) throw new NotFoundError("Roadmap proposal");
+    if (proposal.state !== "open") throw new RoadmapProposalNotOpenError(proposal.state);
+
+    // Rule 2 — unconditional, checked before ANYTHING autonomy-related.
+    if (diffRequiresHumanApproval(proposal.diff) && !opts.operatorId) {
+      throw new RoadmapProposalNeedsHumanApprovalError();
+    }
+    if (!opts.operatorId && detentFor(project) !== "unattended") {
+      throw new RoadmapProposalAutonomyGateError();
+    }
+
+    const agent = await this.store.getAgent(proposal.agentId);
+    if (!agent) throw new NotFoundError("Agent");
+    const coAuthor = agentCoAuthor(agent);
+    const authorIdentity = opts.operatorId ? operatorGitIdentity(opts.operatorId) : AUTONOMOUS_APPLY_IDENTITY;
+    const message = `Skynet: ${proposal.headline} (roadmap proposal ${proposal.id})`;
+
+    if (!project.repoPath && !project.repo) throw new Error("This project has no bound repo to commit to.");
+    const current = await resolveRoadmapDoc(ws, project);
+    if (!current) throw new RoadmapConflictError();
+    const newContent = applyRoadmapProposalDiff(current.content, proposal.diff);
+
+    let committed: boolean;
+    let sha: string | undefined;
+    if (project.repoPath) {
+      const result = await commitLocalRepoFile(project.repoPath, current.path, newContent, current.content, message, { ...authorIdentity, coAuthor });
+      committed = result.committed;
+      sha = result.sha;
+    } else {
+      if (!current.sha) throw new RoadmapConflictError();
+      try {
+        await githubService.commitRepoFile(ws, project.repo!, current.path, newContent, current.sha, message, project.githubCredentialId, { ...authorIdentity, coAuthor });
+      } catch (err) {
+        const msg = (err as Error).message;
+        if (/→ (409|422):/.test(msg)) throw new RoadmapConflictError();
+        throw err;
+      }
+      committed = true;
+    }
+
+    const approved = await this.store.putRoadmapProposal({ ...proposal, state: "approved" });
+    return { proposal: approved, committed, sha };
+  }
+
+  /**
+   * TASK 31 — commit a single-line roadmap edit directly, on the operator's
+   * OWN authority (the Drift dashboard's "MOVE IT TO Q4"/"KEEP AND RE-DATE
+   * Q3" actions). Reuses applyRoadmapProposal's exact diff-splice +
+   * attributed-commit machinery, but writes no RoadmapProposal and needs no
+   * agentId: nothing "proposed" this, the operator decided it right here —
+   * the same "a human's own edit just commits" precedent
+   * resolveRoadmapConflict's "write_own" action already established, not an
+   * agent proposal for governance to route through the Inbox. No
+   * Co-authored-by trailer either, for the same reason.
+   */
+  async commitRoadmapLineEdit(ws: string, projectId: string, input: CommitRoadmapLineEditRequest, operatorId: string): Promise<{ committed: boolean; sha?: string }> {
+    const project = await this.store.getProject(projectId);
+    if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
+    if (!project.repoPath && !project.repo) throw new Error("This project has no bound repo to commit to.");
+
+    const current = await resolveRoadmapDoc(ws, project);
+    if (!current) throw new RoadmapConflictError();
+    const newContent = applyRoadmapProposalDiff(current.content, input.diff);
+    const authorIdentity = operatorGitIdentity(operatorId);
+
+    if (project.repoPath) {
+      return commitLocalRepoFile(project.repoPath, current.path, newContent, current.content, input.message, authorIdentity);
+    }
+    if (!current.sha) throw new RoadmapConflictError();
+    try {
+      await githubService.commitRepoFile(ws, project.repo!, current.path, newContent, current.sha, input.message, project.githubCredentialId, authorIdentity);
+    } catch (err) {
+      const msg = (err as Error).message;
+      if (/→ (409|422):/.test(msg)) throw new RoadmapConflictError();
+      throw err;
+    }
+    return { committed: true };
+  }
+
+  // ── roadmap doc view (Phase 26 — TASK 29) ─────────────────────────────────
+  /** The parsed RoadmapDoc, real per-line git-blame provenance overlaid
+   *  (local checkout only — best-effort, see enrich.ts), and any "claim as
+   *  mine" overrides applied on top. Always resyncs fresh (same freshness
+   *  contract getProjectRoadmap's raw-text sibling already has) rather than
+   *  trusting the store's cached parse — a local SOURCE-mode save or a
+   *  roadmap-proposal apply doesn't itself trigger a resync, and this is the
+   *  one place that matters for line-level state to be current. */
+  async getProjectRoadmapDoc(ws: string, projectId: string): Promise<RoadmapDoc> {
+    const project = await this.store.getProject(projectId);
+    if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
+    let doc = await this.syncProjectRoadmap(ws, projectId);
+    if (project.repoPath) doc = await enrichRoadmapDocWithBlame(doc, project.repoPath);
+
+    const claims = await this.store.listRoadmapLineClaimsForProject(projectId);
+    if (claims.length === 0) return doc;
+    const byLineId = new Map(claims.map((c) => [c.lineId, c]));
+    return {
+      ...doc,
+      ast: doc.ast.map((node) => {
+        if (node.type !== "checklistItem") return node;
+        const claim = byLineId.get(node.id);
+        if (!claim) return node;
+        return { ...node, claimedByHuman: true, author: claim.operatorId, authorRef: claim.operatorId };
+      }),
+    };
+  }
+
+  async listRoadmapProposals(ws: string, projectId: string): Promise<RoadmapProposal[]> {
+    const project = await this.store.getProject(projectId);
+    if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
+    return this.store.listRoadmapProposalsForProject(projectId);
+  }
+
+  /** "KEEP · CLAIM AS MINE" — an operator taking display ownership of a line
+   *  git-blame otherwise attributes to an agent/Skynet identity. Idempotent
+   *  (a repeat claim, even by a different operator, just replaces the row) —
+   *  see RoadmapLineClaim's own doc comment for why this never touches git
+   *  history or blame itself, only a display-layer override. */
+  async claimRoadmapLine(ws: string, projectId: string, lineId: string, operatorId: string): Promise<RoadmapLineClaim> {
+    const project = await this.store.getProject(projectId);
+    if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
+    const doc = await this.store.getRoadmapDoc(projectId);
+    const exists = doc?.ast.some((n) => n.type === "checklistItem" && n.id === lineId) ?? false;
+    if (!exists) throw new NotFoundError("Roadmap line");
+    const claim: RoadmapLineClaim = { id: this.uid("rlc"), workspaceId: ws, projectId, lineId, operatorId, claimedAt: now() };
+    return this.store.putRoadmapLineClaim(claim);
+  }
+
+  /** "REVERT THE COMMIT" — reverts whatever commit git-blame currently
+   *  attributes this line's text to. Local-repo-bound projects only: a
+   *  GitHub-bound project has no local checkout to run `git revert` against
+   *  (mirrors blame.ts/history.ts's own local-only contract) — throws a
+   *  clear, actionable error rather than silently no-op-ing. Resyncs the
+   *  doc afterward so the line's state/blame reflect the revert immediately,
+   *  not on the next unrelated read. */
+  async revertRoadmapLineCommit(ws: string, projectId: string, lineId: string, operatorId: string): Promise<{ committed: boolean; sha?: string }> {
+    const project = await this.store.getProject(projectId);
+    if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
+    if (!project.repoPath) throw new Error("Reverting a roadmap line's commit needs a local checkout — this project is GitHub-bound.");
+    const doc = await this.getProjectRoadmapDoc(ws, projectId);
+    const isChecklistItem = (n: RoadmapAstNode): n is RoadmapChecklistItemNode => n.type === "checklistItem";
+    const line = doc.ast.filter(isChecklistItem).find((n) => n.id === lineId);
+    if (!line) throw new NotFoundError("Roadmap line");
+    if (!line.blameSha) throw new Error("No blamed commit found for this line — nothing to revert.");
+    const result = await revertCommitInLocalRepo(project.repoPath, line.blameSha, operatorGitIdentity(operatorId));
+    await this.syncProjectRoadmap(ws, projectId).catch(() => undefined);
+    return result;
+  }
+
+  /** HISTORY tab — real `git log` for the project's roadmap doc path.
+   *  Local-repo-bound projects only, same reasoning as
+   *  revertRoadmapLineCommit; an empty array (not an error) for a
+   *  GitHub-bound project — there's nothing actionable to retry the way a
+   *  real failure would be. */
+  async getRoadmapHistory(ws: string, projectId: string, opts: { limit?: number } = {}): Promise<RoadmapHistoryEntry[]> {
+    const project = await this.store.getProject(projectId);
+    if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
+    if (!project.repoPath) return [];
+    const path = project.roadmapPath ?? ROADMAP_PATHS[0]!;
+    return roadmapHistory(project.repoPath, path, opts.limit);
+  }
+
+  // ── workspace roll-up (Phase 29 — TASK 32) ────────────────────────────────
+  /**
+   * The one real, non-fabricated "why might this repo miss" signal available
+   * TODAY, before TASK 31 ships real per-line forecasts (TASK 19's key-health
+   * circuit breaker): the first PAUSED credential among the project's own
+   * `enabledRunnerCredentialIds` (empty list = every workspace credential is
+   * usable — same "empty = unconfined" semantics Project.enabledRunnerCredentialIds
+   * already documents — so every secret is a candidate in that case). Null =
+   * nothing to report, not "definitely healthy" — this rollup can't see a
+   * genuine schedule slip yet, only a stalled key.
+   */
+  private breakerReasonFor(project: Pick<Project, "enabledRunnerCredentialIds">, secrets: SecretMeta[]): string | null {
+    const candidateIds = project.enabledRunnerCredentialIds.length ? new Set(project.enabledRunnerCredentialIds) : null;
+    const paused = secrets.find((s) => (candidateIds ? candidateIds.has(s.id) : true) && s.paused);
+    return paused?.paused?.reason ?? null;
+  }
+
+  /**
+   * "Six repos, one quarter" — a roll-up over every project the CALLER
+   * already has access to, scoped by the same principal.projectIds allowlist
+   * mcp/project-scope.ts enforces everywhere else (no new access-control
+   * surface: an unrestricted principal — every human/workspace token today —
+   * sees the whole workspace, unchanged). A project with no bound repo is
+   * skipped outright (nothing to roll up); one WITH a repo but no resolved
+   * roadmap file lands in `noRoadmapProjects` (the dashed row) instead of
+   * `rows`. Resyncs every accessible project's doc fresh, same freshness
+   * contract getProjectRoadmapDoc already has — this is a dashboard read,
+   * not a hot path, so the per-project resync cost is accepted the same way
+   * it already is there.
+   */
+  async getWorkspaceRoadmapRollup(ws: string, principal: Principal): Promise<RoadmapWorkspaceRollup> {
+    const allProjects = await this.store.listProjects(ws);
+    const scoped = projectScope(principal, this, ws).filterProjects(allProjects);
+    const secrets = await secretService.list(ws);
+
+    const rows: RoadmapWorkspaceRollup["rows"] = [];
+    const noRoadmapProjects: RoadmapWorkspaceRollup["noRoadmapProjects"] = [];
+    const forMilestones: Parameters<typeof groupMilestones>[0] = [];
+
+    for (const project of scoped) {
+      if (!project.repoPath && !project.repo) continue;
+      const found = await resolveRoadmapDoc(ws, project).catch(() => null);
+      if (!found) {
+        noRoadmapProjects.push({ projectId: project.id, projectName: project.name });
+        continue;
+      }
+      const doc = await this.syncProjectRoadmap(ws, project.id).catch(() => null);
+      if (!doc) continue; // resync itself threw (e.g. project vanished mid-loop) — drop, don't error the whole roll-up
+      const proposals = await this.store.listRoadmapProposalsForProject(project.id).catch(() => []);
+      const atRiskReason = this.breakerReasonFor(project, secrets);
+      rows.push(computeRollupRow(project, doc, pendingProposalCount(proposals), atRiskReason));
+      forMilestones.push({ project, doc, atRiskReason });
+    }
+
+    return { rows, milestones: groupMilestones(forMilestones), noRoadmapProjects };
+  }
+
+  /**
+   * "Without a file there is no roadmap — create one from the board." Writes
+   * a minimal starter ROADMAP.md and points `project.roadmapPath` at it,
+   * committing through TASK 28's SAME attribution path (a real operator
+   * author identity, no agent Co-authored-by — nobody proposed this, the
+   * operator asked for it directly) since a repo write is a repo write.
+   * Refuses if a roadmap file is already resolvable — this is a CREATE, not
+   * an overwrite; the operator already has the normal edit paths for that.
+   */
+  async scaffoldProjectRoadmap(ws: string, projectId: string, operatorId: string): Promise<RoadmapDoc> {
+    const project = await this.store.getProject(projectId);
+    if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
+    if (!project.repoPath && !project.repo) throw new Error("This project has no bound repo to write a roadmap into.");
+    const existing = await resolveRoadmapDoc(ws, project).catch(() => null);
+    if (existing) throw new Error("This project already has a roadmap file.");
+
+    const path = project.roadmapPath ?? ROADMAP_PATHS[0]!;
+    const content = `# ${project.name} Roadmap\n\n## Now\n- [ ] First task\n`;
+    const message = `Skynet: scaffold ${path}`;
+    const identity = operatorGitIdentity(operatorId);
+
+    if (project.repoPath) {
+      await commitLocalRepoFile(project.repoPath, path, content, null, message, identity);
+    } else {
+      await githubService.commitRepoFile(ws, project.repo!, path, content, undefined, message, project.githubCredentialId, identity);
+    }
+    await this.hub.upsertProject({ ...project, roadmapPath: path });
+    return this.syncProjectRoadmap(ws, projectId);
+  }
+
+  /**
+   * The plain (non-conflict) roadmap_edit HITL's approve/reject — TASK 30.
+   * "Approve & commit" runs the real TASK 28 attribution path
+   * (applyRoadmapProposal, human-authored + agent Co-authored-by); reject
+   * just marks the proposal rejected. Either way the HITL resolves via
+   * Hub.resolveHitl directly — never Operations.resolveHitl's generic
+   * wrapper (that's this method's OWN caller) and never
+   * Orchestrator.deliver() (no live agent to deliver to).
+   */
+  private async resolveRoadmapEditHitl(ws: string, item: HitlItem, action: "approve" | "reject", operatorId: string): Promise<HitlItem> {
+    if (!item.projectId || !item.roadmapProposalId) throw new NotFoundError("Roadmap proposal");
+    if (action === "approve") {
+      await this.applyRoadmapProposal(ws, item.projectId, item.roadmapProposalId, { operatorId });
+    } else {
+      const proposal = await this.store.getRoadmapProposal(item.roadmapProposalId);
+      if (!proposal || proposal.projectId !== item.projectId) throw new NotFoundError("Roadmap proposal");
+      if (proposal.state !== "open") throw new RoadmapProposalNotOpenError(proposal.state);
+      await this.store.putRoadmapProposal({ ...proposal, state: "rejected" });
+    }
+    const resolution: Resolution = {
+      action,
+      optionIndex: null,
+      guidance: null,
+      targetBranch: null,
+      memoryNote: null,
+      resetWork: false,
+      by: operatorId,
+      at: now(),
+    };
+    const resolved = await this.hub.resolveHitl(item.id, resolution);
+    return resolved ?? item;
+  }
+
+  /**
+   * A held_conflict roadmap_edit HITL's resolution — TASK 30's conflict
+   * card. "choose" applies the picked proposal's diff (flipped back to
+   * "open" first: applyRoadmapProposal only accepts an open proposal, and
+   * Rule 4 leaves BOTH sides `held_conflict`) and rejects the other side;
+   * "write_own" rejects both, freeing the section for a human's own edit —
+   * today that means the existing Steward-dock/Roadmap-tab manual-edit path
+   * (updateProjectRoadmap), until TASK 29's inline SOURCE editor lands as
+   * the card's real destination.
+   */
+  async resolveRoadmapConflict(ws: string, hitlId: string, input: RoadmapConflictResolveRequest, operatorId: string): Promise<HitlItem> {
+    const item = await this.store.getHitl(hitlId);
+    if (!item || item.workspaceId !== ws) throw new NotFoundError("HITL item");
+    if (item.kind !== "roadmap_edit" || !item.projectId || !item.roadmapProposalId) throw new NotFoundError("Roadmap conflict");
+    const anchor = await this.store.getRoadmapProposal(item.roadmapProposalId);
+    if (!anchor || anchor.projectId !== item.projectId) throw new NotFoundError("Roadmap proposal");
+    if (anchor.state !== "held_conflict") throw new RoadmapProposalNotOpenError(anchor.state);
+    const other = anchor.conflictsWith[0] ? await this.store.getRoadmapProposal(anchor.conflictsWith[0]) : undefined;
+
+    let action: "approve" | "reject";
+    if (input.action === "write_own") {
+      await this.store.putRoadmapProposal({ ...anchor, state: "rejected" });
+      if (other) await this.store.putRoadmapProposal({ ...other, state: "rejected" });
+      action = "reject";
+    } else {
+      const pair = [anchor, other].filter((p): p is RoadmapProposal => !!p);
+      const chosen = pair.find((p) => p.id === input.chosenProposalId);
+      if (!chosen) throw new NotFoundError("Roadmap proposal");
+      const rejected = pair.find((p) => p.id !== input.chosenProposalId);
+      if (rejected) await this.store.putRoadmapProposal({ ...rejected, state: "rejected" });
+      await this.store.putRoadmapProposal({ ...chosen, state: "open" });
+      await this.applyRoadmapProposal(ws, item.projectId, chosen.id, { operatorId });
+      action = "approve";
+    }
+
+    const resolution: Resolution = {
+      action,
+      optionIndex: null,
+      guidance: null,
+      targetBranch: null,
+      memoryNote: null,
+      resetWork: false,
+      by: operatorId,
+      at: now(),
+    };
+    const resolved = await this.hub.resolveHitl(item.id, resolution);
+    return resolved ?? item;
   }
 
   // ── fleet ──────────────────────────────────────────────────────────────

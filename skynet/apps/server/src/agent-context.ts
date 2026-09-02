@@ -21,6 +21,11 @@ import type { Feature, Project } from "@skynet/shared";
 type ContextProject = Pick<Project, "name" | "goal" | "instructions" | "contextSummary">;
 
 export interface AgentContextOptions {
+  /** What the PREVIOUS agent on this run had worked out before it escalated or
+   *  stalled (TaskRun.handoff). Present only on a relaunch. Placed immediately
+   *  before the task so it reads as "here's where things stand", and capped —
+   *  a handoff is orientation, not a transcript. */
+  handoff?: string;
   project: ContextProject | null | undefined;
   // The Feature a task belongs to, when it belongs to one. Undefined/null both
   // mean "no feature" — callers that haven't resolved one yet can pass either.
@@ -51,6 +56,9 @@ export interface AgentContextOptions {
 const TOTAL_CHAR_CAP = 6_000;
 const PRIMER_CHAR_CAP = 2_000;
 const FEATURE_DESCRIPTION_CHAR_CAP = 1_000;
+/** A handoff is orientation, not a transcript — enough to skip re-deriving the
+ *  situation, not enough to re-bloat the prompt it exists to shrink. */
+const HANDOFF_CHAR_CAP = 1500;
 const SOLUTION_BRIEF_CHAR_CAP = 1_500;
 // S3's buildSiblingDigest self-caps its own combined string at ~1.2k chars —
 // this per-element cap matches that (raised from an earlier 200, sized for
@@ -131,6 +139,9 @@ export function buildAgentContext(opts: AgentContextOptions): string {
   const brief = opts.brief?.trim();
   const briefSection = brief ? `=== SOLUTION BRIEF ===\n${truncateTail(brief, SOLUTION_BRIEF_CHAR_CAP)}` : null;
 
+  const handoffSection = opts.handoff?.trim()
+    ? `=== WHERE THIS RUN LEFT OFF (from the previous agent — trust it as a starting point, verify before relying on it) ===\n${truncateTail(opts.handoff.trim(), HANDOFF_CHAR_CAP)}`
+    : null;
   const taskSection = `=== TASK ===\n${body}`;
 
   const assemble = (): string =>
@@ -140,6 +151,7 @@ export function buildAgentContext(opts: AgentContextOptions): string {
       primer ? `=== PRIMER ===\n${truncateTail(primer, PRIMER_CHAR_CAP)}` : null,
       featureSection,
       briefSection,
+      handoffSection,
       siblings.length ? `=== IN FLIGHT ===\n${siblings.map((s) => truncateTail(s, SIBLING_CHAR_CAP)).join("\n")}` : null,
       taskSection,
     ]

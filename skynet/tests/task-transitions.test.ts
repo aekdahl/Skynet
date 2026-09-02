@@ -120,21 +120,26 @@ describe("transitionTask — task.done syncs run.status", () => {
     expect((await store.getRun("run-1"))?.status).toBe("done");
   });
 
-  it("demoting done → backlog does NOT force the run back to done (it archives + detaches)", async () => {
+  it("demoting done → backlog retires the abandoned run (via retireRun, not the done-sync line)", async () => {
     const store = new MemoryStore();
     const hub = new Hub(store, new NullBus());
     const orchestrator = new Orchestrator(store, hub);
     const ops = new Operations({ store, hub, orchestrator });
     await store.putProject(project);
-    // Task in `done` but with a `review` run — the abandonsRun path stops+archives
-    // it. The done-sync must NOT fire (we're LEAVING done, not landing on it).
+    // Task in `done` but with a `review` run — the abandonsRun path retires it.
     await seedRunAndTask(store, "review", "done");
 
     const t = await ops.transitionTask(DEFAULT_WORKSPACE, "t1", "backlog", "op-1");
     expect(t.state).toBe("backlog");
     expect(t.runId).toBeNull(); // detached
-    // Run wasn't promoted to done just because we passed through the state=done branch.
-    expect((await store.getRun("run-1"))?.status).toBe("review");
+    // Kanban redesign, stage 1: retireRun consistently marks an abandoned run
+    // terminal ("done") — this is NOT the done-sync line (`to === "done" &&
+    // !abandonsRun`, which does not fire here since we're LEAVING done, not
+    // landing on it) firing by coincidence; it's retireRun's own explicit
+    // "this run is over" write, replacing the old inconsistent behavior where
+    // only some of the five detach paths did this and this one didn't.
+    expect((await store.getRun("run-1"))?.status).toBe("done");
+    expect((await store.getRun("run-1"))?.archived).toBe(true);
   });
 });
 
@@ -348,5 +353,55 @@ describe("updateTask — autoPick defaults on when eligibility first gets set", 
     const t = await ops.updateTask(DEFAULT_WORKSPACE, "t1", { text: "renamed" });
     expect(t.autoPick).toBe(false);
     expect(t.text).toBe("renamed");
+  });
+});
+
+// Momentum Board (Phase 4): a human-driven move must ALSO append a Transition
+// (kanban.ts) — before this, only the rule engine's own moves recorded one,
+// so a project's Transition feed (and anything reading it, like the new
+// board's automation pill "% touched by hand") silently undercounted every
+// operator-driven move. Regression guard for that gap.
+describe("task transition guard — records a Transition for a human move", () => {
+  let store: MemoryStore;
+  let ops: Operations;
+
+  beforeEach(async () => {
+    store = new MemoryStore();
+    const hub = new Hub(store, new NullBus());
+    const orchestrator = new Orchestrator(store, hub);
+    ops = new Operations({ store, hub, orchestrator });
+    await store.putProject(project);
+  });
+
+  it("backlog → triage appends a Transition with actor 'human' and no ruleId", async () => {
+    await store.putTask(mkTask("backlog"));
+    await ops.transitionTask(DEFAULT_WORKSPACE, "t1", "triage", "op-1");
+    const transitions = await store.listTransitionsForTask("t1");
+    expect(transitions).toHaveLength(1);
+    expect(transitions[0]).toMatchObject({
+      taskId: "t1",
+      projectId: "p1",
+      from: "backlog",
+      to: "triage",
+      actor: "human",
+      actorId: "op-1",
+      ruleId: null,
+    });
+  });
+
+  it("a no-op move (same state) does NOT append a Transition", async () => {
+    await store.putTask(mkTask("triage"));
+    await ops.transitionTask(DEFAULT_WORKSPACE, "t1", "triage", "op-1");
+    expect(await store.listTransitionsForTask("t1")).toHaveLength(0);
+  });
+
+  it("multiple moves accumulate, all readable via listTransitionsForProject", async () => {
+    await store.putTask(mkTask("backlog"));
+    await ops.transitionTask(DEFAULT_WORKSPACE, "t1", "triage", "op-1");
+    await ops.transitionTask(DEFAULT_WORKSPACE, "t1", "todo", "op-1");
+    const projectTransitions = await store.listTransitionsForProject("p1");
+    // Both fire in the same test tick, so `at` may tie — order isn't asserted here
+    // (listTransitionsForProject's newest-first sort is memory.ts's own concern).
+    expect(projectTransitions.map((t) => `${t.from}->${t.to}`).sort()).toEqual(["backlog->triage", "triage->todo"]);
   });
 });
