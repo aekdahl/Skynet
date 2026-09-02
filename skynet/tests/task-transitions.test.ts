@@ -120,21 +120,26 @@ describe("transitionTask — task.done syncs run.status", () => {
     expect((await store.getRun("run-1"))?.status).toBe("done");
   });
 
-  it("demoting done → backlog does NOT force the run back to done (it archives + detaches)", async () => {
+  it("demoting done → backlog retires the abandoned run (via retireRun, not the done-sync line)", async () => {
     const store = new MemoryStore();
     const hub = new Hub(store, new NullBus());
     const orchestrator = new Orchestrator(store, hub);
     const ops = new Operations({ store, hub, orchestrator });
     await store.putProject(project);
-    // Task in `done` but with a `review` run — the abandonsRun path stops+archives
-    // it. The done-sync must NOT fire (we're LEAVING done, not landing on it).
+    // Task in `done` but with a `review` run — the abandonsRun path retires it.
     await seedRunAndTask(store, "review", "done");
 
     const t = await ops.transitionTask(DEFAULT_WORKSPACE, "t1", "backlog", "op-1");
     expect(t.state).toBe("backlog");
     expect(t.runId).toBeNull(); // detached
-    // Run wasn't promoted to done just because we passed through the state=done branch.
-    expect((await store.getRun("run-1"))?.status).toBe("review");
+    // Kanban redesign, stage 1: retireRun consistently marks an abandoned run
+    // terminal ("done") — this is NOT the done-sync line (`to === "done" &&
+    // !abandonsRun`, which does not fire here since we're LEAVING done, not
+    // landing on it) firing by coincidence; it's retireRun's own explicit
+    // "this run is over" write, replacing the old inconsistent behavior where
+    // only some of the five detach paths did this and this one didn't.
+    expect((await store.getRun("run-1"))?.status).toBe("done");
+    expect((await store.getRun("run-1"))?.archived).toBe(true);
   });
 });
 

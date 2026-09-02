@@ -1575,6 +1575,47 @@ source-trust gate, reachable only when a project has both public issue sync and 
   with recovery stubbed — streak 1 → 2 → fires at 3 → clears → cooldown blocks the next — **without
   taking the live app down to test it**.
 
+- [x] **Kanban/agent redesign, stage 1 — one shared "this run is over" teardown (`Orchestrator.retireRun`).**
+  Prompted by a live bug report: an escalation card sat in the Inbox for a task that was no longer
+  visible in Ongoing/Review, with autonomy off. Root cause traced to a structural gap, not a one-off:
+  "is this task's work alive" is described by FOUR independently-mutable facts — `Task.state`,
+  `TaskRun.status`, `TaskRun.archived`, and whether a HITL is still open for that run — and nothing
+  enforced they agree. Five separate code paths detached a dead agent from its task (`haltAgent`,
+  `deliverEscalation`'s `reject` and `reassign+resetWork` branches, `reapStaleAgents`'s stale-waiting-run
+  sweep, and `Operations.transitionTask`'s abandon branch), each hand-rolled independently — audited live,
+  only 2 of the 5 dismissed the run's still-open HITL items on the way out, which is exactly this bug
+  class: a run stops, its gate doesn't, the card strands in the Inbox. New `Orchestrator.retireRun(runId,
+  reason, opts)` is the one teardown all five now route through: stop the live handle, free the runner,
+  retire the worktree (existing `stopAgent`), archive the run, mark it terminal (`status: "done"` +
+  `hub.runCompleted`), dismiss every HITL gate still open for it, and (unless the caller already knows the
+  destination column — `opts.unstrand: false`, e.g. `transitionTask`'s done→triage/backlog demotion)
+  return an ongoing/review task to `todo` so it's re-pickable instead of stranded. Confirmed live on a real
+  deployment before the fix: 10 of 11 "ongoing" tasks had already-`done` runs behind them, none reachable
+  by drag (ongoing's only legal human move is → todo, and nothing was making that move).
+  Also lands the first piece of the agreed redesign's **Reassign** primitive: `relaunchEscalated`
+  (previously reachable only via resolving an `escalation` HITL) already did 90% of "swap the agent, keep
+  the branch/work" — it now also briefs the new agent with a real, log-grounded summary of what the prior
+  agent tried (`apps/server/src/handoff-summary.ts`'s `draftHandoffSummary`, same stateless one-shot
+  consult discipline as `diff-walkthrough.ts`/`merge-brief.ts`: a structured `{"summary":...}` field, never
+  prose classification), not just a static "your work is already in the directory" line. Best-effort
+  throughout — an empty log, a provider with no `consult()` support, or an unreadable reply all just mean
+  no summary; the existing static fallback line still fires, so a draft failure never blocks a reassign.
+  Design agreed with the operator across several rounds before implementation: Ongoing and Review stay
+  distinct kanban columns (genuinely different business-rule stages — doer vs. review gate — not to be
+  collapsed); a card's position on the board *drives* its status rather than passively reflecting some
+  other system's state; the persistent unit of continuity is the task's WORK (branch + accumulated
+  context), not any specific agent's identity, so Reassign is always a full agent swap and must be
+  reachable from a full drop back to Backlog, not just Todo. A crash/reap resolves as the same case,
+  system-triggered instead of operator-triggered. `retireRun`'s consolidation is covered by
+  `tests/agent-lifecycle.test.ts` (Stop now dismisses dangling HITL — previously it didn't) and
+  `tests/task-transitions.test.ts` (a done→backlog demotion now consistently retires the abandoned run —
+  fixed a test that had been pinning the old, inconsistent per-path behavior); the reassign+summary path by
+  two new `tests/escalation.test.ts` cases (the summary reaches the new agent's kickoff prompt end-to-end
+  when `consult` succeeds; the static fallback fires when it doesn't) plus `tests/handoff-summary.test.ts`
+  for the pure parser. Stages 2–4 (reviewer becomes structural; drag-to-reassign as the board's default
+  backward move with Pause/Abandon as separate explicit actions; delete the now-dead bespoke code and the
+  "⚡ resync" band-aid) are agreed and queued next.
+
 - [x] **⭐ Stop paying twice for the same context — three defects that compounded.** Together these are the
   plausible mechanism behind this deployment's own measured *"only ~19% of spend reached a merge"*.
   **(1) A run parked on a HUMAN was force-failed after 8 minutes.** The stall watchdog only resets on SDK

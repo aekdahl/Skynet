@@ -115,6 +115,26 @@ describe("agent lifecycle controls: pause / resume / stop", () => {
     expect((await store.getRun(agent.id))?.status).toBe("done");
   });
 
+  it("stop dismisses any HITL gate still open for the run (retireRun consolidation)", async () => {
+    // Kanban redesign, stage 1: haltAgent used to leave a dangling HITL card
+    // in the Inbox — the plain Stop button was one of the (previously) five
+    // independent "detach the agent" code paths, and it was one of the ones
+    // that never dismissed open gates. Now routed through the shared
+    // retireRun, same as every other detach path.
+    const agent = await orchestrator.assignTask("p1", "t1");
+    await store.putHitl({
+      id: "q1", workspaceId: DEFAULT_WORKSPACE, runId: agent.id, kind: "approval", title: "Run a command",
+      why: "", risk: "medium", raisedAt: 0, expiresAt: null, resolvedAt: null, resolution: null,
+      rationale: null, command: "echo hi", options: null, recommended: null, steps: null, diff: null,
+    } as never);
+
+    await orchestrator.haltAgent(agent.id);
+
+    const item = await store.getHitl("q1");
+    expect(item?.resolvedAt).not.toBeNull();
+    expect(item?.resolution?.action).toBe("dismiss");
+  });
+
   it("pause is a no-op on a finished agent", async () => {
     const agent = await orchestrator.assignTask("p1", "t1");
     await orchestrator.haltAgent(agent.id); // → done
