@@ -10,6 +10,7 @@
 //   const choice = useChoice();
 //   const picked = await choice({ title, body, options: [...] }); // value | null
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import { useEscapeLayer } from "../lib/escape-stack";
 
 export interface ConfirmOptions {
   /** Bold heading (optional). */
@@ -92,14 +93,15 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
+  // Escape rides the shared escape-stack (lib/escape-stack.ts) so it closes
+  // whichever layer is actually innermost, not necessarily this dialog, if
+  // something else opened on top of it.
+  useEscapeLayer(!!pending, () => close(pending?.kind === "confirm" ? false : null));
   useEffect(() => {
     if (!pending) return;
     confirmBtn.current?.focus();
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        close(pending.kind === "confirm" ? false : null);
-      } else if (e.key === "Enter" && pending.kind === "confirm") {
+      if (e.key === "Enter" && pending.kind === "confirm") {
         // Choice dialogs have no single "default" action to fire on Enter —
         // each option is a real, distinct decision — so Enter is a no-op there;
         // the operator clicks (or tabs to) the one they mean.

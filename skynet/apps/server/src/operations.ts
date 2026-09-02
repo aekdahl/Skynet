@@ -3470,8 +3470,17 @@ export class Operations {
    * later Rule 1 join or Rule 3 supersede is reflected there for free.
    * `flags` carries "has_deletion" — computed once here — the one signal
    * Telegram's compact card needs to withhold its approve button for.
+   * Phase 30 hardening: this used to check `diff.removed.length > 0` alone,
+   * narrower than Rule 2's own real scope (diffRequiresHumanApproval also
+   * blocks a diff that only ADDS a line touching a promised date — no
+   * `removed` entries at all). Reused here so Telegram never shows a live
+   * one-tap approve button for a diff the exact same rule would refuse to
+   * auto-apply — the flag name stays "has_deletion" (Telegram-facing string,
+   * not worth a wire-format churn) but its true meaning is "needs a human,
+   * no shortcuts," matching diffRequiresHumanApproval exactly.
    */
   private async raiseRoadmapEditHitl(proposal: RoadmapProposal): Promise<void> {
+    const needsHuman = diffRequiresHumanApproval(proposal.diff);
     await this.hub.raiseHitl({
       id: this.uid("q-roadmap"),
       workspaceId: proposal.workspaceId,
@@ -3481,7 +3490,7 @@ export class Operations {
       kind: "roadmap_edit",
       title: proposal.headline,
       why: proposal.reasoning,
-      risk: proposal.diff.removed.length > 0 ? "medium" : "low",
+      risk: needsHuman ? "medium" : "low",
       raisedAt: now(),
       expiresAt: null,
       resolvedAt: null,
@@ -3493,7 +3502,7 @@ export class Operations {
       steps: null,
       diff: null,
       output: null,
-      flags: proposal.diff.removed.length > 0 ? ["has_deletion"] : [],
+      flags: needsHuman ? ["has_deletion"] : [],
       sourceBranchOverride: null,
     });
   }

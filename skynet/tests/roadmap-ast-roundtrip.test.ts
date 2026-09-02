@@ -1,17 +1,26 @@
 // Phase 24 — the hard guarantee parseRoadmapAst/serializeRoadmapAst exist to
 // keep: parse → serialize with zero edits must produce a byte-identical
-// file. Run against real-shaped ROADMAP.md excerpts (including the actual
-// current ROADMAP.md itself), not just synthetic input — a hand-rolled
-// parser's real failure mode is a structure the author didn't think to
-// synthesize.
+// file. Run against real-shaped ROADMAP.md excerpts, not just synthetic
+// input — a hand-rolled parser's real failure mode is a structure the
+// author didn't think to synthesize.
+//
+// Phase 30 hardening — `full-roadmap.md` is a FROZEN point-in-time copy of
+// this repo's own ROADMAP.md, not a live read (its own earlier top comment
+// claimed otherwise; that was wrong — a `diff` against the real file already
+// showed 1 line of drift the day this was written). A frozen copy can only
+// catch a structural gap that existed the day it was captured; it can never
+// catch one introduced by a LATER real edit until someone remembers to
+// manually re-copy it. The "against the live file" block below closes that
+// gap directly, reading `skynet/ROADMAP.md` itself on every run.
 import { describe, it, expect } from "vitest";
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseRoadmapAst, serializeRoadmapAst } from "../apps/server/src/roadmap/ast.js";
 
 const FIXTURES_DIR = join(dirname(fileURLToPath(import.meta.url)), "fixtures/roadmap");
 const fixtureFiles = readdirSync(FIXTURES_DIR).filter((f) => f.endsWith(".md"));
+const LIVE_ROADMAP_PATH = join(dirname(fileURLToPath(import.meta.url)), "..", "ROADMAP.md");
 
 describe("roadmap AST round-trip", () => {
   it("found at least the expected real + synthetic fixtures", () => {
@@ -84,5 +93,31 @@ describe("roadmap AST round-trip", () => {
     // fragment into headings/checklist items.
     const other = ast.filter((n) => n.type === "other");
     expect(other.some((n) => n.raw.includes("not a heading, not a checklist item"))).toBe(true);
+  });
+});
+
+// Item 11 (Phase 30 hardening) — against the LIVE file, not a frozen copy.
+// Skipped (never failed-silently) if the file genuinely doesn't exist in
+// whatever checkout this runs from; a real checkout of this repo always has
+// one, so in practice this always runs.
+describe("roadmap AST round-trip — against this repo's OWN live ROADMAP.md", () => {
+  const liveExists = existsSync(LIVE_ROADMAP_PATH);
+
+  it.skipIf(!liveExists)("parse → serialize is byte-identical for whatever ROADMAP.md currently says — no re-copied fixture to fall out of date", () => {
+    const raw = readFileSync(LIVE_ROADMAP_PATH, "utf8");
+    const ast = parseRoadmapAst(raw);
+    const serialized = serializeRoadmapAst(ast);
+    expect(serialized).toBe(raw);
+  });
+
+  it.skipIf(!liveExists)("every byte of the live file is accounted for exactly once", () => {
+    const raw = readFileSync(LIVE_ROADMAP_PATH, "utf8");
+    const ast = parseRoadmapAst(raw);
+    let offset = 0;
+    for (const node of ast) {
+      expect(raw.slice(offset, offset + node.raw.length)).toBe(node.raw);
+      offset += node.raw.length;
+    }
+    expect(offset).toBe(raw.length);
   });
 });

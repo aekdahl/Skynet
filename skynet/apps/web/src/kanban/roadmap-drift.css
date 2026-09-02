@@ -42,7 +42,16 @@
 /* ── the track itself ── */
 .rdd-track { position: relative; height: 26px; border-radius: var(--ak-radius-bar); background: var(--ak-surface-2); overflow: visible; }
 
-.rdd-track-fill { position: absolute; top: 0; bottom: 0; border-radius: var(--ak-radius-bar); }
+/* width transition on data change — same 200ms ease-out convention
+   health.css's .hd-bar-fill already established (TASK 31 originally shipped
+   this track with no transition at all). */
+.rdd-track-fill {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-radius: var(--ak-radius-bar);
+  transition: width var(--motion-base, 200ms ease-out), left var(--motion-base, 200ms ease-out);
+}
 .rdd-track-delivered { left: 0; background: var(--ak-machine-deep); z-index: 1; }
 .rdd-track-inflight { background: var(--ak-human); z-index: 1; }
 

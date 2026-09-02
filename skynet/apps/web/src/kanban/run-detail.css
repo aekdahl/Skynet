@@ -70,20 +70,6 @@
   cursor: pointer;
 }
 
-/* Disconnect pill — a stream-disconnected fleet must never read the same as
-   one that's simply idle/quiet. Same wsPhase-driven treatment as the
-   Decision Inbox's own header pill (inbox.tsx/.css). */
-.rd-disconnect-pill {
-  margin-left: var(--ak-sp-8);
-  font: 10.5px var(--ak-font-mono);
-  letter-spacing: 0.02em;
-  color: var(--ak-warn);
-  background: color-mix(in oklch, var(--ak-warn), transparent 88%);
-  border: 1px solid color-mix(in oklch, var(--ak-warn), transparent 55%);
-  border-radius: var(--ak-radius-bar);
-  padding: 2px var(--ak-sp-8);
-}
-
 .rd-meta-row {
   font-size: 12px;
   color: var(--ak-text-secondary);

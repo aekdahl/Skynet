@@ -16,6 +16,7 @@ import { StatusDot } from "./common";
 import { operatorHandle } from "../lib/firstrun";
 import { devToolsEnabled } from "../lib/dev";
 import { isTypingTarget } from "../lib/keys";
+import { useEscapeLayer } from "../lib/escape-stack";
 import type { ViewName } from "../App";
 import {
   HomeIcon,
@@ -358,7 +359,17 @@ export function OpSidebar({
     dot: NavDot,
     badge?: ReactNode,
   ) => (
-    <button className={"op-navitem" + (active ? " on" : "")} onClick={onClick} aria-current={active ? "page" : undefined}>
+    <button
+      className={"op-navitem" + (active ? " on" : "")}
+      onClick={onClick}
+      aria-current={active ? "page" : undefined}
+      // Below the ~1200px icon-rail breakpoint (styles.responsive.css) the
+      // visible label collapses to font-size:0 — this native tooltip is
+      // what "labels in tooltips" actually means there. Harmless at full
+      // width too (a title only ever shows on hover, never alongside
+      // already-visible text).
+      title={label}
+    >
       <span className={"op-navdot op-navdot-" + dot} aria-hidden="true" />
       <span className="ic" aria-hidden="true"><Ic /></span> {label}
       {badge}
@@ -460,9 +471,19 @@ export function OpStatusBar({
 }: {
   onOpenTask: (id: string) => void;
 }) {
-  const { runs, queue, fleet } = useStore();
+  const { runs, queue, fleet, wsPhase } = useStore();
   const [open, setOpen] = useState<string | null>(null);
   const now = Date.now();
+  // Whichever per-stat popover is open rides the shared escape-stack
+  // (lib/escape-stack.ts) — previously Escape did nothing here at all.
+  useEscapeLayer(open !== null, () => setOpen(null));
+
+  // The one shared "we're offline" signal for the whole shell — see this
+  // task's own audit: before this, SEVEN separate pages (steward-dock,
+  // inbox, autonomy-dial, keys-budget, review-merge, run-detail) each drew
+  // their own independent "⚠ RECONNECTING" pill from the same `wsPhase`.
+  // Consolidated to exactly one, here, in the always-visible status strip.
+  const disconnected = wsPhase !== "open";
 
   const running = runs.filter((a) => a.status === "running");
   const blocked = runs.filter(
@@ -480,6 +501,9 @@ export function OpStatusBar({
         onClick={() => setOpen(open === key ? null : key)}
         aria-expanded={open === key}
       >
+        {/* Frozen while disconnected — a stale count shouldn't keep pulsing
+            as if it's live (the dot's CSS animation is suppressed via
+            .op-statusbar--offline, see styles.css). */}
         <span className={"dot " + dot} aria-hidden="true" />
         <b>{list.length}</b> {label}
       </button>
@@ -507,19 +531,34 @@ export function OpStatusBar({
     </span>
   );
 
+  // A single plain-English sentence for screen readers — kept separate from
+  // the rich interactive markup above so a live-region announcement reads
+  // as one clean update, not a re-read of every button's own state.
+  const summary = disconnected
+    ? "Reconnecting to mission control — counts frozen, live updates paused."
+    : `${busy.length} agents busy, ${idle.length} idle` +
+      (oq.length > 0 ? `, longest wait ${fmtWait(longest)}` : "");
+
   return (
-    <footer className="op-statusbar">
+    <footer className={"op-statusbar" + (disconnected ? " op-statusbar--offline" : "")}>
       {stat("running", running, "running", "dot-running")}
       {stat("blocked", blocked, "need you", "dot-waiting")}
-      <span className="op-sb-text">
-        <b>{busy.length}</b> busy · <b>{idle.length}</b> idle
-        {oq.length > 0 && (
-          <>
-            {" "}
-            · longest <b>{fmtWait(longest)}</b>
-          </>
-        )}
-      </span>
+      {disconnected ? (
+        <span className="op-sb-text op-sb-reconnecting">
+          <span className="op-sb-reconnect-dot" aria-hidden="true" /> reconnecting…
+        </span>
+      ) : (
+        <span className="op-sb-text">
+          <b>{busy.length}</b> busy · <b>{idle.length}</b> idle
+          {oq.length > 0 && (
+            <>
+              {" "}
+              · longest <b>{fmtWait(longest)}</b>
+            </>
+          )}
+        </span>
+      )}
+      <span className="sr-only" role="status" aria-live="polite">{summary}</span>
       {open && <span className="stat-backdrop" onClick={() => setOpen(null)} aria-hidden="true" />}
     </footer>
   );

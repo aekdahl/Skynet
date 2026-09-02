@@ -53,13 +53,6 @@
   background: color-mix(in oklch, var(--ak-machine), transparent 88%);
   border-color: color-mix(in oklch, var(--ak-machine), transparent 55%);
 }
-/* A disconnected fleet must never read the same as a quiet one — its own
-   warn-colored pill, never just the absence of the machine pill above. */
-.di-pill-warn {
-  color: var(--ak-warn);
-  background: color-mix(in oklch, var(--ak-warn), transparent 88%);
-  border-color: color-mix(in oklch, var(--ak-warn), transparent 55%);
-}
 .di-pill-ghost {
   color: var(--ak-text-faint);
   background: var(--ak-surface-1);

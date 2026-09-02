@@ -65,7 +65,7 @@ export function RunDetailView({
   onBack: () => void;
   backLabel: string;
 }) {
-  const { runs, projects, fleet, queue, pauseAgent, resumeAgent, stopAgent, wsPhase } = useStore();
+  const { runs, projects, fleet, queue, pauseAgent, resumeAgent, stopAgent } = useStore();
   const confirm = useConfirm();
   const project = projects.find((p) => p.id === agent.projectId);
   const gate = hitlFor(queue, agent.id);
@@ -110,9 +110,9 @@ export function RunDetailView({
               STEP {Math.min(i + 1, n)} OF {n} · {curStep(agent)}
             </button>
           )}
-          {wsPhase !== "open" && (
-            <span className="rd-disconnect-pill" role="status">⚠ RECONNECTING</span>
-          )}
+          {/* Phase 30 hardening — dropped this screen's own disconnect pill;
+              the shared status strip (shell.tsx's OpStatusBar) is the ONE
+              place a disconnect shows now. */}
         </div>
         <div className="rd-meta-row">
           <span>{agent.model}</span>

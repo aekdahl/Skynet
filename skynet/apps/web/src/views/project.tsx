@@ -3,6 +3,7 @@ import type { TaskRun, Project, Task, TaskAssignment, Agent, SecretMeta, Provide
 import { computeDailySpend, committedUsd, resolveTaskBrief } from "@skynet/shared";
 import { useStore } from "../lib/store";
 import * as api from "../lib/client";
+import { useEscapeLayer } from "../lib/escape-stack";
 import { Blocked, PrimaryButton } from "../components/empty";
 import {
   agentsForProject,
@@ -389,22 +390,18 @@ function TaskCard({
   const [retriaging, setRetriaging] = useState(false);
   const cardRef = useRef<HTMLDivElement>(null);
   const detailCloseRef = useRef<HTMLButtonElement>(null);
-  // Keyboard a11y for the detail modal: focus its close button on open (Escape
-  // dismisses same as the overlay/× click), and return focus to the card that
-  // opened it on close — otherwise a keyboard user's focus silently drops to
-  // <body> once the modal unmounts.
+  // Keyboard a11y for the detail modal: focus its close button on open, and
+  // return focus to the card that opened it on close — otherwise a keyboard
+  // user's focus silently drops to <body> once the modal unmounts. Escape
+  // itself rides the shared escape-stack (see lib/escape-stack.ts) so it
+  // closes THIS modal — not also the project breadcrumb's "leave the
+  // project" handler, which has no way to see this component's own local
+  // `detail` state.
+  useEscapeLayer(detail, () => setDetail(false));
   useEffect(() => {
     if (!detail) return;
     detailCloseRef.current?.focus();
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        setDetail(false);
-      }
-    };
-    window.addEventListener("keydown", onKey);
     return () => {
-      window.removeEventListener("keydown", onKey);
       cardRef.current?.focus();
     };
   }, [detail]);
@@ -1786,13 +1783,24 @@ export function ProjectView({
 
   // Breadcrumb keyboard affordances — Escape or Option/Alt+Left leaves the
   // project, same action as the ✕ button and the "Projects" crumb itself.
-  // Skipped while typing, or while a local overlay this view owns is open
-  // (that overlay's own Escape handling should win instead).
+  // Skipped while typing, or while a local overlay THIS component owns is
+  // open (editing/previewOpen/flyOpen/confirmDel/informOpen) — those still
+  // need their own local flags since they don't yet have their own
+  // useEscapeLayer registrations. Escape itself rides the shared
+  // escape-stack (lib/escape-stack.ts): registering here — rather than a
+  // bare window listener — means an overlay opened from a DIFFERENT
+  // component entirely (e.g. TaskCard's own detail modal, which this view
+  // has no state to check) correctly wins over this handler too, not just
+  // the ones this component knows about by name.
+  useEscapeLayer(
+    !editing && !previewOpen && !flyOpen && !confirmDel && !informOpen,
+    onBack,
+  );
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (isTypingTarget(e.target)) return;
       if (editing || previewOpen || flyOpen || confirmDel || informOpen) return;
-      if (e.key === "Escape" || (e.altKey && e.key === "ArrowLeft")) {
+      if (e.altKey && e.key === "ArrowLeft") {
         e.preventDefault();
         onBack();
       }

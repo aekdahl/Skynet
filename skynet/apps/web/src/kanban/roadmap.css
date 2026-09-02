@@ -103,6 +103,21 @@
 .rdv-source-hint { font-size: 11.5px; color: var(--ak-text-faint); margin-right: auto; }
 .rdv-source-err { font-size: 11.5px; color: var(--ak-warn); }
 
+/* Item 19 — surfaces RoadmapDoc.syncState === "unparseable" instead of
+   silently rendering (possibly stale, possibly genuinely empty) content
+   with no indication the last sync actually failed. */
+.rdv-unparseable-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: var(--ak-radius-card);
+  background: color-mix(in oklch, var(--ak-warn), transparent 90%);
+  border: 1px solid color-mix(in oklch, var(--ak-warn), transparent 55%);
+  color: var(--ak-warn);
+  font-size: 12.5px;
+}
+
 /* HISTORY mode — reuses .audit-row's own visual language (audit.tsx), just
    the row content swapped for a commit's shape. */
 .rdv-history { display: flex; flex-direction: column; gap: 10px; }

@@ -121,14 +121,6 @@
 
 .kbb-cap-sentence { margin: 0; font-size: 12px; line-height: 1.6; color: var(--ak-text-muted); }
 
-/* Disconnect pill — same wsPhase-driven treatment as the other 5 screens. */
-.kbb-disconnect-pill {
-  font: 10.5px var(--ak-font-mono); letter-spacing: .02em; color: var(--ak-warn);
-  background: color-mix(in oklch, var(--ak-warn), transparent 88%);
-  border: 1px solid color-mix(in oklch, var(--ak-warn), transparent 55%);
-  border-radius: var(--ak-radius-bar); padding: 2px var(--ak-sp-8);
-}
-
 /* This panel is inline page content, not a floating drawer — "full-screen
    sheet" here means: stop constraining it at all and let every fixed-width
    input grow, rather than sitting artificially narrow inside its own card. */

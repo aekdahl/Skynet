@@ -89,9 +89,14 @@ function RowTrack({ row, now }: { row: DriftRow; now: number }) {
 
 function DriftTableRow({ row, now }: { row: DriftRow; now: number }) {
   const { line, forecast } = row;
+  // Item 21 — the track's lime/blue segments are color-only; this restates
+  // the exact same delivered/in-flight split as text on the same row, never
+  // relying on the color alone to carry that information.
+  const todoTasks = forecast.forecastable ? forecast.totalTasks - forecast.doneTasks - forecast.inFlightTasks : 0;
   const fact = !forecast.forecastable
     ? "no tasks linked"
-    : `${forecast.doneTasks}/${forecast.totalTasks} tasks${line.promisedDate != null ? ` · promised ${fmtDate(line.promisedDate)}` : ""}`;
+    : `${forecast.doneTasks} done${forecast.inFlightTasks > 0 ? `, ${forecast.inFlightTasks} in flight` : ""}${todoTasks > 0 ? `, ${todoTasks} todo` : ""} of ${forecast.totalTasks}` +
+      (line.promisedDate != null ? ` · promised ${fmtDate(line.promisedDate)}` : "");
   return (
     <div className="rdd-row">
       <div className="rdd-row-label">

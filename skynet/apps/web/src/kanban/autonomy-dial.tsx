@@ -49,7 +49,7 @@ export function AutonomyDialButton({
 }
 
 function AutonomyDial({ project, onClose }: { project: Project; onClose: () => void }) {
-  const { setAutonomyDetent, createAutonomyOverride, autonomyRev, wsPhase } = useStore();
+  const { setAutonomyDetent, createAutonomyOverride, autonomyRev } = useStore();
   const confirm = useConfirm();
   const [state, setState] = useState<AutonomyDetentState | null>(null);
   const [error, setError] = useState(false);
@@ -217,10 +217,10 @@ function AutonomyDial({ project, onClose }: { project: Project; onClose: () => v
       <div className="ad-panel" onMouseDown={(e) => e.stopPropagation()}>
         <div className="ad-header">
           <div>
-            <h2 className="ad-title">
-              Autonomy — {project.name}
-              {wsPhase !== "open" && <span className="ad-disconnect-pill" role="status">⚠ RECONNECTING</span>}
-            </h2>
+            {/* Phase 30 hardening — dropped this dial's own disconnect pill;
+                the shared status strip (shell.tsx's OpStatusBar) is the ONE
+                place a disconnect shows now. */}
+            <h2 className="ad-title">Autonomy — {project.name}</h2>
             <p className="ad-subtitle">A dial, not a switch — pick how much runs without a person.</p>
           </div>
           <button className="btn btn-ghost btn-sm" onClick={onClose} aria-label="Close">✕</button>

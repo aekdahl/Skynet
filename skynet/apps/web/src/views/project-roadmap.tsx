@@ -407,13 +407,23 @@ function RoadmapRendered({
     onDocRefresh();
   };
 
+  const hasContent = sections.some((s) => s.headingText != null || s.intent != null || s.lines.length > 0) || blocks.length > 0;
+
   return (
     <div className="rdv-body">
       <div className="rdv-main">
-        {sections.map((s, i) => (
-          <RoadmapSectionBlock key={i} section={s} index={i} now={now} linkBase={linkBase} canClaim onClaim={claim} onRevert={revert} />
-        ))}
-        {blocks.map((b) => <MachineBlock key={b.index} block={b} />)}
+        {hasContent ? (
+          <>
+            {sections.map((s, i) => (
+              <RoadmapSectionBlock key={i} section={s} index={i} now={now} linkBase={linkBase} canClaim onClaim={claim} onRevert={revert} />
+            ))}
+            {blocks.map((b) => <MachineBlock key={b.index} block={b} />)}
+          </>
+        ) : (
+          <div className="kb-empty">
+            This file has no headings, checklist items, or content yet — it's just prose (or empty). Switch to SOURCE to write into it directly.
+          </div>
+        )}
       </div>
       <div className="rdv-rail">
         <OwnershipRail />
@@ -593,6 +603,19 @@ export function RoadmapDocView({ project, tasks }: { project: Project; tasks: Ta
         </div>
       </div>
 
+      {/* Item 19 — an unparseable doc must never render silently as if it
+          were just empty. `ast`/`sections` may still hold the LAST
+          successfully-parsed content (syncProjectRoadmap's stale-on-failure
+          fallback) — shown, but flagged as possibly outdated — or, on a
+          first-ever failure, genuinely empty, in which case RoadmapRendered/
+          RoadmapDrift's own empty-state below would otherwise read as "an
+          intentionally blank file" rather than "we couldn't read it." */}
+      {doc?.syncState === "unparseable" && (
+        <div className="rdv-unparseable-banner" role="status">
+          Couldn't parse this file the last time it synced — what's shown below may be outdated.{" "}
+          <button className="btn btn-ghost btn-sm" onClick={refresh}>Retry sync</button>
+        </div>
+      )}
       {mode === "rendered" &&
         (doc ? (
           <RoadmapRendered project={project} doc={doc} proposals={proposals} history={history} onOpenHistory={() => setMode("history")} onDocRefresh={refresh} />

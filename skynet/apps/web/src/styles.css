@@ -827,7 +827,7 @@ kbd {
    have opted out of motion get instant transitions instead. */
 @media (prefers-reduced-motion: no-preference) {
   @keyframes view-enter { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
-  .overview, .queue, .detail, .map, .vw, .home-bar, .audit, .projview {
+  .overview, .queue, .map, .vw, .home-bar, .audit, .projview {
     animation: view-enter var(--motion-base) ease-out both;
   }
   /* Lens panels within a view (kanban / timeline / features / roadmap) mount and
@@ -835,6 +835,22 @@ kbd {
      gives them a quick crossfade at the faster tier. */
   .kb-cols, .kb-cols-6, .projview-timeline, .projview-features, .projview-roadmap, .projview-line, .projview-queue {
     animation: view-enter var(--motion-fast) ease-out both;
+  }
+  /* Item 5 (Phase 30 hardening) — the real "drill-in" pattern: TaskDetail
+     (views/task.tsx's `.detail`, the ONLY thing that class is used for) is a
+     content-area swap opening one item out of a list — never a modal, never
+     a full navigation (the hash updates, but nothing remounts the shell) —
+     exactly what this item specifies. Split out of the shared view-enter
+     rule above (it used to run at --motion-base/6px, the same generic
+     top-level-page timing every OTHER view in that list still uses) onto
+     its own 160ms/8px keyframe. Not applied to RunDetailView/AgentDetailView
+     — both are drill-in-SHAPED too, but share the much more general `.vw`
+     class with genuine top-level pages (Home, Fleet overview, …), so
+     retargeting `.vw` wholesale would misapply this timing well beyond
+     drill-ins; narrowing THAT split is future work, not this pass's. */
+  @keyframes drill-in-enter { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+  .detail {
+    animation: drill-in-enter 160ms ease-out both;
   }
 }
 .vw { position: relative; z-index: 1; max-width: 1180px; margin: 0 auto; padding: calc(var(--sp) * 1.8) calc(var(--sp) * 2) 70px; display: flex; flex-direction: column; gap: 26px; }
@@ -2449,6 +2465,31 @@ button.rb-proj:hover { color: var(--accent); }
 .op-sb-empty { font-size: var(--fz-12); color: var(--muted); padding: 8px 10px; }
 .op-sb-r { margin-left: auto; white-space: nowrap; }
 .op-statusbar .ok { color: var(--ok); }
+/* Phase 30 hardening — the ONE shared RECONNECTING indicator (shell.tsx's
+   OpStatusBar); every per-page disconnect pill this replaced is gone. Counts
+   freeze visually while offline (this suppresses the running/waiting dots'
+   own pulse — see .dot-waiting above — rather than pretending the stale
+   numbers are still live-updating). */
+.op-statusbar--offline .op-sb-stat .dot { animation: none; }
+.op-sb-reconnecting { display: inline-flex; align-items: center; gap: 6px; color: var(--warn); }
+.op-sb-reconnect-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--warn); flex: none; animation: pulse 1.6s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .op-sb-reconnect-dot { animation: none; }
+}
+
+/* Screen-reader-only: visually hidden but still announced by assistive tech
+   (aria-live regions in particular — see OpStatusBar's summary span). */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
 
 /* get started / first run */
 .getstarted { position: relative; z-index: 1; min-height: 70vh; display: flex; align-items: center; justify-content: center; padding: 40px 24px; }
@@ -2944,14 +2985,6 @@ button.rb-proj:hover { color: var(--accent); }
 .steward-head { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--line-soft); flex: none; }
 .steward-title { font-size: var(--fz-11); letter-spacing: 0.12em; color: var(--accent); }
 .steward-scope { font-size: var(--fz-11); color: var(--muted); }
-/* Same wsPhase-driven treatment as the other 5 fleet-governance screens — a
-   disconnected dock must never read the same as a quiet one. */
-.steward-disconnect-pill {
-  font-family: var(--ak-font-mono); font-size: 10.5px; letter-spacing: .02em; color: var(--ak-warn);
-  background: color-mix(in oklch, var(--ak-warn), transparent 88%);
-  border: 1px solid color-mix(in oklch, var(--ak-warn), transparent 55%);
-  border-radius: var(--ak-radius-bar); padding: 2px 8px;
-}
 .steward-spacer { flex: 1; }
 .steward-thread { flex: 1; min-height: 0; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 2px; }
 .steward-dock .asst-input { padding: 10px 12px; border-top: 1px solid var(--line-soft); flex: none; }

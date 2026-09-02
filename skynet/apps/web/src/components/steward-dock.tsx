@@ -95,7 +95,7 @@ export function StewardDock({
   // audit footer's own rows.
   onOpenTask: (id: string) => void;
 }) {
-  const { projects, runs, createTask, transitionTask, updateTask, deleteTask, archiveTask, moveTask, requestReview, resyncProjectSource, updateProject, createFeature, createMilestone, updateFeature, wsPhase } = useStore();
+  const { projects, runs, createTask, transitionTask, updateTask, deleteTask, archiveTask, moveTask, requestReview, resyncProjectSource, updateProject, createFeature, createMilestone, updateFeature } = useStore();
   const [msgs, setMsgs] = useState<Msg[]>(thread);
   const [input, setInput] = useState(draftCache);
   const [busy, setBusy] = useState(false);
@@ -358,7 +358,9 @@ function describeOutcome(kind: string, o: StewardActionOutcome): string {
       <div className="steward-head">
         <span className="steward-title mono">✦ STEWARD</span>
         <span className="steward-scope mono">{effFocusName ? `focused · ${effFocusName}` : "workspace"}</span>
-        {wsPhase !== "open" && <span className="steward-disconnect-pill" role="status">⚠ RECONNECTING</span>}
+        {/* Phase 30 hardening — dropped this dock's own disconnect pill; the
+            shared status strip (shell.tsx's OpStatusBar) is the ONE place a
+            disconnect shows now. */}
         <span className="steward-spacer" />
         <button className="btn btn-ghost btn-sm" onClick={onClose} title="Close Steward" aria-label="Close Steward">✕</button>
       </div>

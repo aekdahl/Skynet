@@ -344,15 +344,3 @@
   .rv-side-col { order: -1; }
 }
 
-/* Disconnect pill — same wsPhase-driven treatment as the Decision Inbox's
-   header pill (inbox.tsx/.css) and Run Detail's (run-detail.css). */
-.rv-disconnect-pill {
-  margin-left: var(--ak-sp-8);
-  font: 10.5px var(--ak-font-mono);
-  letter-spacing: 0.02em;
-  color: var(--ak-warn);
-  background: color-mix(in oklch, var(--ak-warn), transparent 88%);
-  border: 1px solid color-mix(in oklch, var(--ak-warn), transparent 55%);
-  border-radius: var(--ak-radius-bar);
-  padding: 2px var(--ak-sp-8);
-}

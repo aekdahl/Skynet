@@ -190,6 +190,71 @@ describe("Inbox integration — an agent-initiated proposal is a governed decisi
   });
 });
 
+describe("Phase 30 hardening — the Telegram no-approve-button flag matches Rule 2's real scope, not just literal deletions", () => {
+  it("a plain single-line deletion (non-conflict) sets has_deletion", async () => {
+    const { store, ops } = await setup();
+    const { sectionId, context } = await phase1Baseline(ops);
+    const proposal = await ops.proposeRoadmapChange(DEFAULT_WORKSPACE, "p1", {
+      agentId: "agent-a", section: sectionId, headline: "Remove First item",
+      diff: { added: [], removed: ["- [ ] First item"], context }, reasoning: "no longer needed",
+    });
+    const item = (await store.listQueue(DEFAULT_WORKSPACE)).find((q) => q.roadmapProposalId === proposal.id)!;
+    expect(item.flags).toContain("has_deletion");
+    expect(item.risk).toBe("medium");
+  });
+
+  it("a multi-line deletion sets has_deletion", async () => {
+    const { store, ops } = await setup();
+    const { sectionId, context } = await phase1Baseline(ops);
+    const proposal = await ops.proposeRoadmapChange(DEFAULT_WORKSPACE, "p1", {
+      agentId: "agent-a", section: sectionId, headline: "Remove both items",
+      diff: { added: [], removed: ["- [ ] First item", "- [ ] Second item"], context }, reasoning: "cutting this scope",
+    });
+    const item = (await store.listQueue(DEFAULT_WORKSPACE)).find((q) => q.roadmapProposalId === proposal.id)!;
+    expect(item.flags).toContain("has_deletion");
+  });
+
+  it("a date-only ADDITION (no removed lines at all) ALSO sets has_deletion — Rule 2 treats a promised-date touch the same as a deletion, and Telegram must too", async () => {
+    const { store, ops } = await setup();
+    const { sectionId, context } = await phase1Baseline(ops);
+    const proposal = await ops.proposeRoadmapChange(DEFAULT_WORKSPACE, "p1", {
+      agentId: "agent-a", section: sectionId, headline: "Add a promised date",
+      diff: { added: ["- [ ] Ship by 2026-12-01"], removed: [], context }, reasoning: "committing to a date",
+    });
+    const item = (await store.listQueue(DEFAULT_WORKSPACE)).find((q) => q.roadmapProposalId === proposal.id)!;
+    expect(item.flags).toContain("has_deletion");
+    expect(item.risk).toBe("medium");
+  });
+
+  it("a plain addition touching neither a removal nor a date leaves flags empty — regression guard against over-flagging everything", async () => {
+    const { store, ops } = await setup();
+    const { sectionId, context } = await phase1Baseline(ops);
+    const proposal = await ops.proposeRoadmapChange(DEFAULT_WORKSPACE, "p1", {
+      agentId: "agent-a", section: sectionId, headline: "Add a plain note",
+      diff: { added: ["- [ ] Just a note, no date"], removed: [], context }, reasoning: "worth tracking",
+    });
+    const item = (await store.listQueue(DEFAULT_WORKSPACE)).find((q) => q.roadmapProposalId === proposal.id)!;
+    expect(item.flags).toEqual([]);
+    expect(item.risk).toBe("low");
+  });
+
+  it("a held_conflict pair (always carries a deletion per Rule 4's own design) sets has_deletion on its card", async () => {
+    const { store, ops } = await setup();
+    const { sectionId, context } = await phase1Baseline(ops);
+    await ops.proposeRoadmapChange(DEFAULT_WORKSPACE, "p1", {
+      agentId: "agent-a", section: sectionId, headline: "Drop First item, add X",
+      diff: { added: ["- [ ] X"], removed: ["- [ ] First item"], context }, reasoning: "X supersedes it",
+    });
+    const b = await ops.proposeRoadmapChange(DEFAULT_WORKSPACE, "p1", {
+      agentId: "agent-b", section: sectionId, headline: "Drop First item, add Y instead",
+      diff: { added: ["- [ ] Y"], removed: ["- [ ] First item"], context }, reasoning: "Y is the right call",
+    });
+    expect(b.state).toBe("held_conflict");
+    const openItem = (await store.listQueue(DEFAULT_WORKSPACE)).find((q) => q.kind === "roadmap_edit" && !q.resolvedAt)!;
+    expect(openItem.flags).toContain("has_deletion");
+  });
+});
+
 describe("Rule 4 conflict card — held_conflict raises exactly one new HITL, dismissing the stale one", () => {
   it("dismisses proposal A's plain open card and raises ONE conflict card when B forces a hold", async () => {
     const { store, ops } = await setup();

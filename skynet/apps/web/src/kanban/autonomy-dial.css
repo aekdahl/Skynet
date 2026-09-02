@@ -47,14 +47,6 @@
 .ad-header { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--ak-sp-16); }
 .ad-title { font-size: 17px; font-weight: 600; color: var(--ak-text-primary); margin: 0; }
 .ad-subtitle { font-size: 12px; color: var(--ak-text-muted); margin: var(--ak-sp-3) 0 0; }
-.ad-disconnect-pill {
-  margin-left: var(--ak-sp-8);
-  font: 10.5px var(--ak-font-mono); letter-spacing: .02em; color: var(--ak-warn);
-  background: color-mix(in oklch, var(--ak-warn), transparent 88%);
-  border: 1px solid color-mix(in oklch, var(--ak-warn), transparent 55%);
-  border-radius: var(--ak-radius-bar); padding: 2px var(--ak-sp-8);
-  vertical-align: middle;
-}
 
 /* ── 4 detent cards ────────────────────────────────────────────────────── */
 .ad-cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--ak-sp-12); }
