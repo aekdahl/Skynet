@@ -2207,7 +2207,7 @@ export function ProjectView({
       ) : lens === "keys" ? (
         <KeysBudgetPanel project={project} runs={runs} />
       ) : lens === "roadmap" ? (
-        <RoadmapDocView project={project} />
+        <RoadmapDocView project={project} tasks={tasks} />
       ) : lens === "coverage" ? (
         <ProjectQualityView project={project} />
       ) : lens === "context" ? (

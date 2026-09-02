@@ -340,6 +340,14 @@ const ALLOW = new Set<string>([
   // "roadmap-doc-view" acceptance check above (control-plane shape, no repo
   // needed for those three).
   "claimRoadmapLine", "revertRoadmapLine", "fetchRoadmapHistory",
+  // Phase 28 (TASK 31) — the Drift dashboard's two write actions, same "needs
+  // a real local git checkout" reasoning as the roadmap-doc-view actions
+  // just above: proposeRoadmapChange needs a real fleet agent + section id to
+  // mean anything, commitRoadmapLineEdit needs a real commit to verify
+  // against. Both exercised end to end (real Fastify app + real repo, real
+  // attributed commit parsed back out of the git object) in
+  // tests/roadmap-drift.test.ts.
+  "proposeRoadmapChange", "commitRoadmapLineEdit",
 ]);
 
 describe("client API coverage", () => {

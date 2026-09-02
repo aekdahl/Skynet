@@ -85,3 +85,18 @@ export const ProposeRoadmapChangeRequest = z.object({
   respectedBoundaries: z.array(z.string()).optional(),
 });
 export type ProposeRoadmapChangeRequest = z.infer<typeof ProposeRoadmapChangeRequest>;
+
+/**
+ * TASK 31 — a single-line roadmap edit the OPERATOR decides directly (the
+ * Drift dashboard's "MOVE IT TO Q4"/"KEEP AND RE-DATE Q3" actions), committed
+ * straight through TASK 28's diff-splice + attributed-commit machinery
+ * (Operations.commitRoadmapLineEdit) with no RoadmapProposal/HITL detour —
+ * the same "a human's own decision just commits" precedent
+ * resolveRoadmapConflict's "write_own" action already established. No
+ * `agentId`: nothing proposed this but the operator themselves.
+ */
+export const CommitRoadmapLineEditRequest = z.object({
+  diff: RoadmapProposalDiff,
+  message: z.string().min(1),
+});
+export type CommitRoadmapLineEditRequest = z.infer<typeof CommitRoadmapLineEditRequest>;
