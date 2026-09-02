@@ -31,9 +31,12 @@ type Store = ReturnType<typeof useStore>;
 // only gets the CONFLICT treatment when it carries TASK 15's "file_collision"
 // flag — a plain merge-ready item (no textual collision, e.g. a non-conflict
 // git failure) renders diff-shaped instead, same as the spec calls for.
-type CardVariant = "approval" | "question" | "diff" | "conflict" | "escalation";
+export type CardVariant = "approval" | "question" | "diff" | "conflict" | "escalation";
 
-function cardVariant(item: Decision): CardVariant {
+// Exported so Home's "first three things" (Phase 22) can reuse the exact
+// same escalation/conflict classification — same left-border language,
+// never drifting from what the Inbox itself calls urgent.
+export function cardVariant(item: Decision): CardVariant {
   switch (item.kind) {
     case "question":
       return "question";

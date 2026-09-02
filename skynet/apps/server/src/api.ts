@@ -1501,6 +1501,17 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
   });
 
   // ── transitions (Momentum Rollout Phase 1c — read) ───────────────────────
+  // Workspace-wide (Home's stats, Phase 22) — a distinct top-level path from
+  // the task/project-scoped routes below, so no route-shadowing concern.
+  app.get<{ Querystring: { since?: string; limit?: string } }>("/api/transitions", async (req, reply) => {
+    const since = req.query.since ? Number(req.query.since) : undefined;
+    const limit = req.query.limit ? Number(req.query.limit) : undefined;
+    try {
+      return await ops.listTransitionsForWorkspace(ws(req), { since, limit });
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
   app.get<{ Params: { id: string } }>("/api/tasks/:id/transitions", async (req, reply) => {
     try {
       return await ops.listTransitionsForTask(ws(req), req.params.id);

@@ -529,6 +529,18 @@ export function fetchProjectTransitions(projectId: string, opts?: { since?: numb
   return req<Transition[]>("GET", `/api/projects/${projectId}/transitions${q ? `?${q}` : ""}`);
 }
 
+// ─── Home rebuild (Phase 22) — workspace-wide transitions ──────────────────
+// Same fetch-once-then-merge-live pattern as BoardHealth, just not scoped to
+// one project — Home's automation-rate/stalled-count stats span every
+// project in the workspace.
+export function fetchTransitions(opts?: { since?: number; limit?: number }) {
+  const qs = new URLSearchParams();
+  if (opts?.since != null) qs.set("since", String(opts.since));
+  if (opts?.limit != null) qs.set("limit", String(opts.limit));
+  const q = qs.toString();
+  return req<Transition[]>("GET", `/api/transitions${q ? `?${q}` : ""}`);
+}
+
 // ─── Momentum Board (Phase 5) — task detail: trail + suggested subtasks ────
 export function fetchTaskTransitions(taskId: string) {
   return req<Transition[]>("GET", `/api/tasks/${taskId}/transitions`);

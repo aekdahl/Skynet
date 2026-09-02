@@ -2191,39 +2191,42 @@ button.ad-hist-row:hover { border-color: var(--border); background: var(--raised
 .home { position: relative; z-index: 1; }
 .home-bar { max-width: 1180px; margin: 0 auto; padding: calc(var(--sp) * 1.6) calc(var(--sp) * 2) 0; display: flex; flex-direction: column; gap: 14px; }
 
-/* needs-you strip */
-.needs-strip { display: flex; flex-direction: column; gap: 10px; }
-.needs-clear { flex-direction: row; align-items: center; gap: 9px; font-size: var(--fz-13); color: var(--muted); background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 15px; }
-.needs-strip-head { display: flex; align-items: baseline; justify-content: space-between; }
-/* Section headline, same "pin to --accent" reasoning as .dot-waiting above. */
-.needs-strip-title { font-family: var(--font-mono); font-size: var(--fz-11); font-weight: 600; letter-spacing: 0.1em; color: var(--accent); white-space: nowrap; }
-.needs-strip-hint { color: var(--muted); font-weight: 400; letter-spacing: 0.04em; margin-left: 6px; }
-.needs-strip-all { background: none; border: none; cursor: pointer; font-family: var(--font-ui); font-size: var(--fz-12); color: var(--accent); font-weight: 500; }
-.needs-strip-all:hover { text-decoration: underline; }
-.needs-row { display: flex; gap: 12px; align-items: flex-start; overflow-x: auto; padding-bottom: 6px; scrollbar-width: thin; }
-.blocker { flex: 0 0 320px; background: var(--panel); border: 1px solid var(--line); border-radius: 11px; padding: 14px 16px; display: flex; flex-direction: column; gap: 8px; cursor: pointer; text-align: left; font-family: var(--font-ui); color: var(--text); transition: border-color var(--motion-fast), transform var(--motion-fast); }
-.blocker:hover { border-color: color-mix(in oklch, var(--accent), transparent 45%); transform: translateY(-1px); }
-.blocker:hover .blocker-cta { color: var(--accent); }
-.blocker:active { transform: scale(0.99); border-color: color-mix(in oklch, var(--accent), transparent 45%); }
-@media (prefers-reduced-motion: reduce) { .blocker:active { transform: none; } }
-.blocker-hot { border-color: color-mix(in oklch, var(--warn), transparent 55%); }
-.blocker-top { display: flex; align-items: center; gap: 10px; }
-.blocker-kind { font-family: var(--font-mono); font-size: var(--fz-11); font-weight: 600; letter-spacing: 0.1em; border: 1px solid; border-radius: 4px; padding: 2px 7px; white-space: nowrap; }
-.blocker-wait { font-size: var(--fz-13); font-weight: 600; color: var(--warn); font-variant-numeric: tabular-nums; }
-.blocker-title { font-size: var(--fz-14); font-weight: 600; color: var(--text); line-height: 1.35; }
-.blocker-meta { font-size: var(--fz-11); color: var(--muted); }
-.blocker-cta { font-size: var(--fz-12); font-weight: 500; color: var(--muted); margin-top: 2px; }
+/* ─── Home dashboard (Momentum Rollout Phase 22) ───────────────────────────
+   Same container width as .home-bar above, own top-level class so the
+   dashboard's own grid/cards aren't coupled to the greeting bar's layout. */
+.hm-greeting { font-size: var(--fz-14); color: var(--ink); line-height: 1.5; margin: 0; }
+/* The needs-you clause — the one span the greeting sentence calls out for
+   attention. --warn (not --danger): it's an ambient "worth a look" flag,
+   consistent with KIND_META's own approval/escalation coloring, not an
+   alarm. */
+.hm-needsyou { color: var(--warn); font-weight: 600; }
 
-/* conflicts banner */
-.home-conflict {
-  font-size: var(--fz-12-5); line-height: 1.55; color: var(--text);
-  border: 1px solid color-mix(in oklch, var(--danger), transparent 60%);
-  background: color-mix(in oklch, var(--danger), transparent 92%);
-  border-radius: 10px; padding: 11px 15px;
-}
-.home-conflict b { color: var(--danger); }
-.home-conflict-link { background: none; border: none; cursor: pointer; color: var(--accent); font-family: var(--font-ui); font-size: var(--fz-12-5); font-weight: 500; margin-left: 6px; }
-.home-conflict-link:hover { text-decoration: underline; }
+.hm-grid { max-width: 1180px; margin: 14px auto 0; padding: 0 calc(var(--sp) * 2); display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+.hm-card { background: var(--panel); border: 1px solid var(--line); border-top: 2px solid; border-radius: 12px; padding: 14px 16px; display: flex; flex-direction: column; gap: 6px; }
+.hm-card-label { font-family: var(--font-mono); font-size: var(--fz-11); font-weight: 600; letter-spacing: 0.06em; color: var(--muted); text-transform: uppercase; }
+.hm-card-value { font-size: var(--fz-24); font-weight: 600; letter-spacing: -0.01em; font-variant-numeric: tabular-nums; }
+.hm-card-sub { font-size: var(--fz-12); color: var(--muted); }
+
+.hm-chart-card { max-width: 1180px; margin: 14px auto 0; padding: 16px calc(var(--sp) * 2 - 4px); }
+.hm-chart { display: flex; align-items: stretch; gap: 5px; height: 130px; margin-top: 10px; }
+/* position:relative so .hm-chart-marker's `bottom:<n>%` resolves against
+   THIS column's height — never a percentage margin-bottom, which resolves
+   against width and flattens the marker series onto the baseline. */
+.hm-chart-col { position: relative; flex: 1; display: flex; flex-direction: column; height: 100%; min-width: 0; }
+.hm-chart-track { flex: 1; width: 100%; display: flex; align-items: flex-end; overflow: hidden; border-radius: 3px; background: var(--line-soft); }
+.hm-chart-bar { width: 100%; background: var(--info); border-radius: 3px 3px 0 0; transition: height var(--motion-base, 200ms ease-out); }
+.hm-chart-marker { position: absolute; left: 50%; transform: translate(-50%, 50%); width: 7px; height: 7px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 2px var(--panel); }
+.hm-chart-reading { margin-top: 10px; font-size: var(--fz-12-5); color: var(--muted); }
+
+.hm-first3 { max-width: 1180px; margin: 14px auto 0; padding: 0 calc(var(--sp) * 2) calc(var(--sp) * 2); }
+.hm-first3-list { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+.hm-first3-card { width: 100%; text-align: left; cursor: pointer; display: flex; flex-direction: column; gap: 5px; font: inherit; color: inherit; }
+.hm-first3-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.hm-first3-kind { font-family: var(--font-mono); font-size: var(--fz-11); font-weight: 600; letter-spacing: 0.06em; }
+.hm-first3-wait { font-size: var(--fz-12); color: var(--muted); }
+.hm-first3-title { font-size: var(--fz-13-5); font-weight: 600; color: var(--text); }
+.hm-first3-meta { font-size: var(--fz-11); color: var(--muted); }
+.hm-first3-footnote { margin-top: 8px; font-size: var(--fz-11); color: var(--faint); }
 
 /* lens switcher */
 .lens-switch { display: inline-flex; gap: 3px; background: var(--panel); border: 1px solid var(--line); border-radius: 9px; padding: 3px; align-self: flex-start; }
@@ -2466,25 +2469,6 @@ button.rb-proj:hover { color: var(--accent); }
 .gs-secondary { background: none; border: none; cursor: pointer; font-family: var(--font-ui); font-size: var(--fz-13); color: var(--muted); margin-top: 2px; }
 .gs-secondary:hover { color: var(--accent); }
 
-/* ─── First-run checklist (Home, until first merge) ──────────────────────── */
-.firstrun { border: 1px solid var(--line); border-radius: 12px; background: var(--panel); padding: 12px 14px; margin-bottom: 14px; }
-.firstrun-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 10px; }
-.firstrun-title { font-family: var(--font-mono); font-size: var(--fz-11); font-weight: 600; letter-spacing: 0.1em; color: var(--accent); }
-.firstrun-sub { font-size: var(--fz-11); color: var(--muted); }
-.firstrun-steps { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
-@media (max-width: 760px) { .firstrun-steps { grid-template-columns: 1fr 1fr; } }
-.firstrun-step { display: flex; align-items: flex-start; gap: 10px; text-align: left; background: var(--raised); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; font: inherit; }
-button.firstrun-step { cursor: pointer; }
-button.firstrun-step:hover { border-color: var(--accent); }
-.firstrun-step.current { border-color: var(--accent); box-shadow: 0 0 0 1px color-mix(in oklch, var(--accent), transparent 70%); }
-.firstrun-step.done { opacity: 0.7; }
-.firstrun-check { flex: none; width: 20px; height: 20px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-family: var(--font-mono); font-size: var(--fz-11); font-weight: 600; background: color-mix(in oklch, var(--accent), transparent 86%); color: var(--accent); }
-.firstrun-step.done .firstrun-check { background: color-mix(in oklch, var(--ok, var(--accent)), transparent 82%); color: var(--ok, var(--accent)); }
-.firstrun-step-txt { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.firstrun-step-txt b { font-size: var(--fz-12-5); font-weight: 600; }
-.firstrun-step-txt span { font-size: var(--fz-11-5); color: var(--muted); }
-.firstrun-step.done .firstrun-step-txt b { text-decoration: line-through; text-decoration-color: var(--faint); }
-.firstrun-go { margin-left: auto; align-self: center; flex: none; font-family: var(--font-ui); font-size: var(--fz-12); font-weight: 500; color: var(--accent); }
 
 /* ─── Connect / loading skeleton ─────────────────────────────────────────── */
 @media (prefers-reduced-motion: no-preference) {
@@ -2542,19 +2526,6 @@ button.firstrun-step:hover { border-color: var(--accent); }
 .fleet-warn-cta { margin-left: auto; flex: none; background: none; border: none; cursor: pointer; font-family: var(--font-ui); font-size: var(--fz-13); font-weight: 600; color: var(--accent); white-space: nowrap; }
 .fleet-warn-cta:hover { text-decoration: underline; text-underline-offset: 3px; }
 
-/* ─── Parallelism nudge — a suggestion, not a warning, so it's accent-toned
-   (not --danger) and carries its own dismiss. ────────────────────────────── */
-.parallel-nudge {
-  display: flex; align-items: center; gap: 11px; width: 100%;
-  padding: 9px 12px 9px 15px; border-radius: 11px; text-align: left;
-  background: color-mix(in oklch, var(--accent), transparent 92%);
-  border: 1px solid color-mix(in oklch, var(--accent), transparent 65%);
-  margin-bottom: 10px;
-}
-.parallel-nudge-txt { font-size: var(--fz-13); color: var(--text); line-height: 1.45; }
-.parallel-nudge-cta { flex: none; background: none; border: none; cursor: pointer; font-family: var(--font-ui); font-size: var(--fz-13); font-weight: 600; color: var(--accent); white-space: nowrap; }
-.parallel-nudge-cta:hover { text-decoration: underline; text-underline-offset: 3px; }
-.parallel-nudge-x { margin-left: auto; }
 
 /* ─── Shared empty state ─────────────────────────────────────────────────── */
 .empty-state { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding: 22px 20px; border: 1px dashed var(--line); border-radius: 12px; background: color-mix(in oklch, var(--panel), transparent 30%); }
@@ -3586,22 +3557,6 @@ button.firstrun-step:hover { border-color: var(--accent); }
 .clarify-answer { resize: vertical; min-height: 52px; font: inherit; width: 100%; }
 .clarify-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .clarify-hint { font-size: var(--fz-10-5); color: var(--faint); }
-/* ── Spend efficiency (Home): how much of the fleet's cost actually ships ─── */
-.spend-eff { display: flex; flex-direction: column; gap: 12px; }
-.spend-eff-head { display: flex; align-items: baseline; gap: 12px; }
-.spend-eff-headline { font-size: var(--fz-12); color: var(--muted); margin-left: auto; }
-.spend-bar { display: flex; height: 10px; border-radius: 999px; overflow: hidden; background: var(--line-soft); }
-.spend-bar-seg { height: 100%; }
-.spend-delivered { background: var(--ok, #2E9E5B); }
-.spend-inflight { background: var(--accent); }
-.spend-abandoned { background: var(--line); }
-.spend-legend { display: flex; flex-direction: column; gap: 6px; }
-.spend-legend-row { display: flex; align-items: center; gap: 8px; font-size: var(--fz-12); }
-.spend-dot { width: 8px; height: 8px; border-radius: 999px; flex: none; }
-.spend-legend-label { font-weight: 600; }
-.spend-legend-hint { color: var(--faint); font-size: var(--fz-11); }
-.spend-legend-num { margin-left: auto; color: var(--muted); font-size: var(--fz-11); }
-.spend-eff-caveat { font-size: var(--fz-11); color: var(--faint); border-left: 2px solid var(--line); padding-left: 8px; }
 .settings-saved { font-size: var(--fz-11); color: var(--ok, var(--accent)); margin-top: 6px; }
 
 /* ── Project Coverage tab: scenario coverage ─────────────────────────────── */
