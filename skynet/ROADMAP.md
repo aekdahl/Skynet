@@ -1595,6 +1595,23 @@ source-trust gate, reachable only when a project has both public issue sync and 
   with recovery stubbed — streak 1 → 2 → fires at 3 → clears → cooldown blocks the next — **without
   taking the live app down to test it**.
 
+- [x] **Agent chats follow the operator around — the dock is tabbed.** Steward already persisted across
+  navigation; a conversation with an AGENT lived on the run-detail page, so browsing away mid-chat threw
+  the thread and any half-typed reply away. That's enough of a tax that people stop asking agents
+  things, which is the opposite of what the chat is for. Chats are now **tabs in the same dock**
+  (`✦ Steward` plus one per open run, each closeable) rather than separate floating widgets — Steward
+  and an agent chat are the same interaction shape, and N independent windows is N things to arrange.
+  Three properties carry the feature, none of which the type system checks: tab state lives in **App**,
+  above the dock, so it outlives every view; inactive panes are **hidden, not unmounted**, because a
+  thread and a draft are component state and remounting on tab-switch would throw away exactly what this
+  exists to preserve; and the ✕ calls `stopPropagation`, or closing a tab would also select the pane
+  being removed. A tab whose run is **waiting on a human** is marked (run status OR an unresolved gate —
+  a run can be mid-turn while a gate it raised is still open), but the dock deliberately does NOT
+  duplicate the approve/reject controls: two places rendering the same decision is two places to keep
+  correct, so it says "open the run or the Inbox" and those keep owning the answer. The pane shows the
+  CONVERSATION only (the `you: …` / `↳ …` log convention), not the tool/telemetry stream — the dock is
+  narrow, and telemetry is what the run page is for. Verified live: two drafts and four turns survived
+  Fleet → Projects → Audit, tab-switching preserved both, and closing removed only the agent tab.
 - [x] **Kanban/agent redesign, stage 1 — one shared "this run is over" teardown (`Orchestrator.retireRun`).**
   Prompted by a live bug report: an escalation card sat in the Inbox for a task that was no longer
   visible in Ongoing/Review, with autonomy off. Root cause traced to a structural gap, not a one-off:
