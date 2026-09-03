@@ -81,6 +81,32 @@ export function App() {
   // setView is gated: a dev-only view (see lib/dev) coerces to "home" on a
   // release build, so a deep link / stale hash / PWA nav can't reach it. Every
   // navigation path flows through here, so guarding it once covers them all.
+  // Agent chat tabs live HERE, not in the dock, so they survive every navigation
+  // — the whole point is that a conversation follows the operator around
+  // instead of dying when they click through to look at something.
+  const [agentTabs, setAgentTabs] = useState<string[]>([]);
+  const [dockTab, setDockTab] = useState<string>("steward");
+  const closeAgentTab = useCallback((runId: string) => {
+    setAgentTabs((t) => t.filter((id) => id !== runId));
+    // Closing the tab you're looking at should land somewhere sensible rather
+    // than on a blank pane.
+    setDockTab((cur) => (cur === runId ? "steward" : cur));
+  }, []);
+  // Opened from anywhere (the run page's "Chat in dock") via a custom event —
+  // the same idiom the roadmap refresh already uses, and it avoids threading a
+  // callback through every view that might want to start a conversation.
+  useEffect(() => {
+    const onOpen = (e: Event) => {
+      const runId = (e as CustomEvent<{ runId?: string }>).detail?.runId;
+      if (!runId) return;
+      setAgentTabs((t) => (t.includes(runId) ? t : [...t, runId]));
+      setDockTab(runId);
+      setStewardOpen(true);
+    };
+    window.addEventListener("skynet:open-agent-chat", onOpen);
+    return () => window.removeEventListener("skynet:open-agent-chat", onOpen);
+  }, []);
+
   const [view, setViewRaw] = useState<ViewName>(() => gateView(route0?.view ?? initialView() ?? "home"));
   const setView = useCallback((v: ViewName) => setViewRaw(gateView(v)), []);
   const [projectId, setProjectId] = useState<string | null>(() => route0?.projectId ?? null);
@@ -500,6 +526,10 @@ export function App() {
           onClose={() => setStewardOpen(false)}
           seedText={stewardSeed?.text}
           seedNonce={stewardSeed?.nonce}
+          agentTabs={agentTabs}
+          activeTab={dockTab}
+          onActivateTab={setDockTab}
+          onCloseTab={closeAgentTab}
           onOpenTask={openTask}
         />
       )}

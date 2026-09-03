@@ -362,6 +362,18 @@ export function TaskDetail({
           {/* Which vendor actually served this run. Recorded on the run itself,
               so it stays true even if the credential is later re-pointed — and
               so a non-Anthropic run is never read as a Claude one. */}
+          {/* Move this conversation into the dock, where it follows you around.
+              The run page keeps its own full log + decision bar; this is for
+              carrying the CHAT along while you go look at something else. */}
+          <button
+            className="btn btn-ghost btn-sm"
+            title="Keep chatting with this agent while you browse — opens it as a tab in the dock"
+            onClick={() =>
+              window.dispatchEvent(new CustomEvent("skynet:open-agent-chat", { detail: { runId: agent.id } }))
+            }
+          >
+            ⇱ Chat in dock
+          </button>
           {/* Undo — the reversibility that lets an operator stop pre-clearing
               every merge. Only ever shown for a run that actually landed. */}
           {agent.merge && !agent.merge.revertedAt && (
