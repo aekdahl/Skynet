@@ -27,6 +27,7 @@ import {
 import { buildUnifiedDiff } from "./diff.js";
 import { KEY_DOCS, MAX_DOC_CHARS, contentHash, listProjectRoot, readProjectDoc, resolveRoadmapDoc } from "./docs.js";
 import { secretService } from "../secrets/index.js";
+import { projectCredential } from "../project-credential.js";
 import { settingsContext } from "../settings/env-settings.js";
 import type { Store } from "../store/store.js";
 
@@ -814,7 +815,7 @@ function buildPrompt(context: string, docs: string, settings: string, history: C
 /** The prepared model call for a project question — the prompt (grounded in
  *  status + repo docs), whether it runs against a local checkout, and the key.
  *  Shared by the accumulating and streaming answer paths so they ask identically. */
-export type StewardCall = { repo: boolean; prompt: string; cwd?: string; apiKey?: string; actionCtx: ProjectActionContext };
+export type StewardCall = { repo: boolean; prompt: string; cwd?: string; apiKey?: string; baseUrl?: string; actionCtx: ProjectActionContext };
 
 /** Ground a project question into a prepared Steward call — the SINGLE place both
  *  surfaces build the prompt + pick the repo tool-loop vs prefetch path, so they
@@ -861,14 +862,14 @@ export async function prepareStewardCall(
     milestones: milestones.map((m) => ({ id: m.id, name: m.name })),
     roadmap: roadmapDoc ? { path: roadmapDoc.path, content: roadmapDoc.content, ...(roadmapDoc.sha ? { sha: roadmapDoc.sha } : {}) } : null,
   };
-  const apiKey = (await secretService.resolve(workspaceId, "claude")) ?? undefined;
+  const { apiKey, baseUrl } = await projectCredential(store, workspaceId, project.id, ASSISTANT_MODEL);
   // Live, secret-safe settings snapshot so settings questions ground in real
   // runtime config, not just the committed repo docs.
   const settings = await settingsContext();
 
   // Local checkout → read the working tree directly (Read/Grep/Glob).
   if (project.repoPath) {
-    return { repo: true, prompt: buildPrompt(context, "", settings, history, question), cwd: project.repoPath, apiKey, actionCtx };
+    return { repo: true, prompt: buildPrompt(context, "", settings, history, question), cwd: project.repoPath, apiKey, baseUrl, actionCtx };
   }
   // GitHub-connected but not cloned → prefetch key docs + the top-level tree.
   let docs = project.repo ? await prefetchProjectDocs(workspaceId, project) : "";
@@ -883,7 +884,7 @@ export async function prepareStewardCall(
   if (project.repo && !docs) {
     docs = "\n\n(Repo is connected but no README/ROADMAP was found and files aren't cloned locally — answer from project status.)";
   }
-  return { repo: false, prompt: buildPrompt(context, docs, settings, history, question), apiKey, actionCtx };
+  return { repo: false, prompt: buildPrompt(context, docs, settings, history, question), apiKey, baseUrl, actionCtx };
 }
 
 /**
@@ -897,8 +898,8 @@ export async function askSteward(
 ): Promise<{ reply: string; actions: AssistantAction[]; sources: SourceRef[] }> {
   const c = await prepareStewardCall(store, opts);
   const answer = c.repo
-    ? await oneShotRepoAssistant({ prompt: c.prompt, cwd: c.cwd!, model: ASSISTANT_MODEL, apiKey: c.apiKey })
-    : await oneShotText({ prompt: c.prompt, model: ASSISTANT_MODEL, apiKey: c.apiKey });
+    ? await oneShotRepoAssistant({ prompt: c.prompt, cwd: c.cwd!, model: ASSISTANT_MODEL, apiKey: c.apiKey, baseUrl: c.baseUrl })
+    : await oneShotText({ prompt: c.prompt, model: ASSISTANT_MODEL, apiKey: c.apiKey, baseUrl: c.baseUrl });
   return splitProposedAction(answer, c.actionCtx);
 }
 
@@ -1008,6 +1009,9 @@ async function buildWorkspaceCall(
   ]
     .filter((s) => s !== "")
     .join("\n");
+  // Workspace dock: no project in focus, so there is no project allowlist to
+  // honour and the workspace default is the correct key (cf. prepareStewardCall,
+  // which does have one).
   const apiKey = (await secretService.resolve(workspaceId, "claude")) ?? undefined;
   return { prompt, apiKey };
 }
@@ -1047,8 +1051,8 @@ export async function* askStewardStream(
   const c = await prepareStewardCall(store, opts);
   let full = "";
   const gen = c.repo
-    ? oneShotRepoAssistantStream({ prompt: c.prompt, cwd: c.cwd!, model: ASSISTANT_MODEL, apiKey: c.apiKey })
-    : oneShotTextStream({ prompt: c.prompt, model: ASSISTANT_MODEL, apiKey: c.apiKey });
+    ? oneShotRepoAssistantStream({ prompt: c.prompt, cwd: c.cwd!, model: ASSISTANT_MODEL, apiKey: c.apiKey, baseUrl: c.baseUrl })
+    : oneShotTextStream({ prompt: c.prompt, model: ASSISTANT_MODEL, apiKey: c.apiKey, baseUrl: c.baseUrl });
   for await (const delta of gen) {
     full += delta;
     yield delta;

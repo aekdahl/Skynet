@@ -1494,6 +1494,36 @@ sell itself.** (P2/P3 items from the same audit are slotted into v1 / v1.5 below
   change). A second revert is refused rather than stacking an empty commit, and a revert that conflicts
   because the change has been built on since is **reported honestly rather than forced** — that's a real
   decision for a human. Verified against REAL git repos, not mocks.
+### ✓ A project's key restriction now covers its side calls too — Sep 2026
+`Project.enabledRunnerCredentialIds` restricts which keys a project may use. That was enforced where
+RUNNERS are acquired, so runs and reviews honoured it, but every LLM SIDE call resolved
+`secretService.resolve(ws, "claude")` and billed the workspace's default Anthropic key regardless:
+the project Steward (every message), triage clarifications, brief grounding, crystallize, decompose,
+board organisation, context condensing, and backlog replenishment — which passed no key at all and
+fell through to the ambient environment, bypassing the secret store entirely.
+
+Two separate problems, and only one is money. A project moved onto a cheap compatible endpoint still
+paid Anthropic for all of the above — the endpoint work moved the runs and left the side calls
+behind. The other is that "this project may only use key X" was not true, which is a governance
+claim rather than a billing preference. The endpoint matters as much as the key: sending a DeepSeek
+key to Anthropic authenticates nothing, and that is the same 401 shape as the earlier OAuth-token
+leak.
+
+Resolved in one place (`apps/server/src/project-credential.ts`) so the next side call someone adds
+inherits the rule, since one-site-at-a-time is exactly how the gap appeared. Empty allowlist (the
+default, meaning "any key") and calls with no project still use the workspace default. Two sites
+legitimately keep it and now say why in a comment: `draftCharter` runs before a project exists, and
+the workspace dock has no project in focus. A grep-based regression test fails on any new
+unexplained hardcode.
+
+- [ ] **Preview recipe inference still uses the workspace default** —
+  `ProjectPreview.resolveRecipe` (`apps/server/src/preview/project-preview.ts`) asks an agent to
+  guess a dev command and resolves `secretService.resolve(workspaceId, "claude")`. It has no `Store`
+  (the class takes only `worktreesDir`) and no `projectId` at that depth, though `recipeKey` is the
+  project id for project previews. Small, bounded, once-per-recipe ask — left as-is rather than
+  threading a store through the preview manager, but it is the last site that does not honour a
+  project's allowlist.
+
 ### 🔒 Security hardening — Aug 2026 audit remediation
 Full-codebase security audit of `main` (8 finder agents by area + a skeptical filtering pass per
 candidate finding, confidence ≥ 8/10 kept) surfaced 7 real, independently-confirmed vulnerabilities —
