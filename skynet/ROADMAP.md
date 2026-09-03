@@ -41,12 +41,18 @@ found these rare-to-absent), and where they live:
 6. **Org-wide knowledge diffusion** (v1 mass-inform + v4): one teammate's decision instantly informs
    every teammate's agents.
 
-**Recommended near-term order (re-prioritized on the findings)** — ship in this order:
-**(1) Provider breadth** (Codex/Gemini/Cursor/Copilot + **OpenCode**) — the *only* place we trail the field,
-and it's table stakes (also unlocks consensus runs); **(2) Governance-to-SOTA quick wins** (the launch wedge,
-mostly already built) + **guided provider connect**; **(3) v1.5** ease-of-use + **Memory v0** (the wedge that
-makes us not-just-another-orchestrator); **(4) Cross-vendor consensus runs** (needs the v1 providers).
-Everything below stays directional.
+**Recommended near-term order (re-prioritized now that provider breadth + the governance wedge are both
+largely shipped)** — ship in this order:
+**(1) Security + reliability debt** — the 7 Aug-2026 security findings and the task-write-atomicity race
+are both *confirmed, pre-existing* issues (one already caused real data loss) with broad blast radius;
+close these before anything else compounds on top of them. **(2) Memory v0** (nothing has shipped here
+yet, and it's the wedge that keeps us from being "just another orchestrator") **+ Cross-vendor consensus
+runs** (provider breadth landed — Codex/Gemini/Cursor/Copilot/Hermes/OpenCode/Kimi Code — so this
+signature bet is now unblocked, no longer gated on it). **(3) v1.5 ease-of-use** (Charter-assisted project
+creation, the remaining operator-ergonomics/design-token tail) **+ desktop code-signing** (the last GTM
+blocker on the committed release — mac auto-update silently no-ops without it). Provider breadth and the
+Governance-to-SOTA launch wedge — the prior #1/#2 here — are both essentially done; see
+[the archive](ROADMAP-ARCHIVE.md). Everything below stays directional.
 
 **Current batch priority order** — see [docs/operating-memo.md](docs/operating-memo.md) §8 for full rationale.
 Items are ranked PMF > Platform > Product within each batch:
@@ -54,18 +60,18 @@ Items are ranked PMF > Platform > Product within each batch:
 | Batch | # | Item | Track |
 |-------|---|------|-------|
 | **N (now)** | 1 | 🔒 Security hardening — Aug 2026 audit remediation (7 findings, see v1 section) | Security |
-| | 2 | deep-review / breaker-review settings UI toggle | PMF |
+| | 2 | 🐛 Task-write atomicity — confirmed live data loss, needs a design decision (see v1 section) | Reliability |
 | | 3 | Memory v0 — operator-authored facts, injected per project | Platform |
-| | 4 | Reactive runner breadth (Kimi Code landed) | Product |
-| | 5 | First-run onboarding telemetry (anonymous install events) | PMF |
-| | 6 | Mass inform — Fleet/Project UI (multi-select + whole-project) | Product |
-| **N+1** | 1 | Memory v0 — decision-derived fact capture from `hitl_audit` | Platform |
-| | 2 | Desktop code-signing (macOS + Windows) | GTM |
-| | 3 | Cross-vendor consensus runs (same task, two agents, auto-diff) | Platform |
+| | 4 | deep-review / breaker-review settings UI toggle (both already built, PATCH-API-only today) | PMF |
+| | 5 | Mass inform — Fleet/Project UI (multi-select + whole-project) | Product |
+| | 6 | First-run onboarding telemetry (anonymous install events) | PMF |
+| **N+1** | 1 | Cross-vendor consensus runs (same task, 2+ agents, auto-diff) — unblocked now that provider breadth has landed | Platform |
+| | 2 | Memory v0 — decision-derived fact capture from `hitl_audit` | Platform |
+| | 3 | Desktop code-signing (macOS + Windows) | GTM |
 | | 4 | Preview Phase 2 — service-container runtime + auto-rebuild on merge | Product |
 | **N+2** | 1 | Memory v0 — workspace-scoped MCP read/write server | Platform |
-| | 2 | Autonomy telemetry dashboard (ZTMR, HITL volume, resolution time) | PMF |
-| | 3 | Approve-with-rule batch mode (similar gates, one decision) | PMF |
+| | 2 | Charter-assisted project creation | Platform |
+| | 3 | Autonomy telemetry dashboard (ZTMR, HITL volume, resolution time) | PMF |
 | | 4 | Plan entity + project view panel (Product Steward foundation) | Platform |
 
 Legend: 🔬 = needs an LLM / open research · 🔗 = has a design brief · ⛓ = depends on earlier version ·
@@ -144,16 +150,54 @@ competitor-sweep review upgrades (verifier gate, auto-review, deep review-as-run
 guided understand-then-merge), and the Solutioning layer (S1-S10: SolutionBrief → decompose → thread →
 Crystallize). What's still open or partially landed:
 
-- [~] **Remaining providers behind `runner-sdk`.** Codex, Gemini, Cursor, Copilot, Hermes, OpenCode,
-  and Kimi Code are all landed as real `CliRunnerProvider`s (usage/cost telemetry, argv/env wiring,
-  live-verified against each vendor's current CLI). Reactive breadth from the candidate list
-  ([docs/runner-catalog.md](docs/runner-catalog.md)) stays open-ended.
+Ordered by priority (urgent bug → launch-wedge remainder → product debt → GTM/infra → hosted-deferred):
+
+- [ ] **🐛 Task-write atomicity — no optimistic concurrency, confirmed real data loss.** Reported live
+  (2026-08): a batch task-update lost `description` on 7 tasks (a genuine PATCH-semantics footgun,
+  mitigated with tighter MCP tool guidance). A deeper issue surfaced during recovery: every one of the
+  25+ `upsertTask` call sites across `orchestrator.ts`/`operations.ts` does a non-atomic
+  read-modify-write (fetch → spread → write the whole record back, no version/etag check) — safe when a
+  task had one writer at a time, not safe now that autonomous writers (triage, auto-review, the
+  self-replenishing backlog) run concurrently with human/scripted edits on the same record. **Needs a
+  real design decision before implementing** — options include a monotonic `version`/`updatedAt` field
+  checked-and-incremented at the Store layer, narrowing the highest-risk autonomous paths to
+  single-field atomic patches, or a compare-and-swap primitive every caller routes through. The race is
+  systemic (likely beyond just `Task`), not local to one call site — scope deliberately rather than
+  bolting a fix onto one path. **Highest-priority open item in this section** — it's a confirmed,
+  live bug, not a feature gap.
+- [~] **⭐ Governance to SOTA (the launch wedge — already the white space; make it best-in-class).**
+  Nearly all landed: policy-as-code command policy, budget ceiling + cost-aware allocation/pacing,
+  context-aware (blast-radius) risk classification, the prompt-injection/tool-poisoning firewall,
+  tamper-evident hash-chained audit + NDJSON export, the compliance evidence pack (signed, one-click),
+  MCP push notifications for new HITL gates, `approve-with-rule` (writes a standing `ApprovalRule`) and
+  `approve-with-memory` (in-flow `Resolution.memoryNote` capture). **Remaining:** policy-driven gate
+  *batching* (similar gates, one decision) and Steward-side approve-in-flow; async/mobile/delegated
+  approval + escalation SLAs + a 2-person rule for high-risk gates; 🏢 hosted observability + SIEM export.
+- [~] **Deeper runner-capability surfacing** — pull more native capability through the `runner-sdk`
+  seam. Landed: real plan steps, token/cost telemetry, a Claude plan-mode HITL gate, token-by-token
+  streaming (Claude/Gemini/Cursor), a per-project `disallowedTools` deny-list, structured diffs in
+  review, and Copilot's move to real structured-event dispatch. **Remaining:** a full `allowedTools`
+  allow-list (the safer deny-list landed first, on purpose), `settingSources` (CLAUDE.md) support, and
+  token streaming for Codex/Copilot (neither exposes a chunked wire format to stream from).
 - [~] **Mass inform** — select multiple agents (or a whole project) and attach a note that rides the
   *next* prompt each already receives, no extra turn. Shipped: the `inform` interaction type
   (`POST /api/runs/inform`), live-session push for Claude, buffered-note delivery for the CLI runners
   (Codex/Gemini/Hermes/Cursor). Copilot doesn't implement it yet. **Remaining:** the Fleet/Project UI
   (multi-select on Fleet, whole-project on the project page); optional "also remember" → area/workspace
   memory promotion is still v4, not started.
+- [~] **Remaining providers behind `runner-sdk`.** Codex, Gemini, Cursor, Copilot, Hermes, OpenCode,
+  and Kimi Code are all landed as real `CliRunnerProvider`s (usage/cost telemetry, argv/env wiring,
+  live-verified against each vendor's current CLI). Reactive breadth from the candidate list
+  ([docs/runner-catalog.md](docs/runner-catalog.md)) stays open-ended — no fixed target, lowest urgency
+  now that the field-trailing gap this closed is gone.
+- [~] **UI system polish (P2 of [docs/ux-review.md](docs/ux-review.md)).** Landed: untangled
+  `--accent`/`--warn` (were an accidental hex duplicate), a real Lucide-based nav icon set, motion
+  tokens (`--motion-fast`/`--motion-base`), a real `:active` press state + a global `:focus-visible`
+  fallback, 9 missing icon-button `aria-label`s + 4 `aria-expanded` toggles, and 3 of 4 named
+  legibility-floor violations. **Deliberately not done:** *purposeful* two-column layouts for the
+  still-sparse Fleet/Integrations views (a bigger layout redesign, not a token fix — its own PR), and a
+  full sweep of the ~90 other `--faint` usages beyond the 4 named examples (tracked under v0.5's
+  "Legibility floor," already shipped for the ones that carried meaning).
 - [~] **🔗 Per-project live preview — "see what it builds", any software.** Phase 1 (web/sites) shipped:
   project + per-run preview managers, descriptor→heuristic→agent-assisted recipe resolution
   (`.skynet/preview.json`), refresh-on-merge, and a resizable split-screen dock ⇄ modal reachable from a
@@ -171,48 +215,16 @@ Crystallize). What's still open or partially landed:
   opens it cleanly and **mac auto-update works** (it silently no-ops on an unsigned build today); sign
   the Windows build (code-signing cert) to clear SmartScreen. The electron-builder config + CI
   secret-passthrough are straightforward to wire; the gating input is the **certs** — an Apple
-  Developer ID cert + a Windows code-signing cert added as repo secrets.
+  Developer ID cert + a Windows code-signing cert added as repo secrets. Last remaining GTM blocker on
+  the committed release.
 - [ ] 🏢 **Scale + containerized runner:** Redis multi-replica fan-out; **GKE Jobs for runners** — one
   container per agent, completing the v0 sandbox item's deferred half: memory/CPU caps (cgroups) and a
   network egress allowlist (proxy). The command-deny, worktree write-confinement, and runtime cap
-  already ship locally.
-- [~] **⭐ Governance to SOTA (the launch wedge — already the white space; make it best-in-class).**
-  Nearly all landed: policy-as-code command policy, budget ceiling + cost-aware allocation/pacing,
-  context-aware (blast-radius) risk classification, the prompt-injection/tool-poisoning firewall,
-  tamper-evident hash-chained audit + NDJSON export, the compliance evidence pack (signed, one-click),
-  MCP push notifications for new HITL gates, `approve-with-rule` (writes a standing `ApprovalRule`) and
-  `approve-with-memory` (in-flow `Resolution.memoryNote` capture). **Remaining:** policy-driven gate
-  *batching* (similar gates, one decision) and Steward-side approve-in-flow; async/mobile/delegated
-  approval + escalation SLAs + a 2-person rule for high-risk gates; 🏢 hosted observability + SIEM export.
-- [~] **Deeper runner-capability surfacing** — pull more native capability through the `runner-sdk`
-  seam. Landed: real plan steps, token/cost telemetry, a Claude plan-mode HITL gate, token-by-token
-  streaming (Claude/Gemini/Cursor), a per-project `disallowedTools` deny-list, structured diffs in
-  review, and Copilot's move to real structured-event dispatch. **Remaining:** a full `allowedTools`
-  allow-list (the safer deny-list landed first, on purpose), `settingSources` (CLAUDE.md) support, and
-  token streaming for Codex/Copilot (neither exposes a chunked wire format to stream from).
-- [~] **UI system polish (P2 of [docs/ux-review.md](docs/ux-review.md)).** Landed: untangled
-  `--accent`/`--warn` (were an accidental hex duplicate), a real Lucide-based nav icon set, motion
-  tokens (`--motion-fast`/`--motion-base`), a real `:active` press state + a global `:focus-visible`
-  fallback, 9 missing icon-button `aria-label`s + 4 `aria-expanded` toggles, and 3 of 4 named
-  legibility-floor violations. **Deliberately not done:** *purposeful* two-column layouts for the
-  still-sparse Fleet/Integrations views (a bigger layout redesign, not a token fix — its own PR), and a
-  full sweep of the ~90 other `--faint` usages beyond the 4 named examples (tracked under v0.5's
-  "Legibility floor," already shipped for the ones that carried meaning).
-- [ ] 🏢 Auth: **SSO/OIDC**.
+  already ship locally. Hosted-only — not needed for the local desktop release.
 - [ ] 🔗⛓ **Structural agent-hierarchy hooks** — `role`, `familyOf`→root, worker→manager merge (cheap,
-  additive; from [docs/agent-hierarchy.md](docs/agent-hierarchy.md)).
-- [ ] **🐛 Task-write atomicity — no optimistic concurrency, confirmed real data loss.** Reported live
-  (2026-08): a batch task-update lost `description` on 7 tasks (a genuine PATCH-semantics footgun,
-  mitigated with tighter MCP tool guidance). A deeper issue surfaced during recovery: every one of the
-  25+ `upsertTask` call sites across `orchestrator.ts`/`operations.ts` does a non-atomic
-  read-modify-write (fetch → spread → write the whole record back, no version/etag check) — safe when a
-  task had one writer at a time, not safe now that autonomous writers (triage, auto-review, the
-  self-replenishing backlog) run concurrently with human/scripted edits on the same record. **Needs a
-  real design decision before implementing** — options include a monotonic `version`/`updatedAt` field
-  checked-and-incremented at the Store layer, narrowing the highest-risk autonomous paths to
-  single-field atomic patches, or a compare-and-swap primitive every caller routes through. The race is
-  systemic (likely beyond just `Task`), not local to one call site — scope deliberately rather than
-  bolting a fix onto one path.
+  additive; from [docs/agent-hierarchy.md](docs/agent-hierarchy.md)). Cheap groundwork for v2; not
+  urgent on its own since nothing consumes it yet.
+- [ ] 🏢 Auth: **SSO/OIDC**. Hosted-only — not needed for the local desktop release.
 
 ### 🔒 Security hardening — Aug 2026 audit remediation
 
@@ -283,24 +295,21 @@ parallel with v1 hardening. (Rivals make you pre-auth each CLI and learn worktre
 features below are white space.) 10 items from the original UX/ease list have shipped — see
 [the archive](ROADMAP-ARCHIVE.md#v15--ship-the-wedge-onboarding-fluency--memory-v0).
 
-**UX/UI to SOTA (pre-release review — high & polish):**
-- [ ] **Text-contrast ramp** (ink / muted / faint, checked ratios — muted currently sits at the reading
-  floor) + a **systematized button/state token set** (primary / ghost / danger, each with explicit
-  hover · focus-visible · disabled · loading).
-- [~] **Design tokens, a11y, and an Inbox-first mobile/PWA shell.** Mostly landed: a published `--fz-*`
-  type-scale token per distinct font size in use, a single `--input-focus-border` token consolidating 4
-  drifted text-input focus treatments, ambient looping animations now guarded behind
-  `prefers-reduced-motion`, a keyboard walkthrough of assign→decide→merge with two real dead-ends fixed
-  (task-card tool buttons, the read-only task-detail modal), and the semantic palette / Inbox-first PWA
-  shell confirmed already correct. **Deliberately not done:** an 8px spacing rhythm — unlike font-size,
-  `padding`/`margin`/`gap` in `styles.css` aren't a latent consistent ladder; a faithful pass means real
-  design consolidation (choosing canonical steps, remapping ~700+ declarations) with real
-  visual-regression risk, not just token-naming — left as scoped future work.
-- [ ] **Charter-assisted project creation** — creating a project is a short LLM-drafted intake, not a
-  name field: goals, non-goals, risks, constraints, definition of done — operator corrects and approves
-  (the Charter). Uses the **user's own key** via the existing secret store (one cheap call; metered).
-  The Charter is what the auto dev team (v2 north star) later sizes itself from, and what **auto
-  task/milestone proposal** plans against. See [docs/dev-team-blueprint.md](docs/dev-team-blueprint.md) §1.
+Ordered by priority — the two signature bets first (nothing shipped on Memory v0 yet; consensus runs
+just got unblocked), then remaining ease-of-use work, then the lowest-urgency UI polish tail:
+
+**Memory v0 (thin moat, pulled forward from v4):**
+- [ ] Operator-authored + **decision-derived** facts (every `hitl_audit` "decided X because Y" becomes a memory
+  fact), scoped (workspace / project / area / agent), injected into any vendor via the `runner-sdk` seam, and
+  **exportable/owned** (git-committable). No LLM distillation yet (that's v4) — but it makes launch
+  not-just-another-orchestrator and starts the corpus compounding on day one. **Nothing here has shipped
+  yet — highest-priority open item in this version.**
+
+**⭐ Cross-vendor consensus runs (signature bet):**
+- [ ] Fire the same task at Claude + Codex + Gemini in parallel, auto-diff the results, keep/merge the winner, or
+  have them peer-review each other. The vendor-neutral seam is what makes true cross-*vendor* bake-offs
+  possible (rivals' "councils" are single-tool). **Now unblocked** — the multi-provider runners this needed
+  (v1: Codex/Gemini/Cursor/Copilot/Hermes/OpenCode/Kimi Code) have all landed.
 
 **Easier to use than anyone else:**
 - [~] **Project assistant → co-operator (actions from chat).** Steward (the shared brain,
@@ -311,6 +320,11 @@ features below are white space.) 10 items from the original UX/ease list have sh
   `Project.roadmapPath` so the Roadmap tab (and Steward's own grounding) can point at any repo-relative
   file, not just `ROADMAP.md`. **Remaining:** broader action coverage (fleet ops, credentials) +
   Telegram parity on the newer actions.
+- [ ] **Charter-assisted project creation** — creating a project is a short LLM-drafted intake, not a
+  name field: goals, non-goals, risks, constraints, definition of done — operator corrects and approves
+  (the Charter). Uses the **user's own key** via the existing secret store (one cheap call; metered).
+  The Charter is what the auto dev team (v2 north star) later sizes itself from, and what **auto
+  task/milestone proposal** plans against. See [docs/dev-team-blueprint.md](docs/dev-team-blueprint.md) §1.
 - [~] **Chat → canvas handoff, zero cold start** — a reply can carry a deep link straight into the exact
   web-app view (project/task pre-focused) instead of cramming it into a chat bubble. **Desktop half
   shipped:** a `skynet://` OS protocol handler (`app.setAsDefaultProtocolClient`), handling both macOS's
@@ -325,16 +339,19 @@ features below are white space.) 10 items from the original UX/ease list have sh
   (Electron IPC bridge, live pending-HITL count, click-to-focus). **Remaining:** Timeline lens depth
   (zoom, brush, click-through) — unscoped.
 
-**Memory v0 (thin moat, pulled forward from v4):**
-- [ ] Operator-authored + **decision-derived** facts (every `hitl_audit` "decided X because Y" becomes a memory
-  fact), scoped (workspace / project / area / agent), injected into any vendor via the `runner-sdk` seam, and
-  **exportable/owned** (git-committable). No LLM distillation yet (that's v4) — but it makes launch
-  not-just-another-orchestrator and starts the corpus compounding on day one.
-
-**⭐ Cross-vendor consensus runs (signature bet):**
-- [ ] Fire the same task at Claude + Codex + Gemini in parallel, auto-diff the results, keep/merge the winner, or
-  have them peer-review each other. Needs the multi-provider runners from v1; the vendor-neutral seam is what
-  makes true cross-*vendor* bake-offs possible (rivals' "councils" are single-tool).
+**UX/UI to SOTA (pre-release review — high & polish, lowest urgency of this version's open items):**
+- [~] **Design tokens, a11y, and an Inbox-first mobile/PWA shell.** Mostly landed: a published `--fz-*`
+  type-scale token per distinct font size in use, a single `--input-focus-border` token consolidating 4
+  drifted text-input focus treatments, ambient looping animations now guarded behind
+  `prefers-reduced-motion`, a keyboard walkthrough of assign→decide→merge with two real dead-ends fixed
+  (task-card tool buttons, the read-only task-detail modal), and the semantic palette / Inbox-first PWA
+  shell confirmed already correct. **Deliberately not done:** an 8px spacing rhythm — unlike font-size,
+  `padding`/`margin`/`gap` in `styles.css` aren't a latent consistent ladder; a faithful pass means real
+  design consolidation (choosing canonical steps, remapping ~700+ declarations) with real
+  visual-regression risk, not just token-naming — left as scoped future work.
+- [ ] **Text-contrast ramp** (ink / muted / faint, checked ratios — muted currently sits at the reading
+  floor) + a **systematized button/state token set** (primary / ghost / danger, each with explicit
+  hover · focus-visible · disabled · loading).
 
 ## v2 — Agentic area-managers (the hierarchy)  🔬🔗⛓
 Per-project LLM **area managers** decompose an area's goal and spawn first-class **worker subagents**
