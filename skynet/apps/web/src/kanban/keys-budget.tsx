@@ -292,14 +292,14 @@ function DailyBudgetCard({ project, runs }: { project: Project; runs: TaskRun[] 
 
 // ── Top-level panel ──────────────────────────────────────────────────────────
 export function KeysBudgetPanel({ project, runs }: { project: Project; runs: TaskRun[] }) {
-  const { updateProject, wsPhase } = useStore();
+  // Phase 30 hardening — the shared status strip (shell.tsx's OpStatusBar)
+  // is now the ONE place a disconnect shows; this panel no longer draws its
+  // own pill.
+  const { updateProject } = useStore();
   return (
     <div className="kbb-wrap">
       <div className="kbb-header">
-        <h2 className="kbb-title">
-          Boundaries · {project.name}
-          {wsPhase !== "open" && <span className="kbb-disconnect-pill" role="status">⚠ RECONNECTING</span>}
-        </h2>
+        <h2 className="kbb-title">Boundaries · {project.name}</h2>
         <p className="kbb-sub">one-time setup · changes are written to the audit trail</p>
       </div>
       <ProviderKeysCard project={project} runs={runs} />

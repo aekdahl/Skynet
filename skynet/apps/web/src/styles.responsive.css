@@ -9,6 +9,27 @@
 .op-titlebar { padding-top: env(safe-area-inset-top, 0px); }
 .op-statusbar { padding-bottom: env(safe-area-inset-bottom, 0px); }
 
+/* Phase 30 hardening — item 8: below ~1200px the sidebar collapses to a 64px
+   icon rail rather than staying full-width and cramping the content area.
+   Distinct from the existing `:root.steward-open .op-side` icon-rail
+   collapse just above (styles.css) in one deliberate way: THAT collapse
+   hides badges/dots entirely (there's no room once the dock is also open);
+   THIS one keeps them — "badges persist" is this item's own explicit
+   requirement, unlike the steward-open case. Labels collapse to
+   font-size:0 (badges/counts keep their own explicit font-size, so they're
+   unaffected) with a native `title` tooltip taking over (see shell.tsx's
+   nav-item button). Placed BEFORE the 820px block below so at an even
+   narrower width that block's later, equal-specificity `.op-side` rule
+   wins by source order — the icon rail only owns the 820–1200px range. */
+@media (max-width: 1200px) {
+  .op-side { width: 64px; }
+  .op-ws { justify-content: center; padding: 13px 0; }
+  .op-ws-name { display: none; }
+  .op-navitem { justify-content: center; gap: 0; padding: 8px 0; font-size: 0; }
+  .op-navitem .ic { width: 18px; height: 18px; }
+  .op-navsec, .op-navsec-caret, .op-plist, .op-nav-sub, .op-side-foot { display: none; }
+}
+
 @media (max-width: 820px) {
   /* Allow the page to scroll vertically on touch devices. */
   body { overflow: auto; }

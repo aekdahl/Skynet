@@ -149,19 +149,81 @@ export function App() {
     return () => window.removeEventListener("skynet:open-steward", onOpen);
   }, []);
 
-  // ⌘K / Ctrl+K command palette — global, from anywhere in the app, except
-  // while the operator is typing in a text field (isTypingTarget guard).
+  // Global keyboard model (Phase 30 hardening) — all skipped while the
+  // operator is typing in a text field (isTypingTarget guard):
+  //   ⌘K / Ctrl+K  → toggle the command palette
+  //   ⌘J / Ctrl+J  → toggle the Steward dock
+  //   g then a second key → a page-jump chord, mnemonic off each
+  //     destination's real ViewName: i=Inbox(queue), a=Audit, p=Projects,
+  //     f=Fleet, m=Merges("ready to merge"). `g` alone arms a ~800ms window
+  //     for the second key; any other key (or another modifier combo) in
+  //     that window cancels it rather than falling through as a stray "g".
+  //   Alt/Option+Left → back, from any detail view that has a "back"
+  //     (task/agentDetail) — project.tsx keeps its OWN Alt+Left (skipped
+  //     here) since it additionally guards against its own local overlays
+  //     (edit forms, confirm dialogs) this global handler has no way to see.
   const [paletteOpen, setPaletteOpen] = useState(false);
   useEffect(() => {
+    let gArmed = false;
+    let gTimer: ReturnType<typeof setTimeout> | undefined;
+    const disarmG = () => {
+      gArmed = false;
+      if (gTimer) clearTimeout(gTimer);
+      gTimer = undefined;
+    };
+    const G_CHORD_DESTINATIONS: Record<string, ViewName> = { i: "queue", a: "audit", p: "projects", f: "fleet", m: "merges" };
+
     const onKey = (e: KeyboardEvent) => {
-      if (e.key.toLowerCase() === "k" && (e.metaKey || e.ctrlKey) && !isTypingTarget(e.target)) {
+      if (isTypingTarget(e.target)) {
+        disarmG();
+        return;
+      }
+      const key = e.key.toLowerCase();
+      if (key === "k" && (e.metaKey || e.ctrlKey)) {
         e.preventDefault();
+        disarmG();
         setPaletteOpen((o) => !o);
+        return;
+      }
+      if (key === "j" && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        disarmG();
+        setStewardOpen((o) => !o);
+        return;
+      }
+      if (e.altKey && e.key === "ArrowLeft") {
+        disarmG();
+        setViewRaw((v) => {
+          if (v === "task") { e.preventDefault(); return gateView(from === "task" ? "home" : from); }
+          if (v === "agentDetail") { e.preventDefault(); return gateView("fleet"); }
+          return v; // project (and every top-level view) handles its own Alt+Left, or has no "back"
+        });
+        return;
+      }
+      if (e.metaKey || e.ctrlKey || e.altKey) {
+        disarmG();
+        return;
+      }
+      if (gArmed) {
+        disarmG();
+        const dest = G_CHORD_DESTINATIONS[key];
+        if (dest) {
+          e.preventDefault();
+          setView(dest);
+        }
+        return;
+      }
+      if (key === "g") {
+        gArmed = true;
+        gTimer = setTimeout(disarmG, 800);
       }
     };
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      disarmG();
+    };
+  }, [from, setView]);
 
   // [pwa] A push / notification click (relayed by the service worker) or a
   // manifest shortcut navigates the app in-place — usually to the Inbox.

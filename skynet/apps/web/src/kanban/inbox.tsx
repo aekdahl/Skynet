@@ -20,6 +20,7 @@ import * as api from "../lib/client";
 import { fmtWait, needsReviewConfirm } from "../lib/derive";
 import { isTypingTarget } from "../lib/keys";
 import { useChoice, useConfirm } from "../components/confirm";
+import { useEscapeLayer } from "../lib/escape-stack";
 
 // Minimal Store slice used by FleetRail — avoids importing the whole Store
 // interface just for a type annotation on one destructured prop.
@@ -112,13 +113,11 @@ function DecisionInboxTopBar({
   waitingCount,
   oldestWaitSec,
   agentsRunning,
-  connected,
   onOpenShortcuts,
 }: {
   waitingCount: number;
   oldestWaitSec: number | null;
   agentsRunning: number;
-  connected: boolean;
   onOpenShortcuts: () => void;
 }) {
   return (
@@ -136,14 +135,9 @@ function DecisionInboxTopBar({
           <span aria-live="polite">{waitingCount} WAITING ON YOU{oldestWaitSec != null ? ` · OLDEST ${fmtWait(oldestWaitSec)}` : ""}</span>
         </span>
         <span className="di-pill di-pill-machine">FLEET: {agentsRunning} AGENTS RUNNING</span>
-        {/* A silent fleet (nothing running, still connected) and a disconnected
-            one must never look the same — this pill is the one place on the
-            screen that says so explicitly, distinct from "0 agents running". */}
-        {!connected && (
-          <span className="di-pill di-pill-warn" role="status">
-            ⚠ RECONNECTING — live updates paused
-          </span>
-        )}
+        {/* Phase 30 hardening — dropped this screen's own "silent fleet vs.
+            disconnected" pill; the shared status strip (shell.tsx's
+            OpStatusBar) is the ONE place a disconnect shows now. */}
         <button type="button" className="di-pill di-pill-ghost" onClick={onOpenShortcuts} title="Keyboard shortcuts (press ?)">
           j/k · y approve · n reject · ?
         </button>
@@ -164,13 +158,17 @@ const SHORTCUTS: { key: string; desc: string }[] = [
 
 function ShortcutMapOverlay({ onClose }: { onClose: () => void }) {
   const closeBtn = useRef<HTMLButtonElement>(null);
+  // Escape rides the shared escape-stack (lib/escape-stack.ts); "?" toggles
+  // it too (same key that opened it), handled locally since that's not a
+  // layering concern.
+  useEscapeLayer(true, onClose);
   useEffect(() => {
     // Same "focus the primary control on open" convention components/confirm.tsx
     // already uses — moves focus off whatever triggered this (the header pill)
-    // and into the dialog, so Tab/Escape act on the dialog, not the page behind it.
+    // and into the dialog, so Tab acts on the dialog, not the page behind it.
     closeBtn.current?.focus();
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" || e.key === "?") onClose();
+      if (e.key === "?") onClose();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -706,7 +704,7 @@ export function DecisionInboxView({
   now: number;
 }) {
   const store = useStore();
-  const { queue, runs, tasks, projects, fleet, resolveHitl, wsPhase } = store;
+  const { queue, runs, tasks, projects, fleet, resolveHitl } = store;
   const [items, setItems] = useState<Decision[]>([]);
   const [loading, setLoading] = useState(true);
   const [groupByProject, setGroupByProject] = useState(false);
@@ -862,7 +860,6 @@ export function DecisionInboxView({
         waitingCount={visible.length}
         oldestWaitSec={oldestWaitSec}
         agentsRunning={agentsRunning}
-        connected={wsPhase === "open"}
         onOpenShortcuts={() => setShowShortcuts(true)}
       />
       {showShortcuts && <ShortcutMapOverlay onClose={() => setShowShortcuts(false)} />}

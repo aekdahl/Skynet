@@ -47,7 +47,7 @@ export function ReviewMergeView({
   onBack: () => void;
   backLabel: string;
 }) {
-  const { runs, tasks, projects, resolveHitl, queue, readOnly, wsPhase } = useStore();
+  const { runs, tasks, projects, resolveHitl, queue, readOnly } = useStore();
   const item = hitlFor(queue, agent.id);
   const task = tasks.find((t) => t.runId === agent.id);
   const project = projects.find((p) => p.id === agent.projectId);
@@ -105,10 +105,10 @@ export function ReviewMergeView({
     <div className="vw rv-review-merge">
       <button className="rv-back" onClick={onBack}>← {backLabel}</button>
       <div className="rv-header">
-        <div className="rv-title">
-          {agent.name}
-          {wsPhase !== "open" && <span className="rv-disconnect-pill" role="status">⚠ RECONNECTING</span>}
-        </div>
+        {/* Phase 30 hardening — dropped this screen's own disconnect pill;
+            the shared status strip (shell.tsx's OpStatusBar) is the ONE
+            place a disconnect shows now. */}
+        <div className="rv-title">{agent.name}</div>
         <div className="rv-meta-row">
           <span>run #{agent.id.slice(-6)}</span>
           <span className="rv-meta-sep">·</span>

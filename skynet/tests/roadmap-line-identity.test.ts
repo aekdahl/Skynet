@@ -142,4 +142,51 @@ describe("roadmap line identity", () => {
     expect(lineSimilarity("Task A about caching", "Task C about billing exports")).toBeLessThan(0.3);
     expect(lineSimilarity("", "")).toBe(1);
   });
+
+  // Item 12 (Phase 30 hardening) — the two prior tests only ever exercised
+  // the happy path (well above / well below 0.6). SIMILARITY_THRESHOLD's own
+  // exact boundary — a score just under 0.6 vs. right at/above it — was
+  // never checked, on either lineSimilarity's raw number OR the thing that
+  // actually matters: whether assignLineIdentity's pass 2 reuses the old id.
+  describe("SIMILARITY_THRESHOLD (0.6) boundary", () => {
+    // 5 shared tokens ("alpha".."echo") out of a 9-token union (4 new words
+    // added on rewording) → 5/9 ≈ 0.556, just under 0.6.
+    const JUST_BELOW_A = "alpha bravo charlie delta echo";
+    const JUST_BELOW_B = "alpha bravo charlie delta echo foxtrot golf hotel india";
+    // 3 shared tokens out of a 5-token union (2 new words added) → 3/5 = 0.6
+    // exactly, right at the inclusive `score >= SIMILARITY_THRESHOLD` cutoff.
+    const AT_THRESHOLD_A = "alpha bravo charlie";
+    const AT_THRESHOLD_B = "alpha bravo charlie delta echo";
+
+    it("just below 0.6 is NOT a similarity match — the raw score, hand-verified", () => {
+      const score = lineSimilarity(JUST_BELOW_A, JUST_BELOW_B);
+      expect(score).toBeCloseTo(5 / 9, 5);
+      expect(score).toBeLessThan(0.6);
+    });
+
+    it("at exactly 0.6 the score meets the threshold — hand-verified", () => {
+      const score = lineSimilarity(AT_THRESHOLD_A, AT_THRESHOLD_B);
+      expect(score).toBeCloseTo(0.6, 5);
+    });
+
+    it("just below 0.6: assignLineIdentity does NOT reuse the old line's id — it's treated as genuinely new, losing whatever was linked to the old id", () => {
+      const before = parseFresh(`## Section\n\n- [ ] ${JUST_BELOW_A}\n`);
+      const beforeId = items(before)[0]!.id;
+
+      const after = assignLineIdentity(parseRoadmapAst(`## Section\n\n- [ ] ${JUST_BELOW_B}\n`), before);
+      const afterItem = items(after)[0]!;
+      expect(afterItem.id).not.toBe(beforeId);
+      expect(afterItem.text).not.toContain("<!--#"); // pass 3 (genuinely new) never stamps an anchor
+    });
+
+    it("at exactly 0.6: assignLineIdentity DOES reuse the old line's id and stamps an anchor", () => {
+      const before = parseFresh(`## Section\n\n- [ ] ${AT_THRESHOLD_A}\n`);
+      const beforeId = items(before)[0]!.id;
+
+      const after = assignLineIdentity(parseRoadmapAst(`## Section\n\n- [ ] ${AT_THRESHOLD_B}\n`), before);
+      const afterItem = items(after)[0]!;
+      expect(afterItem.id).toBe(beforeId);
+      expect(afterItem.text).toContain(`<!--#${beforeId}-->`);
+    });
+  });
 });

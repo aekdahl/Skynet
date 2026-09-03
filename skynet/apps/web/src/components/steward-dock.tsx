@@ -96,7 +96,7 @@ function StewardPanel({
   // audit footer's own rows.
   onOpenTask: (id: string) => void;
 }) {
-  const { projects, runs, createTask, transitionTask, updateTask, deleteTask, archiveTask, moveTask, requestReview, resyncProjectSource, updateProject, createFeature, createMilestone, updateFeature, wsPhase } = useStore();
+  const { projects, runs, createTask, transitionTask, updateTask, deleteTask, archiveTask, moveTask, requestReview, resyncProjectSource, updateProject, createFeature, createMilestone, updateFeature } = useStore();
   const [msgs, setMsgs] = useState<Msg[]>(thread);
   const [input, setInput] = useState(draftCache);
   const [busy, setBusy] = useState(false);
@@ -356,9 +356,14 @@ function describeOutcome(kind: string, o: StewardActionOutcome): string {
 
   return (
     <>
+      {/* Phase 30 hardening — dropped this panel's own disconnect pill; the
+          shared status strip (shell.tsx's OpStatusBar) is the ONE place a
+          disconnect shows now. The header/close-button chrome this used to
+          own also moved — StewardDock (below) is the real outer wrapper
+          now (the tabbed-dock rework), and it never grew a pill of its own
+          either, so there's nothing left to consolidate here. */}
       <div className="steward-scopeline mono">
         {effFocusName ? `focused · ${effFocusName}` : "workspace"}
-        {wsPhase !== "open" && <span className="steward-disconnect-pill" role="status">⚠ RECONNECTING</span>}
       </div>
       <div className="steward-thread" ref={threadRef}>
         {msgs.length === 0 && (
