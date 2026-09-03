@@ -88,6 +88,7 @@ import { type AutonomyDetent, AUTONOMY_DETENT_COST_WEIGHT, detentFor, fieldsForD
 import { DraftTaskPayload, SuggestedRulePayload, SuggestedSubtaskPayload } from "@skynet/shared";
 import { buildReplenishPrompt, parseProposedTasks } from "./steward/replenish.js";
 import { DEFAULT_AUTO_MERGE_POLICY } from "./merge-policy.js";
+import { projectCredential } from "./project-credential.js";
 import { sameTaskText } from "./steward/assistant.js";
 
 // Cheap mid-tier model for backlog replenishment — one short, tool-less call
@@ -278,7 +279,7 @@ export interface OperationsDeps {
   // (not something reachable via an injected RunnerProvider — decomposeBrief
   // has no live run to ride a provider's own consult() on), so a deterministic
   // test needs its own seam rather than mocking the imported module.
-  decomposeConsult?: (opts: { prompt: string; model: string; apiKey?: string | null }) => Promise<string>;
+  decomposeConsult?: (opts: { prompt: string; model: string; apiKey?: string | null; baseUrl?: string | null }) => Promise<string>;
   /** Test seam: override the model call crystallizeBrief makes (see
    *  draftBriefFromConversation's `ask` param). Defaults to a real Claude
    *  one-shot call authenticated via the workspace's "claude" secret — tests
@@ -308,7 +309,7 @@ export class Operations {
   private readonly hub: Hub;
   private readonly orchestrator: Orchestrator;
   private readonly ruleEngine?: RuleEngine;
-  private readonly decomposeConsult: (opts: { prompt: string; model: string; apiKey?: string | null }) => Promise<string>;
+  private readonly decomposeConsult: (opts: { prompt: string; model: string; apiKey?: string | null; baseUrl?: string | null }) => Promise<string>;
   private readonly crystallizeAsk?: (prompt: string) => Promise<string>;
   private readonly contextAsk?: (prompt: string) => Promise<string>;
   private readonly organizeAsk?: (prompt: string) => Promise<string>;
@@ -1076,7 +1077,11 @@ export class Operations {
    * propagated to the UI (which prompts the user to connect a provider).
    */
   async draftCharter(ws: string, input: DraftCharterRequest): Promise<ProjectCharter> {
-    const apiKey = (await secretService.resolve(ws, "claude")) ?? undefined;
+    // No projectId yet — a charter is drafted BEFORE the project exists, so the
+    // workspace default is the only correct answer here. Routed through the
+    // shared helper anyway, so this reads as a deliberate fallback rather than
+    // one more stray hardcode.
+    const { apiKey } = await projectCredential(this.store, ws, null, ASSISTANT_MODEL);
     const prompt =
       `You are a project intake assistant. The operator has described a project they want to build. ` +
       `Draft a concise Project Charter with exactly these five sections. ` +
@@ -1957,13 +1962,10 @@ export class Operations {
 
     const ask =
       this.organizeAsk ??
-      (async (prompt: string) => {
-        const apiKey = (await secretService.resolve(ws, "claude")) ?? undefined;
-        return oneShotText({ prompt, model: ASSISTANT_MODEL, apiKey });
-      });
+      this.askForProject(ws, projectId);
     // Skip the (doomed) call when we already know no key resolves — same
     // structural guard as refreshProjectContext, not reply-content sniffing.
-    const canAsk = !!this.organizeAsk || !!(await secretService.resolve(ws, "claude"));
+    const canAsk = !!this.organizeAsk || !!(await projectCredential(this.store, ws, projectId, ASSISTANT_MODEL)).apiKey;
 
     let reordered = 0;
     const rank = (t: Task) => t.order ?? 0;
@@ -2910,10 +2912,7 @@ export class Operations {
     if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
     const ask =
       this.crystallizeAsk ??
-      (async (prompt: string) => {
-        const apiKey = (await secretService.resolve(ws, "claude")) ?? undefined;
-        return oneShotText({ prompt, model: ASSISTANT_MODEL, apiKey });
-      });
+      this.askForProject(ws, projectId);
     const draft = await draftBriefFromConversation(ask, project.name, history);
     return this.createBrief(ws, projectId, { ...draft, sourceConversation: summarizeConversation(history) });
   }
@@ -2933,14 +2932,19 @@ export class Operations {
       .sort((a, b) => b.createdAt - a.createdAt);
   }
 
-  private contextAskFn(ws: string): (prompt: string) => Promise<string> {
-    return (
-      this.contextAsk ??
-      (async (prompt: string) => {
-        const apiKey = (await secretService.resolve(ws, "claude")) ?? undefined;
-        return oneShotText({ prompt, model: ASSISTANT_MODEL, apiKey });
-      })
-    );
+  /** A one-shot asker billed to the PROJECT's credential rather than the
+   *  workspace default — see project-credential.ts. `baseUrl` rides along
+   *  because a credential can name a compatible endpoint, and sending its key
+   *  to Anthropic would authenticate nothing. */
+  private askForProject(ws: string, projectId: string | null, model = ASSISTANT_MODEL): (prompt: string) => Promise<string> {
+    return async (prompt: string) => {
+      const { apiKey, baseUrl } = await projectCredential(this.store, ws, projectId, model);
+      return oneShotText({ prompt, model, apiKey, baseUrl });
+    };
+  }
+
+  private contextAskFn(ws: string, projectId: string | null): (prompt: string) => Promise<string> {
+    return this.contextAsk ?? this.askForProject(ws, projectId);
   }
 
   /** Re-condense a project's accumulated context entries into
@@ -2957,8 +2961,8 @@ export class Operations {
     // reply-content sniffing) is the right place to guard against a degraded
     // reply landing as a fake summary. Only for the real default ask — never
     // for an injected test stub.
-    if (!this.contextAsk && !(await secretService.resolve(ws, "claude"))) return project;
-    const summary = await condenseProjectContext(this.contextAskFn(ws), project.name, entries);
+    if (!this.contextAsk && !(await projectCredential(this.store, ws, projectId, ASSISTANT_MODEL)).apiKey) return project;
+    const summary = await condenseProjectContext(this.contextAskFn(ws, projectId), project.name, entries);
     return this.hub.upsertProject({ ...project, contextSummary: summary, contextSummaryUpdatedAt: now() });
   }
 
@@ -3050,12 +3054,12 @@ export class Operations {
       throw new Error("This brief has already been decomposed — delete the resulting feature/tasks first to regenerate.");
     }
 
-    const apiKey = await secretService.resolve(ws, "claude");
     const model = process.env.SKYNET_DECOMPOSE_MODEL || "sonnet";
+    const { apiKey, baseUrl } = await projectCredential(this.store, ws, projectId, model);
     const prompt = buildDecomposePrompt(brief);
     let plan: ReturnType<typeof parseDecomposition> = null;
     for (let attempt = 0; attempt < 2 && !plan; attempt++) {
-      const reply = await this.decomposeConsult({ prompt, model, apiKey }).catch(() => "");
+      const reply = await this.decomposeConsult({ prompt, model, apiKey, baseUrl }).catch(() => "");
       plan = parseDecomposition(reply);
     }
     if (!plan) {
@@ -3988,7 +3992,11 @@ export class Operations {
   async replenishBacklog(ws: string, projectId: string): Promise<Task[]> {
     const project = await this.store.getProject(projectId);
     if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
-    const ask = this.replenishAsk ?? ((prompt: string) => oneShotText({ prompt, model: REPLENISH_MODEL }));
+    // Passed NO key at all before, so it fell through to the ambient
+    // environment and bypassed the secret store entirely — worse than using the
+    // workspace default. Added in the project-driver work, after the credential
+    // had already been threaded through every other site.
+    const ask = this.replenishAsk ?? this.askForProject(ws, projectId, REPLENISH_MODEL);
 
     const all = (await this.store.listTasks(ws)).filter((t) => t.projectId === projectId && !t.archived);
     // Best-effort: a project with no repo (or no roadmap doc) simply grounds on

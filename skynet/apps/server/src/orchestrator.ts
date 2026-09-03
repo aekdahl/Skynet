@@ -45,6 +45,7 @@ import { MergeEngine, FEATURE_BRANCH_PREFIX, type MergeRequest } from "./merge.j
 import { loadModuleMap, type ModuleMap } from "./modules-map.js";
 import { providerUsableFromEnv } from "./provider-env.js";
 import { assessProjectDrive } from "./drive.js";
+import { projectCredential } from "./project-credential.js";
 import { decideAutoMerge, DEFAULT_AUTO_MERGE_POLICY, GATE_REASON_TEXT, POLICY_MERGE_REASON } from "./merge-policy.js";
 
 /** How long before a project's board may be re-pulled from its source again. */
@@ -3623,8 +3624,13 @@ export class Orchestrator {
     }
     const provider = await this.getProvider(acq.provider);
     const cwd = git.worktrees.pathFor(runId);
-    const apiKey = await secretService.resolve(run.workspaceId, run.provider);
-    const baseUrl = await secretService.resolveEndpoint(run.workspaceId, run.provider).catch(() => undefined);
+    // `credentialId ?? provider`, like every other run-scoped resolution. Using
+    // the bare provider silently fell back to its DEFAULT key — and since a
+    // credential now also carries an endpoint, a run configured for a
+    // compatible vendor resumed against Anthropic instead.
+    const runCredId = run.credentialId ?? run.provider;
+    const apiKey = await secretService.resolve(run.workspaceId, runCredId);
+    const baseUrl = await secretService.resolveEndpoint(run.workspaceId, runCredId).catch(() => undefined);
     const rates = ratesFor(baseUrl, run.model);
     const project = await this.store.getProject(run.projectId);
     // A manual reassign's run may never have been escalated/paused (`ctx`
@@ -5745,9 +5751,9 @@ export class Orchestrator {
    * questions are still asked, just without a suggested answer.
    */
   private async draftClarificationAnswer(ws: string, task: Task, questions: string[]): Promise<string | null> {
-    const apiKey = (await secretService.resolve(ws, "claude").catch(() => undefined)) ?? undefined;
-    const baseUrl = await secretService.resolveEndpoint(ws, "claude").catch(() => undefined);
-    const rates = ratesFor(baseUrl, CLARIFY_DRAFT_MODEL);
+    // The project's own key — a project restricted to one credential must not
+    // quietly bill the workspace default for its triage drafts.
+    const { apiKey, baseUrl, rates } = await projectCredential(this.store, ws, task.projectId, CLARIFY_DRAFT_MODEL);
     if (!apiKey) return null; // no usable key — ask without a draft rather than fail the tick
     const project = await this.store.getProject(task.projectId).catch(() => null);
     const prompt = [
@@ -6311,8 +6317,9 @@ export class Orchestrator {
     try {
       const provider = await this.getProvider("claude").catch(() => null);
       if (!provider) return null;
-      const apiKey = (await secretService.resolve(ws, "claude").catch(() => undefined)) ?? undefined;
-      const baseUrl = await secretService.resolveEndpoint(ws, "claude").catch(() => undefined);
+      const exploreCred = await projectCredential(this.store, ws, brief.projectId, EXPLORE_MODEL_FALLBACK);
+      const apiKey = exploreCred.apiKey;
+      const baseUrl = exploreCred.baseUrl;
       // Operator-settable — this path has no run or agent to inherit from.
       const exploreModel = (await this.fleetPolicy(ws)).exploreModel || EXPLORE_MODEL_FALLBACK;
       const rates = ratesFor(baseUrl, exploreModel);
