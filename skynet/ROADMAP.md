@@ -340,15 +340,6 @@ just got unblocked), then remaining ease-of-use work, then the lowest-urgency UI
   (zoom, brush, click-through) — unscoped.
 
 **UX/UI to SOTA (pre-release review — high & polish, lowest urgency of this version's open items):**
-- [~] **Design tokens, a11y, and an Inbox-first mobile/PWA shell.** Mostly landed: a published `--fz-*`
-  type-scale token per distinct font size in use, a single `--input-focus-border` token consolidating 4
-  drifted text-input focus treatments, ambient looping animations now guarded behind
-  `prefers-reduced-motion`, a keyboard walkthrough of assign→decide→merge with two real dead-ends fixed
-  (task-card tool buttons, the read-only task-detail modal), and the semantic palette / Inbox-first PWA
-  shell confirmed already correct. **Deliberately not done:** an 8px spacing rhythm — unlike font-size,
-  `padding`/`margin`/`gap` in `styles.css` aren't a latent consistent ladder; a faithful pass means real
-  design consolidation (choosing canonical steps, remapping ~700+ declarations) with real
-  visual-regression risk, not just token-naming — left as scoped future work.
 - [ ] **Text-contrast ramp** (ink / muted / faint, checked ratios — muted currently sits at the reading
   floor) + a **systematized button/state token set** (primary / ghost / danger, each with explicit
   hover · focus-visible · disabled · loading).

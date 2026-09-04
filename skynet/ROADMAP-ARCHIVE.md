@@ -116,6 +116,7 @@ named one, for traceability back through git history.
 8. **Per-project agent instructions (house rules)** — a per-project instructions field on every prompt, plus a shared context assembler (goal, feature, sibling-run digest).
 9. **Project Context** — pasted/uploaded notes, emails, and docs condensed into a short primer grounding both task prompts and project chat.
 10. **Per-project isolation for credentials & GitHub identity** — a project can pin its own LLM credential and GitHub PAT; two real enforcement gaps found and fixed (triage/review picking sites bypassing the key allowlist, and `mergePr` never honoring the pinned GitHub credential).
+11. **Design tokens, a11y, and an Inbox-first mobile/PWA shell** — a `--fz-*` type-scale token per font-size in use, a single `--input-focus-border` token replacing 4 drifted focus treatments, ambient animations guarded behind `prefers-reduced-motion`, a keyboard walkthrough of assign→decide→merge with two dead-ends fixed, and (the piece originally left as future work) an `--space-*` 8px spacing rhythm consolidating ~830 `padding`/`margin`/`gap` declarations in `styles.css` onto a canonical scale, ties rounding down, with element-coupled offsets and micro/optical values deliberately excluded.
 
 ## v3 — Triggers & integrations
 
