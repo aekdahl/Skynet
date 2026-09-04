@@ -925,6 +925,12 @@ export const Task = z.object({
   id: z.string(),
   workspaceId: z.string(),
   projectId: z.string(),
+  // Optimistic-concurrency counter — the Store bumps this by 1 on every
+  // write; a caller updating a stale copy (its read's `version` no longer
+  // matches what's stored) gets rejected instead of silently clobbering a
+  // concurrent write (see Hub.patchTask / Store.putTask's `expectedVersion`).
+  // Never set by callers directly — always carried forward from a real read.
+  version: z.number().int().default(1),
   text: z.string(), // the short task NAME (kept concise for the board/subway)
   // Optional longer detail — the full brief the agent gets, but not shown as the
   // name. Keeps names scannable while allowing a rich description when needed.

@@ -1225,10 +1225,7 @@ export class Orchestrator {
           await this.hub.runStatus(runId, "review");
           // The run produced a diff → its task enters the review column (a human or
           // an autonomous reviewer resolves the diff HITL, which merges → done).
-          if (live.taskId) {
-            const task = await this.store.getTask(live.taskId);
-            if (task) await this.hub.upsertTask({ ...task, state: "review" });
-          }
+          if (live.taskId) await this.hub.patchTask(live.taskId, { state: "review" });
           await this.raiseDiffReview(runId, stat, patch);
           // Keep what a `modify` review resolution needs to resume this run for a
           // revision — its worktree survives (retire only happens on merge).
@@ -1295,10 +1292,7 @@ export class Orchestrator {
     // a genuinely change-free agent becomes terminal, so a runner's own "done" is
     // ignored (see events().onStatus) and can never precede real integration.
     await this.freeRunner(live?.agentId ?? null);
-    if (live?.taskId) {
-      const task = await this.store.getTask(live.taskId);
-      if (task) await this.hub.upsertTask({ ...task, state: "done" });
-    }
+    if (live?.taskId) await this.hub.patchTask(live.taskId, { state: "done" });
     await this.hub.runStatus(runId, "done");
     await this.hub.runCompleted(runId, branch);
     this.live.delete(runId);
@@ -1467,8 +1461,7 @@ export class Orchestrator {
    *  task, never knocks a done / re-opened task back into review. */
   private async moveTaskToReview(taskId: string | null | undefined): Promise<void> {
     if (!taskId) return;
-    const task = await this.store.getTask(taskId);
-    if (task && task.state === "ongoing") await this.hub.upsertTask({ ...task, state: "review" });
+    await this.hub.patchTask(taskId, (t) => (t.state === "ongoing" ? { state: "review" } : null));
   }
 
   /** Raise the `diff` review that gates a finished agent's branch into the queue. */
@@ -2395,7 +2388,7 @@ export class Orchestrator {
     const provider = await this.getProvider(runner.provider);
 
     await this.hub.createRun(agent);
-    await this.hub.upsertTask({ ...task, state: "ongoing", runId, assignment });
+    await this.hub.patchTask(task.id, { state: "ongoing", runId, assignment });
     await this.hub.upsertProject({ ...project, runIds: [...project.runIds, runId] });
 
     // S8 status: the brief this task is scoped under moves approved→building
@@ -2648,7 +2641,7 @@ export class Orchestrator {
       runId,
       `restored to checkpoint${checkpoint.label ? ` "${checkpoint.label}"` : ""} (${checkpoint.sha.slice(0, 7)}) — worktree rewound, ${resumeSessionId ? "conversation resumed" : "fresh turn started"}`,
     );
-    if (task) await this.hub.upsertTask({ ...task, state: "ongoing" });
+    if (task) await this.hub.patchTask(task.id, { state: "ongoing" });
 
     try {
       const handle = await provider.start(
@@ -2835,14 +2828,10 @@ export class Orchestrator {
     await this.hub.runLog(runId, `Force Done held back — looks incomplete: ${judged.reason}`);
     const resolvedTaskId = taskId ?? (await this.store.listTasks(workspaceId)).find((t) => t.runId === runId)?.id ?? null;
     if (resolvedTaskId) {
-      const task = await this.store.getTask(resolvedTaskId);
-      if (task) {
-        await this.hub.upsertTask({
-          ...task,
-          state: "review",
-          reviewVerdict: { decision: "flag", reason: judged.reason, by: "force-done-check", at: now(), evidence: null, breaker: null },
-        });
-      }
+      await this.hub.patchTask(resolvedTaskId, {
+        state: "review",
+        reviewVerdict: { decision: "flag", reason: judged.reason, by: "force-done-check", at: now(), evidence: null, breaker: null },
+      });
     }
     await this.raiseDiffReview(runId, judged.stat, judged.patch, { skipFullAutonomy: true });
   }
@@ -3059,7 +3048,7 @@ export class Orchestrator {
       body: decisionResumePrompt(item, resolution, run.branch),
     });
     await this.hub.runStatus(runId, "running");
-    if (task) await this.hub.upsertTask({ ...task, state: "ongoing" });
+    if (task) await this.hub.patchTask(task.id, { state: "ongoing" });
     await this.hub.runLog(runId, `re-acquired compute to deliver "${resolution.action}" — resuming in the run's worktree`);
     try {
       const handle = await provider.start(
@@ -3122,7 +3111,7 @@ export class Orchestrator {
           `only the changes needed to address the request, then stop.`,
     });
     await this.hub.runStatus(runId, "running");
-    if (task) await this.hub.upsertTask({ ...task, state: "ongoing" });
+    if (task) await this.hub.patchTask(task.id, { state: "ongoing" });
     await this.hub.runLog(runId, "revising per review guidance");
     try {
       const handle = await provider.start(
@@ -3675,7 +3664,7 @@ export class Orchestrator {
     const running = await this.store.getRun(runId);
     if (running) await this.hub.upsertRun({ ...running, status: "running", agentId: acq.id });
     else await this.hub.runStatus(runId, "running");
-    if (task) await this.hub.upsertTask({ ...task, state: "ongoing" });
+    if (task) await this.hub.patchTask(task.id, { state: "ongoing" });
     await this.hub.runLog(
       runId,
       targetAgentId
@@ -3782,8 +3771,7 @@ export class Orchestrator {
       review?.taskId ??
       (agent ? (await this.store.listTasks(agent.workspaceId)).find((t) => t.runId === runId)?.id : undefined);
     if (taskId) {
-      const task = await this.store.getTask(taskId);
-      if (task && task.state !== "done") await this.hub.upsertTask({ ...task, state: "done" });
+      await this.hub.patchTask(taskId, (t) => (t.state !== "done" ? { state: "done" } : null));
     } else {
       await this.hub.runLog(runId, "merged, but could not resolve the owning task to mark it done");
     }
@@ -4228,8 +4216,7 @@ export class Orchestrator {
       this.reviews.get(runId)?.taskId ??
       (await this.store.listTasks(run.workspaceId)).find((t) => t.runId === runId)?.id;
     if (!taskId) return;
-    const task = await this.store.getTask(taskId);
-    if (task && task.state !== "done") await this.hub.upsertTask({ ...task, state: "done" });
+    await this.hub.patchTask(taskId, (t) => (t.state !== "done" ? { state: "done" } : null));
   }
 
   // ── Ready-to-merge: the human's final PR merge decision, from the list ──────
@@ -4933,8 +4920,10 @@ export class Orchestrator {
     }
     if (opts.unstrand === false) return;
     const task = (await this.store.listTasks(run.workspaceId).catch(() => [] as Task[])).find((t) => t.runId === runId);
-    if (task && (task.state === "ongoing" || task.state === "review")) {
-      await this.hub.upsertTask({ ...task, state: "todo", runId: null, reviewVerdict: null });
+    if (task) {
+      await this.hub.patchTask(task.id, (t) =>
+        t.state === "ongoing" || t.state === "review" ? { state: "todo", runId: null, reviewVerdict: null } : null,
+      );
     }
   }
 
@@ -5396,7 +5385,7 @@ export class Orchestrator {
             if (backlog && projectIdle.length > 0) {
               const before = backlog.state;
               const triaged = await this.triageOne(ws, projectIdle[0]!, backlog);
-              await this.writeMachineTransition(triaged, before, triaged.state, ["autonomy triage sweep"]);
+              if (triaged) await this.writeMachineTransition(triaged, before, triaged.state, ["autonomy triage sweep"]);
             }
             // 2) Start auto-pick todo tasks (todo → ongoing) while capacity lasts.
             //    Gated by `p.autonomy` — this is where money/time actually gets
@@ -5495,7 +5484,7 @@ export class Orchestrator {
    * through the EXACT same write logic — including the clarification loop
    * breaker below — rather than two copies that can drift.
    */
-  private async triageOne(ws: string, agent: Agent, task: Task): Promise<Task> {
+  private async triageOne(ws: string, agent: Agent, task: Task): Promise<Task | undefined> {
     const { assessment, assessmentEffort, assessmentRisks, estimatedDurationMs, clarity, featureId, milestoneId, questions } =
       await this.assessTask(ws, agent, task);
     // Only OVERWRITE an existing estimate when triage produced a new one —
@@ -5540,8 +5529,13 @@ export class Orchestrator {
           "Triage still flagged this unclear after the operator's answer — proceeding anyway; confirm scope before/while working it.",
         ]
       : assessmentRisks;
-    return this.hub.upsertTask({
-      ...task,
+    // Object-form patch (not the guard-function form) is deliberate here: this
+    // is triage's own freshly-computed assessment, not a value read off a
+    // possibly-stale `task` snapshot — correct to apply on top of whatever is
+    // CURRENTLY stored even after a version-conflict retry (see
+    // Hub.patchTask), not conditioned on it. Returns undefined only if the
+    // task was deleted mid-triage (both call sites below already guard it).
+    return this.hub.patchTask(task.id, {
       state: nextState,
       assessment,
       assessmentEffort,
@@ -6520,7 +6514,16 @@ export class Orchestrator {
     // ALWAYS persist the verdict on the task so the detail view can show it —
     // approve OR flag, autonomy on OR off. This is the audit trail.
     const verdict = { decision, reason, by: reviewer, at, evidence: evidence ?? null, breaker };
-    const withVerdict = await this.hub.upsertTask({ ...freshTask, reviewVerdict: verdict });
+    // Re-guarded a second time, right at the write, against whatever's
+    // TRULY current (not the `freshTask` read above, which still has an
+    // await — the runLog call — between it and here): closes the residual
+    // race window DEF-001's original re-fetch-before-write mitigation left
+    // open (see ROADMAP.md's task-write-atomicity item, and the incident
+    // that prompted it — an autonomous auto-review write racing a human's
+    // manual recovery of this exact code path).
+    const withVerdict = await this.hub.patchTask(freshTask.id, (t) =>
+      t.state === "review" && t.runId === freshTask.runId && !t.reviewVerdict ? { reviewVerdict: verdict } : null,
+    );
     // Session circuit-breaker: a flag is a bad autonomy outcome for the
     // project, an approve is a good one — tracked regardless of `canResolve`
     // (autonomy on/off), same as the verdict itself; noteAutonomyBadOutcome's
@@ -6553,12 +6556,14 @@ export class Orchestrator {
       // leaves the run in `review` waiting for a human to merge the PR — that
       // would strand the KANBAN task in `review` too. Advancing the card here
       // reflects Skynet's view: the AGENT signed off; the PR is the follow-
-      // through on GitHub, not a Skynet blocker. Re-fetch to avoid a stale-
-      // snapshot clobber, and only advance if the task is still ours to move.
-      const afterDeliver = await this.store.getTask(task.id);
-      if (afterDeliver && afterDeliver.state === "review" && afterDeliver.runId === task.runId) {
-        await this.hub.upsertTask({ ...afterDeliver, state: "done" });
-        if (afterDeliver.runId) await this.hub.runStatus(afterDeliver.runId, "done").catch(() => undefined);
+      // through on GitHub, not a Skynet blocker. patchTask re-validates
+      // "still ours to move" against the current value at write time (CAS),
+      // not a snapshot taken before this async gap — only advance if it did.
+      const afterDeliver = await this.hub.patchTask(task.id, (t) =>
+        t.state === "review" && t.runId === task.runId ? { state: "done" } : null,
+      );
+      if (afterDeliver?.state === "done" && afterDeliver.runId) {
+        await this.hub.runStatus(afterDeliver.runId, "done").catch(() => undefined);
       }
     }
     // decision === "flag" OR (approve without autonomy) → verdict is recorded
@@ -6681,6 +6686,7 @@ export class Orchestrator {
       id: `t-${this.slug(project.name)}-${++this.seq}`,
       workspaceId: ws,
       projectId: project.id,
+      version: 1,
       text: proposal.title,
       description: null,
       state: "backlog",
@@ -6831,8 +6837,10 @@ export class Orchestrator {
     await this.hub.runStatus(runId, "done");
     await this.hub.runLog(runId, "archived — run settled, runner freed (its branch is kept)");
     const task = (await this.store.listTasks(run.workspaceId).catch(() => [] as Task[])).find((t) => t.runId === runId);
-    if (task && (task.state === "ongoing" || task.state === "review")) {
-      await this.hub.upsertTask({ ...task, state: "todo", runId: null, reviewVerdict: null });
+    if (task) {
+      await this.hub.patchTask(task.id, (t) =>
+        t.state === "ongoing" || t.state === "review" ? { state: "todo", runId: null, reviewVerdict: null } : null,
+      );
     }
   }
 
