@@ -60,7 +60,7 @@ Items are ranked PMF > Platform > Product within each batch:
 | Batch | # | Item | Track |
 |-------|---|------|-------|
 | **N (now)** | 1 | 🔒 Security hardening — Aug 2026 audit remediation (7 findings, see v1 section) | Security |
-| | 2 | 🐛 Task-write atomicity — confirmed live data loss, needs a design decision (see v1 section) | Reliability |
+| | 2 | 🚧 🐛 Task-write atomicity — confirmed live data loss, needs a design decision (see v1 section) — **in progress**, branch `reliability/task-write-optimistic-concurrency` | Reliability |
 | | 3 | Memory v0 — operator-authored facts, injected per project | Platform |
 | | 4 | deep-review / breaker-review settings UI toggle (both already built, PATCH-API-only today) | PMF |
 | | 5 | Mass inform — Fleet/Project UI (multi-select + whole-project) | Product |
@@ -152,7 +152,9 @@ Crystallize). What's still open or partially landed:
 
 Ordered by priority (urgent bug → launch-wedge remainder → product debt → GTM/infra → hosted-deferred):
 
-- [ ] **🐛 Task-write atomicity — no optimistic concurrency, confirmed real data loss.** Reported live
+- [~] **🐛 Task-write atomicity — no optimistic concurrency, confirmed real data loss.** 🚧 **In
+  progress** — branch `reliability/task-write-optimistic-concurrency`, no PR yet (design phase);
+  claiming this so other agents don't pick it up concurrently. Reported live
   (2026-08): a batch task-update lost `description` on 7 tasks (a genuine PATCH-semantics footgun,
   mitigated with tighter MCP tool guidance). A deeper issue surfaced during recovery: every one of the
   25+ `upsertTask` call sites across `orchestrator.ts`/`operations.ts` does a non-atomic
