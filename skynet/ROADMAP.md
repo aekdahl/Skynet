@@ -67,7 +67,7 @@ Items are ranked PMF > Platform > Product within each batch:
 | | 6 | First-run onboarding telemetry (anonymous install events) | PMF |
 | **N+1** | 1 | Cross-vendor consensus runs (same task, 2+ agents, auto-diff) — unblocked now that provider breadth has landed | Platform |
 | | 2 | Memory v0 — decision-derived fact capture from `hitl_audit` | Platform |
-| | 3 | Desktop code-signing (macOS + Windows) | GTM |
+| | 3 | Desktop code-signing (macOS + Windows) — engineering done, blocked on certs | GTM |
 | | 4 | Preview Phase 2 — service-container runtime + auto-rebuild on merge | Product |
 | **N+2** | 1 | Memory v0 — workspace-scoped MCP read/write server | Platform |
 | | 2 | Charter-assisted project creation | Platform |
@@ -210,12 +210,16 @@ Ordered by priority (urgent bug → launch-wedge remainder → product debt → 
   Phase 2 (done): repo checklist files (`- [ ]` items import as tasks; completing one checks the box,
   committed via the GitHub Contents API). **Remaining:** Phase 3, external/webhook sources
   (Linear/Jira) + optional two-way sync. Full design: [docs/task-source-sync.md](docs/task-source-sync.md).
-- [ ] **Desktop code-signing & notarization** *(split out of v0 #9, which ships beta unsigned)* — sign
+- [~] **Desktop code-signing & notarization** *(split out of v0 #9, which ships beta unsigned)* — sign
   the macOS build (Apple Developer ID + hardened runtime + entitlements + notarization) so Gatekeeper
   opens it cleanly and **mac auto-update works** (it silently no-ops on an unsigned build today); sign
-  the Windows build (code-signing cert) to clear SmartScreen. The electron-builder config + CI
-  secret-passthrough are straightforward to wire; the gating input is the **certs** — an Apple
-  Developer ID cert + a Windows code-signing cert added as repo secrets. Last remaining GTM blocker on
+  the Windows build (code-signing cert) to clear SmartScreen. **Engineering done** (PR #488): mac
+  `hardenedRuntime`/entitlements/`notarize` block + win `nsis` target in electron-builder config, CI
+  secret-passthrough (`.github/workflows/desktop-release.yml`) for both cert pairs, docs in
+  [apps/desktop/README.md](apps/desktop/README.md#releases--auto-update). Verified no repo secrets are
+  set yet (`gh secret list`), so builds still ship unsigned. **Blocked on:** an operator obtaining an
+  Apple Developer ID cert (Apple Developer Program enrollment, $99/yr) + a Windows code-signing cert
+  and adding both as repo secrets — a paid/human step, not engineering. Last remaining GTM blocker on
   the committed release.
 - [ ] 🏢 **Scale + containerized runner:** Redis multi-replica fan-out; **GKE Jobs for runners** — one
   container per agent, completing the v0 sandbox item's deferred half: memory/CPU caps (cgroups) and a
