@@ -339,6 +339,15 @@ export const config = {
   // ever lose Telegram AND your recovery codes.
   mfa: process.env.SKYNET_MFA === "true",
   mfaBreakGlass: process.env.SKYNET_MFA_DISABLE === "true",
+
+  // ── Onboarding telemetry (PMF v1.5) ─────────────────────────────────────────
+  // Where anonymous install-event pings are POSTed. Unset → recorded locally
+  // (still gives a self-hosted operator their own milestone visibility) but
+  // nothing is ever sent over the network.
+  telemetryEndpoint: process.env.SKYNET_TELEMETRY_ENDPOINT || undefined,
+  // Hard global kill switch, independent of any workspace's own opt-out
+  // (WorkspaceSettings.telemetryOptOut) — an infra/operator-level override.
+  telemetryDisabled: process.env.SKYNET_TELEMETRY_DISABLE === "true",
 };
 
 export const now = (): number => Date.now();

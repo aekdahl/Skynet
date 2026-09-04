@@ -2311,6 +2311,16 @@ export const WorkspaceSettings = z.object({
   // over both. This toggle is the day-to-day operator control — flip it live,
   // no restart, no env var edit.
   requireLoginVerification: z.boolean().default(false),
+  // Opt OUT of anonymous install-event telemetry (PMF v1.5 — see
+  // apps/server/src/telemetry.ts): five one-time onboarding milestones
+  // (workspace named, repo connected, key added, runner added, first task
+  // created), each firing at most once per workspace. The outbound ping
+  // carries only {event, at} — no workspace id, no operator id, no project/
+  // task content, nothing joinable back to this install or a person. Off
+  // (telemetry ON) by default, same as every other workspace setting here;
+  // flip it any time, no restart. A server-wide SKYNET_TELEMETRY_DISABLE=true
+  // env flag overrides this regardless (an infra-level kill switch).
+  telemetryOptOut: z.boolean().default(false),
 });
 export type WorkspaceSettings = z.infer<typeof WorkspaceSettings>;
 
@@ -2323,6 +2333,7 @@ export const UpdateWorkspaceSettingsRequest = z.object({
   exploreModel: z.string().min(1).optional(),
   browserTools: z.boolean().optional(),
   requireLoginVerification: z.boolean().optional(),
+  telemetryOptOut: z.boolean().optional(),
 });
 export type UpdateWorkspaceSettingsRequest = z.infer<typeof UpdateWorkspaceSettingsRequest>;
 

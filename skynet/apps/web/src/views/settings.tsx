@@ -1709,6 +1709,25 @@ function AdminPromotionSection() {
         </label>
       )}
 
+      {/* Same WorkspaceSettings record/fetch/save as the MFA toggle above —
+          not a second round-trip, just another field on it. */}
+      {mfaSettings && (
+        <label
+          className="proj-autonomy"
+          title="Anonymous, one-time-per-milestone install events (workspace created, repo connected, key added, runner added, first task) — never a workspace id, operator id, or any project/task content. Helps us see where new operators drop off in onboarding."
+        >
+          <input
+            type="checkbox"
+            className="proj-autonomy-cb"
+            checked={!mfaSettings.telemetryOptOut}
+            disabled={mfaBusy}
+            onChange={(e) => void saveMfa({ telemetryOptOut: !e.target.checked })}
+          />
+          <span className="proj-autonomy-switch" aria-hidden="true" />
+          <span className="proj-autonomy-label">Send anonymous install-event telemetry</span>
+        </label>
+      )}
+
       {err && <div className="settings-warn">{err}</div>}
 
       {viewers && viewers.length === 0 ? (

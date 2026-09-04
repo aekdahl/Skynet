@@ -187,6 +187,16 @@ export interface Store {
   getWorkspaceSettings(workspaceId: string): Promise<WorkspaceSettings | undefined>;
   putWorkspaceSettings(settings: WorkspaceSettings): Promise<void>;
 
+  /**
+   * Onboarding telemetry milestone (PMF v1.5 — see apps/server/src/
+   * telemetry.ts). Idempotent per (workspaceId, kind): records it and
+   * returns true only the FIRST time this exact milestone is reached for
+   * this workspace, so a repeat of the same action (e.g. adding a second
+   * runner) never re-fires it. Purely local bookkeeping — never itself sent
+   * anywhere; the caller decides whether to ALSO phone home on a true return.
+   */
+  recordTelemetryMilestone(workspaceId: string, kind: string, at: number): Promise<boolean>;
+
   // roadmap doc cache (Phase 24) — one parsed RoadmapDoc per project, keyed
   // by projectId; a re-sync overwrites wholesale.
   getRoadmapDoc(projectId: string): Promise<RoadmapDoc | undefined>;
