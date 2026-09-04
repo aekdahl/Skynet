@@ -355,6 +355,15 @@ const ALLOW = new Set<string>([
   // attributed commit parsed back out of the git object) in
   // tests/roadmap-drift.test.ts.
   "proposeRoadmapChange", "commitRoadmapLineEdit",
+  // Cross-vendor consensus runs — firing a real bake-off needs 2+ genuinely
+  // configured fleet agents on DIFFERENT providers plus real provider
+  // credentials to start, same "needs live fleet state" shape as
+  // reassignTaskAgent above; no offline journey fixture reproduces that. The
+  // full fan-out/rollback/collapse-on-approve orchestration (shared baseRef,
+  // all-or-nothing acquisition, retiring losers, repointing the task at the
+  // winner) is exercised against a real Orchestrator + throwaway git repo in
+  // tests/bakeoff.test.ts.
+  "startBakeoff",
 ]);
 
 describe("client API coverage", () => {

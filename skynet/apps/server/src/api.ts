@@ -1006,6 +1006,23 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     }
   });
 
+  // Cross-vendor consensus run: fire the same task at 2+ providers in
+  // parallel, each in its own worktree off the same base commit — see
+  // Orchestrator.startBakeoff. Picking a winner happens through the ordinary
+  // diff-approval flow (POST /api/hitl/:id/resolve), not a dedicated route.
+  app.post<{ Params: { id: string; tid: string }; Body: { providerIds?: unknown } }>(
+    "/api/projects/:id/tasks/:tid/bakeoff",
+    async (req, reply) => {
+      const parsed = ProviderId.array().min(2).safeParse(req.body?.providerIds);
+      if (!parsed.success) return reply.code(400).send({ error: "providerIds must be an array of 2+ provider ids" });
+      try {
+        return await ops.startBakeoff(ws(req), req.params.id, req.params.tid, parsed.data);
+      } catch (err) {
+        return fail(reply, err);
+      }
+    },
+  );
+
   // Execution intents (S10): the ONE endpoint for start_task/queue_tasks/
   // start_feature/process_backlog — see Operations.executeStewardAction.
   // Every other Steward-proposed action kind keeps its own existing route

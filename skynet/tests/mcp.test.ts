@@ -127,7 +127,7 @@ describe("MCP tool core", () => {
 
   it("enforces scopes: an author token cannot resolve_hitl, an approver can", async () => {
     const item: HitlItem = {
-      id: "q1", workspaceId: DEFAULT_WORKSPACE, runId: "a1", kind: "approval",
+      id: "q1", workspaceId: DEFAULT_WORKSPACE, runId: "a1", bakeoffId: null, kind: "approval",
       title: "Approve?", why: "because", risk: "medium",
       raisedAt: 0, resolvedAt: null, resolution: null,
       command: null, options: null, recommended: null, steps: null, diff: null,
@@ -413,7 +413,7 @@ describe("MCP project scoping", () => {
     const { client, store, hub } = await connect(scoped);
     await seedTwoProjects(store);
     const hitl = (id: string, runId: string): HitlItem => ({
-      id, workspaceId: DEFAULT_WORKSPACE, runId, kind: "approval", title: id, why: "", risk: "low",
+      id, workspaceId: DEFAULT_WORKSPACE, runId, bakeoffId: null, kind: "approval", title: id, why: "", risk: "low",
       raisedAt: 0, resolvedAt: null, resolution: null, command: null, options: null, recommended: null, steps: null, diff: null,
     });
     await hub.raiseHitl(hitl("qa", "ra")); // project A → visible
@@ -561,6 +561,7 @@ describe("MCP push notifications", () => {
       id: "q-42",
       workspaceId: DEFAULT_WORKSPACE,
       runId: "run-1",
+      bakeoffId: null,
       kind: "approval",
       title: "Run: rm -rf node_modules",
       why: "the agent wants to run a shell command",
@@ -605,6 +606,7 @@ describe("MCP push notifications", () => {
       id: "q-already",
       workspaceId: DEFAULT_WORKSPACE,
       runId: "run-1",
+      bakeoffId: null,
       kind: "approval",
       title: "irrelevant",
       why: "",

@@ -30,6 +30,7 @@ import { SimulationView } from "./views/simulation";
 import { RoadmapView } from "./views/roadmap";
 import { WorkspaceRoadmapView } from "./views/workspace-roadmap";
 import { AgentDetailView } from "./views/agent-detail";
+import { BakeoffView } from "./views/bakeoff";
 import { DesignTokensPreview } from "./views/design-tokens-preview";
 import { DecisionInboxView } from "./kanban/inbox";
 
@@ -50,7 +51,8 @@ export type ViewName =
   | "roadmap"
   | "workspaceRoadmap"
   | "agentDetail"
-  | "designTokens";
+  | "designTokens"
+  | "bakeoff";
 
 const VIEW_LABEL: Record<string, string> = {
   home: "Home",
@@ -69,6 +71,7 @@ const VIEW_LABEL: Record<string, string> = {
   workspaceRoadmap: "Roadmap Roll-up",
   agentDetail: "Agent",
   designTokens: "Design tokens",
+  bakeoff: "Bake-off",
 };
 
 export function App() {
@@ -112,6 +115,7 @@ export function App() {
   const [projectId, setProjectId] = useState<string | null>(() => route0?.projectId ?? null);
   const [runId, setRunId] = useState<string | null>(() => route0?.runId ?? null);
   const [agentId, setAgentId] = useState<string | null>(() => route0?.agentId ?? null);
+  const [bakeoffId, setBakeoffId] = useState<string | null>(() => route0?.bakeoffId ?? null);
   const [from, setFrom] = useState<ViewName>("home");
   const [fromP, setFromP] = useState<ViewName>("home");
   // The project we just created and landed in — signals its view to open the
@@ -196,6 +200,7 @@ export function App() {
         setViewRaw((v) => {
           if (v === "task") { e.preventDefault(); return gateView(from === "task" ? "home" : from); }
           if (v === "agentDetail") { e.preventDefault(); return gateView("fleet"); }
+          if (v === "bakeoff") { e.preventDefault(); return gateView(from === "bakeoff" ? "home" : from); }
           return v; // project (and every top-level view) handles its own Alt+Left, or has no "back"
         });
         return;
@@ -254,9 +259,9 @@ export function App() {
 
   // [w7] Keep the URL hash in sync with router state (shareable deep links).
   useEffect(() => {
-    const desired = toHash({ view, projectId, runId, agentId });
+    const desired = toHash({ view, projectId, runId, agentId, bakeoffId });
     if (location.hash !== desired) location.hash = desired;
-  }, [view, projectId, runId, agentId]);
+  }, [view, projectId, runId, agentId, bakeoffId]);
 
   // [w7] Apply hash changes (back/forward, manual edits, shared links).
   //
@@ -278,6 +283,7 @@ export function App() {
       if (r.projectId !== undefined) setProjectId(r.projectId);
       if (r.runId !== undefined) setRunId(r.runId);
       if (r.agentId !== undefined) setAgentId(r.agentId);
+      if (r.bakeoffId !== undefined) setBakeoffId(r.bakeoffId);
       if (r.autonomyOpen && r.projectId) setAutonomyOpenProjectId(r.projectId);
     };
     window.addEventListener("hashchange", onHash);
@@ -293,6 +299,24 @@ export function App() {
     setAgentId(id);
     setView("agentDetail");
   };
+  const openBakeoff = (id: string) => {
+    setFrom(view === "bakeoff" ? from : view);
+    setBakeoffId(id);
+    setView("bakeoff");
+  };
+  // A bake-off started from anywhere in the board (TaskCard, deep inside
+  // ProjectView's tree) jumps straight to the comparison view — same
+  // dispatch-a-custom-event idiom as "skynet:open-steward"/"skynet:open-agent-chat"
+  // above, so this doesn't need a new prop threaded through every intermediate
+  // board/column component between here and there.
+  useEffect(() => {
+    const onOpen = (e: Event) => {
+      const id = (e as CustomEvent<{ bakeoffId?: string }>).detail?.bakeoffId;
+      if (id) openBakeoff(id);
+    };
+    window.addEventListener("skynet:open-bakeoff", onOpen);
+    return () => window.removeEventListener("skynet:open-bakeoff", onOpen);
+  }, [view, from]);
   const openProject = (id: string) => {
     setFromP(view === "project" || view === "task" ? fromP : view);
     setProjectId(id);
@@ -468,6 +492,13 @@ export function App() {
             {store.loaded && view === "roadmap" && <RoadmapView />}
             {store.loaded && view === "workspaceRoadmap" && <WorkspaceRoadmapView />}
             {store.loaded && view === "designTokens" && <DesignTokensPreview />}
+            {store.loaded && view === "bakeoff" && bakeoffId && (
+              <BakeoffView
+                bakeoffId={bakeoffId}
+                onBack={() => setView(from === "bakeoff" ? "home" : from)}
+                onOpenTask={openTask}
+              />
+            )}
             {store.loaded && view === "task" && agent && (
               store.projects.find((p) => p.id === agent.projectId)?.newBoardEnabled ? (
                 (() => {

@@ -376,6 +376,12 @@ export const TaskRun = z.object({
   // Set when forked — shares context with its parent (same conflict "family"):
   parentId: z.string().nullable().default(null),
   branchFromStep: z.number().int().nullable().default(null),
+  // Set on every sibling of a cross-vendor bake-off (same task, same base
+  // commit, different provider) — never alongside parentId (a bake-off
+  // sibling is not a fork). Groups the siblings for conflict-family exemption
+  // (derive/conflicts.ts) and lets deliver() collapse the losers once one
+  // sibling's diff is approved. Null for an ordinary run/fork.
+  bakeoffId: z.string().nullable().default(null),
   // Archived runs are hidden from the project board but kept in the store and
   // reachable via the project's Archive section.
   archived: z.boolean().default(false),
@@ -931,6 +937,11 @@ export const Task = z.object({
   description: z.string().nullable().default(null),
   state: TaskState,
   runId: z.string().nullable().default(null),
+  // Set while a cross-vendor bake-off is in flight for this task (see
+  // TaskRun.bakeoffId); cleared the moment a winner is picked. runId itself
+  // stays pointed at the "anchor" sibling for the duration, then gets
+  // repointed to the winner on collapse.
+  bakeoffId: z.string().nullable().default(null),
   // Marked for autonomous pickup: when true and an agent is idle, the autonomy
   // loop starts this task (todo → ongoing) without a human. Off = waits for a
   // human "Start now".
@@ -1358,6 +1369,9 @@ export const HitlItem = z.object({
   id: z.string(),
   workspaceId: z.string(),
   runId: z.string(),
+  // Denormalized from the run at raise time (see TaskRun.bakeoffId) so the
+  // web store can group sibling diff cards by filter alone, no join needed.
+  bakeoffId: z.string().nullable().default(null),
   kind: HitlKind,
   title: z.string(),
   why: z.string(),
