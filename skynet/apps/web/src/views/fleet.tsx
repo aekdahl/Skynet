@@ -392,16 +392,21 @@ interface AgentActions {
   onMessage: (r: Agent) => void;
 }
 
-/** "% merged clean" (Phase 23) — of this agent's FINISHED runs, how many
- *  actually landed a clean merge (mergedAt set, never reverted). No new
- *  collection: grouped straight from the already-loaded TaskRun list by
- *  agentId. null = no finished runs yet, rendered as "—" rather than a
- *  misleading 0%/100%. */
-function reliabilityOf(agentId: string, runs: TaskRun[]): { pct: number | null; finished: number } {
-  const finished = runs.filter((r) => r.agentId === agentId && r.status === "done");
+/** Of a set of already-FINISHED runs, how many actually landed a clean merge
+ *  (mergedAt set, never reverted). null = no finished runs yet, rendered as
+ *  "—" rather than a misleading 0%/100%. Shared by the per-agent readout
+ *  (reliabilityOf) and the fleet-wide aggregate in FleetOverview. */
+function computeReliability(finished: TaskRun[]): { pct: number | null; finished: number } {
   if (finished.length === 0) return { pct: null, finished: 0 };
   const clean = finished.filter((r) => r.mergedAt != null && !r.merge?.revertedAt);
   return { pct: Math.round((clean.length / finished.length) * 100), finished: finished.length };
+}
+
+/** "% merged clean" (Phase 23) — of this agent's FINISHED runs. No new
+ *  collection: grouped straight from the already-loaded TaskRun list by
+ *  agentId. */
+function reliabilityOf(agentId: string, runs: TaskRun[]): { pct: number | null; finished: number } {
+  return computeReliability(runs.filter((r) => r.agentId === agentId && r.status === "done"));
 }
 
 function ReliabilityReadout({ agentId, runs }: { agentId: string; runs: TaskRun[] }) {
@@ -434,6 +439,126 @@ function costOf(roll: UsageRollup | undefined): { label: string; title: string }
       ? `${fmtNum(roll.tokensIn)} in / ${fmtNum(roll.tokensOut)} out tokens${roll.uncostedRuns ? ` · ${roll.uncostedRuns} run${roll.uncostedRuns === 1 ? "" : "s"} not costed by the vendor` : ""}`
       : "Vendor doesn't report cost for this run";
   return { label, title };
+}
+
+// Sums usage across a set of rollups (e.g. one per provider) into a single
+// fleet-wide total — same null-vs-uncosted semantics as addRun/UsageRollup
+// itself (costUsd stays null only when NOTHING in the set reported one).
+function sumRollups(rolls: UsageRollup[]): UsageRollup {
+  const total: UsageRollup = { runCount: 0, tokensIn: 0, tokensOut: 0, costUsd: null, durationMs: null, uncostedRuns: 0 };
+  for (const r of rolls) {
+    total.runCount += r.runCount;
+    total.tokensIn += r.tokensIn;
+    total.tokensOut += r.tokensOut;
+    total.uncostedRuns += r.uncostedRuns;
+    if (r.costUsd != null) total.costUsd = (total.costUsd ?? 0) + r.costUsd;
+  }
+  return total;
+}
+
+/** The Fleet layout's right column (roadmap "UI system polish" — the
+ *  deferred purposeful two-column redesign, not just a centering fix):
+ *  aggregate utilization against the runner cap, fleet-wide spend, and a
+ *  per-provider cost breakdown. Pure derivation over what FleetView already
+ *  loaded — no new fetch. */
+function FleetOverview({
+  fleet,
+  runs,
+  providers,
+  usageByProvider,
+  maxRunners,
+  busyCount,
+}: {
+  fleet: Agent[];
+  runs: TaskRun[];
+  providers: ProviderInfo[];
+  usageByProvider: Record<string, UsageRollup>;
+  maxRunners: number;
+  busyCount: number;
+}) {
+  const idleCount = fleet.length - busyCount;
+  const total = sumRollups(Object.values(usageByProvider));
+  const totalCost = costOf(total);
+  const reliability = computeReliability(runs.filter((r) => r.status === "done"));
+  const providerRows = Object.entries(usageByProvider)
+    .filter(([, roll]) => roll.runCount > 0)
+    .sort(([, a], [, b]) => (b.costUsd ?? 0) - (a.costUsd ?? 0));
+
+  return (
+    <aside className="panel fleet-overview">
+      <div className="panel-head">Fleet overview</div>
+      <div className="fleet-ov-stats">
+        <div className="fleet-ov-stat">
+          <span className="fleet-ov-stat-n mono">{fleet.length}</span>
+          <span className="fleet-ov-stat-lbl">Agents</span>
+        </div>
+        <div className="fleet-ov-stat">
+          <span className="fleet-ov-stat-n mono">{busyCount}</span>
+          <span className="fleet-ov-stat-lbl">Working</span>
+        </div>
+        <div className="fleet-ov-stat">
+          <span className="fleet-ov-stat-n mono">{idleCount}</span>
+          <span className="fleet-ov-stat-lbl">Idle</span>
+        </div>
+        <div className="fleet-ov-stat">
+          <span className="fleet-ov-stat-n mono">{reliability.pct == null ? "—" : `${reliability.pct}%`}</span>
+          <span
+            className="fleet-ov-stat-lbl"
+            title={
+              reliability.pct == null
+                ? "No finished runs yet"
+                : `${reliability.finished} finished run${reliability.finished === 1 ? "" : "s"} fleet-wide`
+            }
+          >
+            Merged clean
+          </span>
+        </div>
+      </div>
+      {maxRunners > 0 && (
+        <div className="fleet-ov-util">
+          <div className="fleet-ov-util-row">
+            <span>Utilization</span>
+            <span className="mono">
+              {busyCount} / {maxRunners}
+            </span>
+          </div>
+          <div className="fleet-ov-util-track">
+            <div
+              className="fleet-ov-util-fill"
+              style={{ width: `${Math.min(100, Math.round((busyCount / maxRunners) * 100))}%` }}
+            />
+          </div>
+        </div>
+      )}
+      <div>
+        <div className="fleet-ov-cost-total">
+          <span className="fleet-ov-cost-total-n mono" title={totalCost.title}>
+            {totalCost.label}
+          </span>
+          <span className="fleet-ov-cost-total-meta">total spend</span>
+        </div>
+        {providerRows.length > 0 ? (
+          <div className="fleet-ov-providers" style={{ marginTop: 10 }}>
+            {providerRows.map(([id, roll]) => {
+              const p = providers.find((x) => x.id === id);
+              const cost = costOf(roll);
+              return (
+                <div className="fleet-ov-provider-row" key={id}>
+                  {p && <span style={{ color: p.color }}>{p.glyph}</span>}
+                  <span className="fleet-ov-provider-name">{p?.name ?? id}</span>
+                  <span className="fleet-ov-provider-cost mono" title={cost.title}>
+                    {cost.label}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <p className="fleet-ov-empty">No runs yet — spend shows here once an agent starts working.</p>
+        )}
+      </div>
+    </aside>
+  );
 }
 
 // ─── Working now: a full card with live task context — unchanged from
@@ -702,11 +827,14 @@ export function FleetView({
 
   const taskCountOf = (r: Agent) => runs.filter((a) => a.agentId === r.id).length;
   // Vendor-reported cost/tokens, summed across this agent's runs (excludes
-  // archived — see computeUsageRollup). Computed once per render, not per card.
-  const usageByAgent = computeUsageRollup(runs).byAgent;
+  // archived — see computeUsageRollup). Computed once per render, not per card
+  // — byProvider feeds the overview panel's fleet-wide breakdown below.
+  const usageRollup = computeUsageRollup(runs);
+  const usageByAgent = usageRollup.byAgent;
 
   const busyOf = (r: Agent) =>
     runs.find((a) => a.status !== "done" && a.agentId === r.id);
+  const busyCount = fleet.filter((r) => !!busyOf(r)).length;
   // The busy run's own open gate, if any — see classifyRun (Answer vs Unstick).
   const hitlOf = (runId: string) => queue.find((q) => q.runId === runId && !q.resolvedAt);
 
@@ -875,102 +1003,114 @@ export function FleetView({
           />
         </div>
       )}
-      {groupKeys.map((gk) => {
-        const groupAgents = groups.get(gk)!;
-        const busyAgents = groupAgents.filter((r) => busyOf(r));
-        const idleAgents = groupAgents.filter((r) => !busyOf(r));
-        const showSubLabels = busyAgents.length > 0 && idleAgents.length > 0;
-        return (
-          <div key={gk} className="fleet-group">
-            {showHeadings && (
-              <div className="fleet-group-head">
-                <span className="fleet-group-name">{gk === UNGROUPED ? "Ungrouped" : gk}</span>
-                <span className="fleet-group-count mono">{groupAgents.length}</span>
-              </div>
-            )}
-            {busyAgents.length > 0 && (
-              <div className="fleet-working">
-                {showSubLabels && (
-                  <div className="fleet-sub-label">
-                    Working now <span className="mono">{busyAgents.length}</span>
+      <div className="fleet-layout">
+        <div className="fleet-main">
+          {groupKeys.map((gk) => {
+            const groupAgents = groups.get(gk)!;
+            const busyAgents = groupAgents.filter((r) => busyOf(r));
+            const idleAgents = groupAgents.filter((r) => !busyOf(r));
+            const showSubLabels = busyAgents.length > 0 && idleAgents.length > 0;
+            return (
+              <div key={gk} className="fleet-group">
+                {showHeadings && (
+                  <div className="fleet-group-head">
+                    <span className="fleet-group-name">{gk === UNGROUPED ? "Ungrouped" : gk}</span>
+                    <span className="fleet-group-count mono">{groupAgents.length}</span>
                   </div>
                 )}
-                <div className="fleet-grid">
-                  {busyAgents.map((r) =>
-                    editing === r.id
-                      ? renderEditable(r)
-                      : (
-                        <AgentCard
-                          key={r.id}
-                          r={r}
-                          busy={busyOf(r)!}
-                          p={providerInfo(providers, r.provider)}
-                          count={taskCountOf(r)}
-                          costRoll={usageByAgent[r.id]}
-                          runs={runs}
-                          hitl={hitlOf(busyOf(r)!.id)}
-                          now={now}
-                          endpoint={endpointOf(r)}
-                          actions={actions}
-                          informMode={informMode}
-                          informSelected={informSelected.has(r.id)}
-                          onToggleInform={() =>
-                            setInformSelected((prev) => {
-                              const next = new Set(prev);
-                              if (next.has(r.id)) next.delete(r.id);
-                              else next.add(r.id);
-                              return next;
-                            })
-                          }
-                        />
-                      ),
-                  )}
-                </div>
-              </div>
-            )}
-            {idleAgents.length > 0 && (
-              <div className="fleet-idle">
-                {showSubLabels && (
-                  <div className="fleet-sub-label">
-                    Idle <span className="mono">{idleAgents.length}</span>
-                  </div>
-                )}
-                <div className="fleet-idle-roster">
-                  {idleAgents.map((r) =>
-                    editing === r.id ? (
-                      <div key={r.id} className="fleet-idle-editing">
-                        <ConfigForm
-                          initial={r}
-                          onSave={(u) => {
-                            // Same patch as renderEditable's — the idle roster has
-                            // its own inline editor, and omitting credentialId here
-                            // silently dropped a vendor switch made from this form.
-                            updateAgent(r.id, { model: u.model, name: u.name || undefined, label: u.label, credentialId: u.credentialId ?? null });
-                            setEditing(null);
-                          }}
-                          onCancel={() => setEditing(null)}
-                        />
+                {busyAgents.length > 0 && (
+                  <div className="fleet-working">
+                    {showSubLabels && (
+                      <div className="fleet-sub-label">
+                        Working now <span className="mono">{busyAgents.length}</span>
                       </div>
-                    ) : (
-                      <AgentRow
-                        key={r.id}
-                        r={r}
-                        p={providerInfo(providers, r.provider)}
-                        count={taskCountOf(r)}
-                        costRoll={usageByAgent[r.id]}
-                        runs={runs}
-                        now={now}
-                        endpoint={endpointOf(r)}
-                        actions={actions}
-                      />
-                    ),
-                  )}
-                </div>
+                    )}
+                    <div className="fleet-grid">
+                      {busyAgents.map((r) =>
+                        editing === r.id
+                          ? renderEditable(r)
+                          : (
+                            <AgentCard
+                              key={r.id}
+                              r={r}
+                              busy={busyOf(r)!}
+                              p={providerInfo(providers, r.provider)}
+                              count={taskCountOf(r)}
+                              costRoll={usageByAgent[r.id]}
+                              runs={runs}
+                              hitl={hitlOf(busyOf(r)!.id)}
+                              now={now}
+                              endpoint={endpointOf(r)}
+                              actions={actions}
+                              informMode={informMode}
+                              informSelected={informSelected.has(r.id)}
+                              onToggleInform={() =>
+                                setInformSelected((prev) => {
+                                  const next = new Set(prev);
+                                  if (next.has(r.id)) next.delete(r.id);
+                                  else next.add(r.id);
+                                  return next;
+                                })
+                              }
+                            />
+                          ),
+                      )}
+                    </div>
+                  </div>
+                )}
+                {idleAgents.length > 0 && (
+                  <div className="fleet-idle">
+                    {showSubLabels && (
+                      <div className="fleet-sub-label">
+                        Idle <span className="mono">{idleAgents.length}</span>
+                      </div>
+                    )}
+                    <div className="fleet-idle-roster">
+                      {idleAgents.map((r) =>
+                        editing === r.id ? (
+                          <div key={r.id} className="fleet-idle-editing">
+                            <ConfigForm
+                              initial={r}
+                              onSave={(u) => {
+                                // Same patch as renderEditable's — the idle roster has
+                                // its own inline editor, and omitting credentialId here
+                                // silently dropped a vendor switch made from this form.
+                                updateAgent(r.id, { model: u.model, name: u.name || undefined, label: u.label, credentialId: u.credentialId ?? null });
+                                setEditing(null);
+                              }}
+                              onCancel={() => setEditing(null)}
+                            />
+                          </div>
+                        ) : (
+                          <AgentRow
+                            key={r.id}
+                            r={r}
+                            p={providerInfo(providers, r.provider)}
+                            count={taskCountOf(r)}
+                            costRoll={usageByAgent[r.id]}
+                            runs={runs}
+                            now={now}
+                            endpoint={endpointOf(r)}
+                            actions={actions}
+                          />
+                        ),
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
-            )}
-          </div>
-        );
-      })}
+            );
+          })}
+        </div>
+        <FleetOverview
+          fleet={fleet}
+          runs={runs}
+          providers={providers}
+          usageByProvider={usageRollup.byProvider}
+          maxRunners={maxRunners}
+          busyCount={busyCount}
+        />
+      </div>
     </section>
   );
 }
