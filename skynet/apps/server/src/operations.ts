@@ -151,6 +151,7 @@ import { VersionConflictError, type Store } from "./store/store.js";
 import type { RuleEngine } from "./rules/engine.js";
 import { matchCondition, type EvalContext } from "./rules/engine.js";
 import type { PendingRuleAction, PendingRuleActionStatus } from "@skynet/shared";
+import { fireOnboardingMilestone, type TelemetryMilestone } from "./telemetry.js";
 
 /** A referenced entity does not exist (or isn't in the caller's workspace). 404. */
 export class NotFoundError extends Error {
@@ -303,6 +304,13 @@ export interface OperationsDeps {
   lintConsult?: (text: string, description: string | null, siblingTitles: string[]) => ReturnType<typeof lintTask>;
 }
 
+/** "Has this project got a real repo bound?" — GitHub-bound OR a local
+ *  checkout that's actually a git repo. Onboarding telemetry's (PMF v1.5)
+ *  before/after check for the "repo connected" milestone. */
+function hasRepoConnected(p: Pick<Project, "repo" | "repoPath" | "gitBacked">): boolean {
+  return !!(p.repo || (p.repoPath && p.gitBacked));
+}
+
 export class Operations {
   private seq = 0;
   private readonly store: Store;
@@ -431,9 +439,22 @@ export class Operations {
 
   /** Patch the workspace fleet policy (auto-scale + cap). */
   async updateWorkspaceSettings(ws: string, patch: UpdateWorkspaceSettingsRequest): Promise<WorkspaceSettings> {
-    const next = WorkspaceSettings.parse({ ...(await this.getWorkspaceSettings(ws)), ...patch, workspaceId: ws });
+    const existing = await this.getWorkspaceSettings(ws);
+    const next = WorkspaceSettings.parse({ ...existing, ...patch, workspaceId: ws });
     await this.store.putWorkspaceSettings(next);
+    // Onboarding telemetry (PMF v1.5) — the workspace just got its first real
+    // name (onboarding's `finish()` step). Fire-and-forget: never block the
+    // save this response actually depends on.
+    if (!existing.name.trim() && next.name.trim()) void fireOnboardingMilestone(this.store, ws, "workspace_created");
     return next;
+  }
+
+  /** Onboarding telemetry (PMF v1.5) — public so callers outside this class
+   *  that don't hold a Store reference (e.g. the secrets routes, which own
+   *  their own specialized secrets store) can still fire a milestone through
+   *  the normal Operations layering instead of reaching into `this.store`. */
+  async recordTelemetryMilestone(ws: string, kind: TelemetryMilestone): Promise<void> {
+    await fireOnboardingMilestone(this.store, ws, kind);
   }
 
   // ── command policy (versioned, per-workspace command-safety classifier) ────
@@ -1232,6 +1253,9 @@ export class Operations {
     this.ruleEngine?.ensureSubscribed(ws);
     this.maybeAutoClone(ws, created);
     this.maybeAutoImportIssues(ws, created, input.importGithubIssues);
+    // Onboarding telemetry (PMF v1.5) — bound to a repo right at creation
+    // (GitHub-bound, an existing local git checkout, or a freshly created repo).
+    if (hasRepoConnected(created)) void fireOnboardingMilestone(this.store, ws, "repo_connected");
     return created;
   }
   async updateProject(ws: string, id: string, patch: UpdateProjectRequest, operatorId: string): Promise<Project> {
@@ -1273,6 +1297,10 @@ export class Operations {
     // pending override (see Orchestrator.clearAutonomyBreaker) — a fresh
     // manual "on" decision supersedes an earlier bypass either way.
     if (patch.autonomy === true) await this.orchestrator.resetAutonomyStreak(updated, operatorId);
+    // Onboarding telemetry (PMF v1.5) — the project just gained a repo it
+    // didn't have before (binding an existing local folder, or pointing at a
+    // GitHub repo after creation).
+    if (!hasRepoConnected(existing) && hasRepoConnected(updated)) void fireOnboardingMilestone(this.store, ws, "repo_connected");
     return updated;
   }
   /** TASK 19 — the composite autonomy dial: notch + underlying fields +
@@ -1436,7 +1464,8 @@ export class Operations {
     if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
     // New tasks append to the bottom of the backlog (highest order = lowest
     // priority) so existing manual ordering is preserved.
-    const inProject = (await this.store.listTasks(ws)).filter((t) => t.projectId === projectId);
+    const allWsTasks = await this.store.listTasks(ws);
+    const inProject = allWsTasks.filter((t) => t.projectId === projectId);
     const task: Task = {
       id: this.uid(`t-${this.slug(project.name)}`),
       workspaceId: ws,
@@ -1499,6 +1528,11 @@ export class Operations {
     if (created.source?.kind !== "github_issue" && created.source?.kind !== "repo_file") {
       this.maybeLintTask(ws, created);
     }
+    // Onboarding telemetry (PMF v1.5) — `allWsTasks` was read before this task
+    // was appended, so length 0 means this is the workspace's first-ever task
+    // (whether typed by hand or the first row of a bulk import — either way
+    // it's genuinely the first thing this workspace ever had to work on).
+    if (allWsTasks.length === 0) void fireOnboardingMilestone(this.store, ws, "first_task_created");
     return created;
   }
 
@@ -3957,7 +3991,11 @@ export class Operations {
       label: input.label?.trim() || null, // optional grouping bucket (empty → ungrouped)
       role: "worker", // no manager provisioning exists yet — every runner is a worker
     };
-    return this.hub.upsertAgent(runner);
+    const created = await this.hub.upsertAgent(runner);
+    // Onboarding telemetry (PMF v1.5) — `fleet` was read before this runner
+    // was added, so length 0 means this is the workspace's first-ever agent.
+    if (fleet.length === 0) void fireOnboardingMilestone(this.store, ws, "runner_added");
+    return created;
   }
   async updateAgent(ws: string, id: string, patch: UpdateRunnerRequest): Promise<Agent> {
     const existing = await this.store.getAgent(id);

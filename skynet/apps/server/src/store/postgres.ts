@@ -81,6 +81,9 @@ ALTER TABLE hitl_audit ADD COLUMN IF NOT EXISTS hash text;
 ALTER TABLE hitl_audit ADD COLUMN IF NOT EXISTS prev_hash text;
 CREATE TABLE IF NOT EXISTS github_connections (workspace_id text PRIMARY KEY, data jsonb NOT NULL);
 CREATE TABLE IF NOT EXISTS workspace_settings (workspace_id text PRIMARY KEY, data jsonb NOT NULL);
+-- Onboarding telemetry milestones (PMF v1.5) — at most one row per
+-- (workspace, milestone kind); see Store.recordTelemetryMilestone.
+CREATE TABLE IF NOT EXISTS telemetry_milestones (workspace_id text NOT NULL, kind text NOT NULL, at bigint NOT NULL, PRIMARY KEY (workspace_id, kind));
 CREATE TABLE IF NOT EXISTS command_policy_versions (id text PRIMARY KEY, workspace_id text NOT NULL, version int NOT NULL, active boolean NOT NULL DEFAULT false, data jsonb NOT NULL);
 CREATE INDEX IF NOT EXISTS command_policy_versions_ws ON command_policy_versions(workspace_id);
 CREATE TABLE IF NOT EXISTS github_tokens      (workspace_id text PRIMARY KEY, ciphertext text NOT NULL);
@@ -513,6 +516,18 @@ export class PostgresStore implements Store {
       "INSERT INTO workspace_settings(workspace_id,data) VALUES($1,$2::jsonb) ON CONFLICT(workspace_id) DO UPDATE SET data=$2::jsonb",
       [settings.workspaceId, J(settings)],
     );
+  }
+
+  async recordTelemetryMilestone(ws: string, kind: string, at: number): Promise<boolean> {
+    // ON CONFLICT DO NOTHING (never UPSERT) — rowCount tells us whether this
+    // insert actually happened, i.e. whether this is the FIRST time this
+    // workspace reached this milestone. The unique constraint makes this safe
+    // under concurrent requests, unlike a separate SELECT-then-INSERT check.
+    const { rowCount } = await this.pool.query(
+      "INSERT INTO telemetry_milestones(workspace_id,kind,at) VALUES($1,$2,$3) ON CONFLICT(workspace_id,kind) DO NOTHING",
+      [ws, kind, at],
+    );
+    return (rowCount ?? 0) > 0;
   }
 
   async getAutonomyBreaker(projectId: string): Promise<AutonomyBreaker | undefined> {

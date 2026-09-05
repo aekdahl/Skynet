@@ -71,6 +71,7 @@ export class MemoryStore implements Store {
   protected serviceTokens = new Map<string, StoredServiceToken>(); // keyed by id (holds a hash, never the raw token)
   protected autonomyBreakers = new Map<string, AutonomyBreaker>(); // keyed by projectId
   protected autonomyOverrides = new Map<string, AutonomyOverride>(); // keyed by projectId
+  protected telemetryMilestones = new Set<string>(); // keyed by `${workspaceId}::${kind}`
   private providers: ProviderInfo[] = PROVIDERS;
 
   /** Hook called after every mutation. No-op in memory; FileStore overrides it
@@ -252,6 +253,14 @@ export class MemoryStore implements Store {
 
   async getWorkspaceSettings(ws: string) { return this.workspaceSettings.get(ws); }
   async putWorkspaceSettings(settings: WorkspaceSettings) { this.workspaceSettings.set(settings.workspaceId, settings); this.persist(); }
+
+  async recordTelemetryMilestone(ws: string, kind: string, _at: number): Promise<boolean> {
+    const key = `${ws}::${kind}`;
+    if (this.telemetryMilestones.has(key)) return false;
+    this.telemetryMilestones.add(key);
+    this.persist();
+    return true;
+  }
 
   async getRoadmapDoc(projectId: string) { return this.roadmapDocs.get(projectId); }
   async putRoadmapDoc(doc: RoadmapDoc) { this.roadmapDocs.set(doc.projectId, doc); this.persist(); return doc; }
