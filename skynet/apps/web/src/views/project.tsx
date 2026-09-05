@@ -2486,6 +2486,11 @@ export function LivePreviewModal({
               {st.combined.included}/{st.combined.total} combined{st.combined.skipped > 0 ? ` · ${st.combined.skipped} skipped` : ""}
             </span>
           )}
+          {st?.kind === "service" && (
+            <span className="lp-combined mono" title="Runs as a service — rebuilds and restarts automatically when the fleet merges">
+              service
+            </span>
+          )}
           <span className={"lp-status lp-status-" + (st?.status ?? "idle")}>
             {st?.status === "live" ? "● live" : st?.status === "starting" ? "◐ starting…" : st?.status === "failed" ? "✕ failed" : st?.status ?? "…"}
           </span>
