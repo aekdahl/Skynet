@@ -24,7 +24,7 @@ import { tmpdir } from "node:os";
 import { blastRadiusFlags, classifyCommand } from "./command-safety.js";
 import { decideAutoApproval } from "./approval-policy.js";
 import { resolveActivePolicy } from "./command-policy.js";
-import { resolveMergeTarget } from "./derive/merge-target.js";
+import { isManagerDelegated, resolveMergeTarget } from "./derive/merge-target.js";
 import { parseReviewVerdict, extractJsonObject, REVIEW_OUTPUT_INSTRUCTION, parseReviewProposals, type ProposedTask } from "./review-verdict.js";
 import { parseBreakerVerdict, BREAKER_OUTPUT_INSTRUCTION, type BreakerVerdictOut } from "./breaker-verdict.js";
 import { parseInjectionVerdict, buildInjectionPrompt } from "./injection-firewall.js";
@@ -862,9 +862,8 @@ export class Orchestrator {
 
   /** Where `run`'s approved diff integrates first — see derive/merge-target.ts.
    *  Resolves the run's direct parent + that parent's fleet runner and defers
-   *  the actual decision to the pure `resolveMergeTarget`. Currently always
-   *  returns `baseBranchFor(project)` in practice (nothing provisions a
-   *  manager-role agent yet), by design — see that module for why. */
+   *  the actual decision to the pure `resolveMergeTarget`: a manager-delegated
+   *  worker's parent branch, else `baseBranchFor(project)` as always. */
   private async mergeTargetBranchFor(run: TaskRun, project?: Project | null): Promise<string> {
     const fallback = this.baseBranchFor(project);
     if (!run.parentId) return fallback;
@@ -992,6 +991,7 @@ export class Orchestrator {
         void this.hub.runStatus(runId, status);
       },
       onHitl: (runId, raise, untrustedReads) => void this.raise(runId, raise, untrustedReads),
+      onSpawnWorker: async (runId, task, modules) => ({ agentId: (await this.spawnWorker(runId, task, modules)).id }),
       onCompleted: (runId, branch) => void this.complete(runId, branch),
       onFailed: (runId, reason) => void this.fail(runId, reason),
       onChatReply: (runId, text) => {
@@ -1093,6 +1093,31 @@ export class Orchestrator {
       flags: raise.kind === "escalation" ? [...flags, "agent"] : flags,
       sourceBranchOverride: null,
     };
+    // Manager escalation policy (agent-hierarchy.md §4): a worker's low-risk
+    // question/plan gate is auto-resolved by ITS MANAGER, not the human
+    // operator — the whole "supervise at the manager level" point. Anything
+    // else (approval/diff/merge, or medium/high risk) always escalates, per
+    // the doc's table, and this run isn't even parented by a manager unless
+    // spawnWorker actually created it that way. Silent hub path, same as the
+    // project-trust auto-approve below — audited (`operatorId: manager:<id>`,
+    // classified by compliance.ts's classifyOperatorId), just not paged.
+    if ((raise.kind === "question" || raise.kind === "plan") && risk === "low" && agent.parentId) {
+      const parent = await this.store.getRun(agent.parentId);
+      const parentRunner = parent?.agentId ? await this.store.getAgent(parent.agentId) : undefined;
+      // A question with no recommended option has no safe default to pick —
+      // fall through to a human rather than guess. A plan always has one
+      // reasonable auto-resolution: approve it as proposed.
+      if (parentRunner?.role === "manager" && (raise.kind === "plan" || item.recommended !== null)) {
+        const resolution: Resolution =
+          raise.kind === "plan"
+            ? { action: "approve", optionIndex: null, guidance: null, targetBranch: null, memoryNote: null, resetWork: false, by: `manager:${agent.parentId}`, at: now() }
+            : { action: "option", optionIndex: item.recommended, guidance: null, targetBranch: null, memoryNote: null, resetWork: false, by: `manager:${agent.parentId}`, at: now() };
+        await this.hub.runLog(runId, `auto-resolved by manager: ${item.title}`);
+        await this.hub.raiseAndAutoResolveHitl(item, resolution);
+        await this.deliver(item, resolution);
+        return;
+      }
+    }
     // Auto-approve a reversible, in-sandbox command gate per the project's
     // approval policy (see approval-policy.ts), so the operator isn't asked to
     // confirm every command. Boundary ops (high-risk / deny) and non-command
@@ -1516,9 +1541,9 @@ export class Orchestrator {
     const conn = await githubService.get(agent.workspaceId).catch(() => null);
     const usesGithubFlow = !!(conn?.connected && project?.repo && git);
     const defaultTargetBranch = usesGithubFlow
-      ? this.baseBranchFor(project)
+      ? await this.mergeTargetBranchFor(agent, project) // manager's branch when delegated, else baseBranchFor
       : git
-        ? git.merge.integrationBranch(agent.projectId)
+        ? (await this.managerDelegatedTargetBranch(agent)) ?? git.merge.integrationBranch(agent.projectId)
         : null;
     // Evidence-gated auto-merge. Assembled BEFORE the item so the same decision
     // both routes the diff and explains itself on the card — one computation,
@@ -1991,6 +2016,12 @@ export class Orchestrator {
     // straight through to the unchanged default pick below — a preference must
     // never block a task the way `agents`-mode eligibility legitimately can.
     preferred?: { provider?: TaskRun["provider"] | null; model?: string | null },
+    // Desired Agent.role for a FRESH runner this call auto-provisions (an
+    // idle-runner reuse below always keeps that runner's own role — reusing a
+    // runner never changes what it is). Defaults to "worker": every existing
+    // caller (plain assignTask) is unaffected; only a manager-provisioning
+    // assignTask call passes "manager" here.
+    role: Agent["role"] = "worker",
   ): Promise<{ id: string; provider: TaskRun["provider"]; model: string; credentialId: string | null }> {
     return this.acquireExclusive(async () => {
       const runners = await this.store.listAgents(workspaceId);
@@ -2013,7 +2044,15 @@ export class Orchestrator {
           "No fleet runner uses a provider key enabled for this project — enable one of its keys in the project's settings, or add a runner on an allowed key in Fleet.",
         );
       }
-      const idle = eligibleRunners.filter((r) => r.status === "idle");
+      // A runner's role is sticky — reusing one never repurposes it, so an idle
+      // candidate must already be the requested role (missing/undefined role —
+      // any Agent record predating this field, including plain-object test
+      // fixtures that skip the schema's `.default("worker")` — reads as
+      // "worker", same as the field's own default). A no-op filter for the
+      // default "worker" request, but it keeps a manager request from silently
+      // landing on a worker-typed runner (whose Agent.role a later
+      // spawnWorker check would reject).
+      const idle = eligibleRunners.filter((r) => r.status === "idle" && (r.role ?? "worker") === role);
       // Try the preference FIRST, ranked exact-model > provider-only, before the
       // plain "first idle, usable" pick below. `sort` is stable, so when nothing
       // matches (every rank is 0) this reduces to the original order and the
@@ -2042,10 +2081,11 @@ export class Orchestrator {
         const template = eligibleRunners[0]; // a busy runner on an allowed key
         if (settings.autoProvisionRunners && underCap && template && (await this.providerUsable(workspaceId, template.provider, template.credentialId))) {
           const id = `runner-auto-${++this.seq}`;
-          // Auto-scale clones capacity, not delegation — always 'worker'
-          // regardless of the template's role (no manager provisioning exists
-          // to make this reachable yet either way).
-          const runner: Agent = { id, workspaceId, name: id, provider: template.provider, credentialId: template.credentialId, model: template.model, status: "busy", idleSince: null, autoProvisioned: true, canReview: true, label: template.label ?? null, role: "worker" };
+          // Clones the template's provider/model/credential/label, but takes
+          // its ROLE from the caller's request, not the template's — a manager
+          // auto-scaling under capacity pressure still needs a manager-typed
+          // runner, regardless of what happened to be busy.
+          const runner: Agent = { id, workspaceId, name: id, provider: template.provider, credentialId: template.credentialId, model: template.model, status: "busy", idleSince: null, autoProvisioned: true, canReview: true, label: template.label ?? null, role };
           await this.hub.upsertAgent(runner);
           return { id, provider: template.provider, model: template.model, credentialId: template.credentialId ?? null };
         }
@@ -2110,12 +2150,19 @@ export class Orchestrator {
     // runs and would otherwise just get re-picked as its own "replacement".
     // Only relaunchEscalated's reassign path sets this.
     excludeAgentId?: string | null,
+    // Desired Agent.role for a FRESH runner this call provisions — see
+    // acquireAgent's identical param. Defaults to "worker" (fork and every
+    // other existing caller); spawnWorker passes it explicitly too, for
+    // clarity, even though it'd be the same default.
+    role: Agent["role"] = "worker",
   ): Promise<{ id: string; provider: TaskRun["provider"]; model: string; credentialId: string | null }> {
     return this.acquireExclusive(async () => {
       const runners = await this.store.listAgents(workspaceId);
       const keyAllowed = (r: Agent) => this.keyAllowedForProject(r, allowedCredentialIds);
-      // Prefer an idle agent that's on an allowed key AND can actually execute.
-      for (const r of runners.filter((r) => r.status === "idle" && keyAllowed(r) && r.id !== excludeAgentId)) {
+      // Prefer an idle agent that's on an allowed key, the right role, AND can
+      // actually execute. The role check is a no-op for the default "worker"
+      // request — see acquireAgent's identical comment.
+      for (const r of runners.filter((r) => r.status === "idle" && (r.role ?? "worker") === role && keyAllowed(r) && r.id !== excludeAgentId)) {
         if (await this.providerUsable(workspaceId, r.provider, r.credentialId)) {
           await this.hub.upsertAgent({ ...r, status: "busy", idleSince: null });
           return { id: r.id, provider: r.provider, model: r.model, credentialId: r.credentialId ?? null };
@@ -2142,7 +2189,7 @@ export class Orchestrator {
         );
       }
       const id = `runner-auto-${++this.seq}`;
-      const runner: Agent = { id, workspaceId, name: id, provider, credentialId: credentialId ?? null, model, status: "busy", idleSince: null, autoProvisioned: true, canReview: true, label: null, role: "worker" };
+      const runner: Agent = { id, workspaceId, name: id, provider, credentialId: credentialId ?? null, model, status: "busy", idleSince: null, autoProvisioned: true, canReview: true, label: null, role };
       await this.hub.upsertAgent(runner);
       return { id, provider, model, credentialId: credentialId ?? null };
     });
@@ -2315,7 +2362,14 @@ export class Orchestrator {
   }
 
   // ── assignTask ────────────────────────────────────────────────────────────
-  async assignTask(projectId: string, taskId: string): Promise<TaskRun> {
+  /**
+   * @param opts Manager provisioning (agent-hierarchy.md §2). Absent/undefined
+   *   is today's plain worker assignment, unchanged. `role: "manager"` starts a
+   *   manager agent instead — one whose job is to decompose `area` (seeded as
+   *   the run's `modules`) and delegate via `spawn_worker` rather than edit
+   *   code itself. `area` is ignored for a plain worker assignment.
+   */
+  async assignTask(projectId: string, taskId: string, opts?: { role?: Agent["role"]; area?: string[] }): Promise<TaskRun> {
     const task = await this.store.getTask(taskId);
     if (!task || task.projectId !== projectId) throw new Error("Task not found");
     const project = await this.store.getProject(projectId);
@@ -2362,10 +2416,13 @@ export class Orchestrator {
     const current: TaskAssignment = task.assignment ?? { mode: "unassigned", agentIds: [] };
     const assignment: TaskAssignment =
       current.mode === "unassigned" ? { mode: "any", agentIds: [] } : current;
-    const runner = await this.acquireAgent(project.workspaceId, assignment, project.enabledRunnerCredentialIds, {
-      provider: task.preferredProvider,
-      model: task.preferredModel,
-    });
+    const runner = await this.acquireAgent(
+      project.workspaceId,
+      assignment,
+      project.enabledRunnerCredentialIds,
+      { provider: task.preferredProvider, model: task.preferredModel },
+      opts?.role ?? "worker",
+    );
     const runId = `${this.slug(task.text)}-${++this.seq}`;
     // runId is unique → unique branch & worktree path (two same-named tasks
     // never collide on the same branch).
@@ -2400,7 +2457,10 @@ export class Orchestrator {
       credentialId: runner.credentialId,
       model: runner.model,
       branch,
-      modules: [],
+      // A manager's declared area (its scope going in — it hasn't touched any
+      // file itself yet, so there's nothing to infer this from the way a
+      // worker's modules normally are). A plain worker starts empty, as before.
+      modules: opts?.role === "manager" ? (opts.area ?? []) : [],
       progress: 0,
       plan: [],
       usage: null,
@@ -2475,7 +2535,7 @@ export class Orchestrator {
       // runner decides how to expose it (Claude → a Playwright MCP server).
       const { browserTools } = await this.fleetPolicy(project.workspaceId);
       const handle = await provider.start(
-        { runId, projectId, task: brief, model: runner.model, branch, cwd, apiKey, baseUrl, rates, browser: browserTools, planModeGate: project.planModeGate, disallowedTools: project.disallowedTools },
+        { runId, projectId, task: brief, model: runner.model, branch, cwd, apiKey, baseUrl, rates, browser: browserTools, planModeGate: project.planModeGate, disallowedTools: project.disallowedTools, role: opts?.role },
         this.events(),
       );
       this.live.set(runId, { handle, agentId: runner.id, taskId, branch, baseRef, git, scratchCwd });
@@ -2572,6 +2632,132 @@ export class Orchestrator {
         this.events(),
       );
       this.live.set(runId, { handle, agentId: runner.id, taskId: null, branch: agent.branch, baseRef, git, scratchCwd });
+    } catch (err) {
+      await this.releaseScratchCwd(scratchCwd);
+      await this.failStartup(runId, runner.id, (err as Error).message);
+      throw err;
+    }
+    return agent;
+  }
+
+  // ── spawnWorker (agent-hierarchy.md §3) ─────────────────────────────────
+  /**
+   * A manager-role run's ONE delegation mechanism: provision a real,
+   * first-class Skynet worker agent under it — own runner, worktree, branch,
+   * HITL, merge — never an in-process SDK subagent (the doc's "critical
+   * design call": every unit stays visible, supervisable, isolated, and
+   * mergeable). Called from the `spawn_worker` MCP tool (runner-sdk/claude.ts)
+   * via `Orchestrator.events().onSpawnWorker`.
+   *
+   * Modeled on {@link fork}, but delegation semantics rather than
+   * session-continuation ones: a FRESH agent/session (no resume), its own
+   * branch cut off the MANAGER's branch (family-internal integration, §5 —
+   * not `${manager.branch}-fork`), and `parentId` set to the manager for the
+   * delegation edge `familyOf` already walks to the root.
+   */
+  async spawnWorker(managerRunId: string, task: string, modules: string[]): Promise<TaskRun> {
+    const manager = await this.store.getRun(managerRunId);
+    if (!manager) throw new Error("Manager agent not found");
+    const managerRunner = manager.agentId ? await this.store.getAgent(manager.agentId) : undefined;
+    // Defense in depth: the spawn_worker tool is only ever wired into a
+    // manager-role run's own session, but this orchestrator entrypoint
+    // shouldn't trust the caller's context alone.
+    if (managerRunner?.role !== "manager") throw new Error("Only a manager agent may spawn a worker");
+
+    // Reuses fork's on-demand provisioning — a manager shouldn't stall
+    // delegating just because the fleet happens to be fully busy.
+    const runner = await this.acquireOrProvisionRunner(
+      manager.workspaceId,
+      manager.provider,
+      manager.model,
+      manager.credentialId,
+      await this.projectKeyAllowlist(manager.projectId),
+      undefined,
+      "worker",
+    );
+    const runId = `${this.slug(task)}-${++this.seq}`;
+    const branch = `agent/${runId}`;
+    const project = await this.store.getProject(manager.projectId);
+    const preview = await previewService.resolve({
+      workspaceId: manager.workspaceId,
+      projectId: manager.projectId,
+      projectName: project?.name ?? "",
+      projectGoal: project?.goal ?? "",
+      runId,
+      branch,
+      seedVisual: manager.visual,
+    });
+    const workerEndpoint =
+      (await secretService.resolveEndpoint(manager.workspaceId, runner.credentialId ?? runner.provider).catch(() => undefined)) ?? null;
+    const agent: TaskRun = {
+      id: runId,
+      endpoint: workerEndpoint,
+      merge: null,
+      handoff: null,
+      workspaceId: manager.workspaceId,
+      projectId: manager.projectId,
+      name: task,
+      status: "running",
+      agentId: runner.id,
+      provider: runner.provider,
+      credentialId: runner.credentialId,
+      model: runner.model,
+      branch,
+      modules,
+      progress: 0,
+      plan: [],
+      usage: null,
+      modifiedFiles: [],
+      log: [],
+      startedAt: now(),
+      lastHeartbeatAt: now(),
+      visual: preview.visual,
+      previewUrl: preview.previewUrl,
+      dependsOn: [],
+      parentId: managerRunId,
+      branchFromStep: null,
+      archived: false,
+      pr: null,
+      mergedAt: null,
+      flyDeployment: null,
+    };
+
+    const provider = await this.getProvider(runner.provider); // fail fast if it can't resolve
+
+    await this.hub.createRun(agent);
+    if (project) await this.hub.upsertProject({ ...project, runIds: [...project.runIds, runId] });
+
+    const git = this.gitContextFor(project);
+    let scratchCwd: string | undefined;
+    try {
+      // A worker branches off its MANAGER's branch (family-internal
+      // integration, §5) — same call shape fork uses with parent.branch.
+      const prov = await this.provisionCwd(git, runId, branch, project, manager.branch);
+      const { cwd, baseRef } = prov;
+      scratchCwd = prov.scratchCwd;
+      const apiKey = await secretService.resolve(manager.workspaceId, runner.credentialId ?? runner.provider);
+      const baseUrl = await secretService.resolveEndpoint(manager.workspaceId, runner.credentialId ?? runner.provider).catch(() => undefined);
+      const rates = ratesFor(baseUrl, runner.model);
+      const handle = await provider.start(
+        {
+          runId,
+          projectId: manager.projectId,
+          // A plain project-context brief (no feature/solution-brief digest,
+          // unlike fork/assignTask) — the manager's own task text already
+          // carries whatever area-specific framing this subtask needs.
+          task: buildAgentContext({ project, body: task }),
+          model: runner.model,
+          branch,
+          cwd,
+          parentId: managerRunId,
+          apiKey,
+          baseUrl,
+          rates,
+          disallowedTools: project?.disallowedTools,
+        },
+        this.events(),
+      );
+      this.live.set(runId, { handle, agentId: runner.id, taskId: null, branch, baseRef, git, scratchCwd });
     } catch (err) {
       await this.releaseScratchCwd(scratchCwd);
       await this.failStartup(runId, runner.id, (err as Error).message);
@@ -2791,11 +2977,19 @@ export class Orchestrator {
       return true;
     }
     if (git) {
+      // Unlike the GitHub-flow `targetBranch` above (a guided-merge OPERATOR
+      // choice only — its "not supported yet" note a few lines up is about
+      // exactly that), the local queue also auto-routes a manager-delegated
+      // worker into its manager's branch (agent-hierarchy.md §5) when the
+      // operator didn't pick an explicit target. `targetBranchFor` in merge.ts
+      // is otherwise this queue's own default (feature branch, else the
+      // project's integration branch) — only overridden here, never widened.
+      const localTargetBranch = targetBranch ?? (await this.managerDelegatedTargetBranch(agent));
       await this.hub.runStatus(runId, "review");
       await this.hub.runLog(
         runId,
         (kind === "merge" ? "retrying merge after reconciliation" : kind === "verifier" ? "retrying merge + checks" : "diff approved — queued for merge") +
-          (targetBranch ? ` — into ${targetBranch}` : ""),
+          (localTargetBranch ? ` — into ${localTargetBranch}` : ""),
       );
       // Verifier gate is per-project (Project.checkCmd, else the
       // workspace-global config.checkCmd) — resolved here, not baked into
@@ -2803,10 +2997,23 @@ export class Orchestrator {
       // projects sharing a (repo, baseBranch) cache key. See
       // MergeRequest.checkCmd's doc comment.
       const checkCmd = project?.checkCmd?.trim() || undefined;
-      git.merge.enqueue({ runId, projectId: agent.projectId, agentBranch: agent.branch, workspaceId: agent.workspaceId, targetBranch, checkCmd });
+      git.merge.enqueue({ runId, projectId: agent.projectId, agentBranch: agent.branch, workspaceId: agent.workspaceId, targetBranch: localTargetBranch, checkCmd });
       return true;
     }
     return false;
+  }
+
+  /** The manager's branch when `run` is a `spawnWorker`-delegated worker (see
+   *  `isManagerDelegated`), else undefined — the local merge queue's own
+   *  routing hook (integrateRun above), parallel to `mergeTargetBranchFor`'s
+   *  GitHub-flow one but with no project-base fallback baked in: the local
+   *  queue already has its own default (`targetBranchFor` in merge.ts), this
+   *  only overrides it for the manager-delegation case. */
+  private async managerDelegatedTargetBranch(run: TaskRun): Promise<string | undefined> {
+    if (!run.parentId) return undefined;
+    const parent = await this.store.getRun(run.parentId);
+    const parentRunner = parent?.agentId ? await this.store.getAgent(parent.agentId) : undefined;
+    return isManagerDelegated(run, parent, parentRunner) ? parent?.branch : undefined;
   }
 
   /**
@@ -3987,7 +4194,7 @@ export class Orchestrator {
     // What the branch syncs to, is diffed against, and PRs into — normally the
     // project's effective base branch (its own `baseBranch` when set, else the
     // global default), or the run's manager's branch first when it's a
-    // manager-delegated worker (see mergeTargetBranchFor; inert today).
+    // manager-delegated worker (see mergeTargetBranchFor).
     const base = await this.mergeTargetBranchFor(agent, project);
     // Bring the branch up to the LATEST base before the PR opens, so it merges
     // cleanly and the reviewer/GitHub never hits a stale-base conflict at merge

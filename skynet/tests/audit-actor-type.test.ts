@@ -51,6 +51,16 @@ describe("Operations.listAudit — actorType", () => {
     expect(row!.actorType).toBe("agent-review");
   });
 
+  it("classifies a manager:<runId> operatorId as 'agent-review' (agent-hierarchy.md §4 auto-resolve)", async () => {
+    const { store, ops } = setup();
+    await store.recordAudit({
+      workspaceId: DEFAULT_WORKSPACE, hitlId: "h2b", runId: "r2b", action: "approve",
+      operatorId: "manager:mgr-1", at: 1000, payload: {},
+    });
+    const [row] = await ops.listAudit(DEFAULT_WORKSPACE);
+    expect(row!.actorType).toBe("agent-review");
+  });
+
   it("classifies a real operator id as 'human'", async () => {
     const { store, ops } = setup();
     await store.recordAudit({
@@ -67,6 +77,7 @@ describe("Operations.listAudit — actorType", () => {
       { hitlId: "h1", operatorId: "policy:full-autonomy" },
       { hitlId: "h2", operatorId: "autonomy" },
       { hitlId: "h3", operatorId: "op-abc" },
+      { hitlId: "h4", operatorId: "manager:mgr-1" },
     ];
     for (const r of rows) {
       await store.recordAudit({ workspaceId: DEFAULT_WORKSPACE, hitlId: r.hitlId, runId: "r1", action: "approve", operatorId: r.operatorId, at: 1000, payload: {} });
