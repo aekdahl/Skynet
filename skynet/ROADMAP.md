@@ -30,8 +30,9 @@ funnel; governance is the launch wedge; portable, open memory is the moat.**
 found these rare-to-absent), and where they live:
 1. **Open portable memory — one second brain across every agent** (v4; thin v0 in v1.5): user-owned,
    cross-vendor, exposed as an **MCP memory server any tool can read/write, even outside Skynet**.
-2. **Cross-vendor consensus runs** (v1.5, fan-out+diff+merge landed): same task on 2+ providers, auto-diff,
-   keep/merge the winner. Having them peer-review each other instead of a human picking is still open.
+2. **Cross-vendor consensus runs** (v1.5, landed): same task on 2+ providers, auto-diff, and an eligible
+   fleet agent peer-reviews the siblings and picks a winner (a human still confirms unless the project
+   is autonomous) — keep/merge follows automatically.
 3. **Prompt-injection / tool-poisoning firewall** (v1, landed): gate tool calls steered by untrusted content the
    agent read (issue / web page / dependency). The category's first agent-security layer.
 4. **Provably-improving fleet** (v5): measure which memory + task phrasings one-shot vs. churn, promote
@@ -60,14 +61,14 @@ Items are ranked PMF > Platform > Product within each batch:
 |-------|---|------|-------|
 | **N (now)** | 1 | 🔒 Security hardening — Aug 2026 audit remediation (7 findings, see v1 section) | Security |
 | | 2 | ✅ 🐛 Task-write atomicity — fixed, PR #649 (see v1 section) | Reliability |
-| | 3 | Memory v0 — operator-authored facts, injected per project | Platform |
-| | 4 | deep-review / breaker-review settings UI toggle (both already built, PATCH-API-only today) | PMF |
-| | 5 | Mass inform — Fleet/Project UI (multi-select + whole-project) | Product |
-| | 6 | First-run onboarding telemetry (anonymous install events) | PMF |
-| **N+1** | 1 | Cross-vendor consensus runs — peer-review pass (fan-out+diff+merge landed) | Platform |
-| | 2 | Memory v0 — decision-derived fact capture from `hitl_audit` | Platform |
-| | 3 | Desktop code-signing (macOS + Windows) — engineering done, blocked on certs | GTM |
-| | 4 | Preview Phase 2 — service-container runtime + auto-rebuild on merge | Product |
+| | 3 | ✅ Cross-vendor consensus runs — fan-out+diff+merge+peer-review, all landed | Platform |
+| | 4 | Memory v0 — operator-authored facts, injected per project | Platform |
+| | 5 | deep-review / breaker-review settings UI toggle (both already built, PATCH-API-only today) | PMF |
+| | 6 | Mass inform — Fleet/Project UI (multi-select + whole-project) | Product |
+| | 7 | First-run onboarding telemetry (anonymous install events) | PMF |
+| **N+1** | 1 | Memory v0 — decision-derived fact capture from `hitl_audit` | Platform |
+| | 2 | Desktop code-signing (macOS + Windows) — engineering done, blocked on certs | GTM |
+| | 3 | Preview Phase 2 — service-container runtime + auto-rebuild on merge | Product |
 | **N+2** | 1 | Memory v0 — workspace-scoped MCP read/write server | Platform |
 | | 2 | Autonomy telemetry dashboard (ZTMR, HITL volume, resolution time) | PMF |
 | | 3 | Plan entity + project view panel (Product Steward foundation) | Platform |
@@ -329,8 +330,8 @@ parallel with v1 hardening. (Rivals make you pre-auth each CLI and learn worktre
 features below are white space.) 10 items from the original UX/ease list have shipped — see
 [the archive](ROADMAP-ARCHIVE.md#v15--ship-the-wedge-onboarding-fluency--memory-v0).
 
-Ordered by priority — the two signature bets first (nothing shipped on Memory v0 yet; consensus runs
-just got unblocked), then remaining ease-of-use work, then the lowest-urgency UI polish tail:
+Ordered by priority — Memory v0 first (nothing shipped there yet; consensus runs are now fully
+landed), then remaining ease-of-use work, then the lowest-urgency UI polish tail:
 
 **Memory v0 (thin moat, pulled forward from v4):**
 - [ ] Operator-authored + **decision-derived** facts (every `hitl_audit` "decided X because Y" becomes a memory
@@ -340,13 +341,16 @@ just got unblocked), then remaining ease-of-use work, then the lowest-urgency UI
   yet — highest-priority open item in this version.**
 
 **⭐ Cross-vendor consensus runs (signature bet):**
-- [~] Fire the same task at 2+ providers in parallel, each in its own worktree off the same base
+- [x] Fire the same task at 2+ providers in parallel, each in its own worktree off the same base
   commit, auto-diff the results, and keep/merge the winner — landed (`Orchestrator.startBakeoff`,
   `TaskRun`/`Task`/`HitlItem.bakeoffId`, the "Bake-off ⇉" board action + N-way comparison view). The
   vendor-neutral seam is what makes true cross-*vendor* bake-offs possible (rivals' "councils" are
-  single-tool). Having them **peer-review each other** instead of a human picking is still open — the
-  schema (a bare `bakeoffId` grouping key, not a rigid one-shot entity) was deliberately left room for
-  it, but the review pipeline itself isn't built.
+  single-tool). **Peer-review now also landed**: an eligible non-participant fleet agent
+  (`Orchestrator.autoJudgeBakeoff`) compares every sibling's diff summary and picks a winner —
+  ALWAYS records `Task.bakeoffVerdict` as an audit trail (an unreadable reply flags for a human,
+  never guesses), and only auto-resolves the pick when the project is autonomous, same lever
+  `autoReview` already uses. A human can still force it on demand ("Judge now") or just pick manually
+  — the agent's recommendation is shown, never forced.
 
 **Easier to use than anyone else:**
 - [~] **Project assistant → co-operator (actions from chat).** Steward (the shared brain,
