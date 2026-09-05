@@ -18,7 +18,10 @@ import type { ComplianceApproverType, ComplianceReportEntry, SignedComplianceRep
 // call, so a policy/agent-review/human split can't drift between the two.
 export function classifyOperatorId(operatorId: string): ComplianceApproverType {
   if (operatorId.startsWith("policy:")) return "policy";
-  if (operatorId === "autonomy") return "agent-review";
+  // A manager agent auto-resolving a worker's low-risk gate (agent-hierarchy.md
+  // §4, orchestrator.ts's raise()) — a fleet agent's own call, same bucket as
+  // "autonomy" below, not a standing policy and not a human.
+  if (operatorId === "autonomy" || operatorId.startsWith("manager:")) return "agent-review";
   return "human";
 }
 

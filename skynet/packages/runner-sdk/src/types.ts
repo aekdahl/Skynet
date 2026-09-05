@@ -94,6 +94,15 @@ export interface StartSpec {
    * Claude runner acts on it today.
    */
   maxTurns?: number;
+  /**
+   * Opt-in: this run is a "manager" (agent-hierarchy.md) — an agent whose job
+   * is to decompose its area/task and delegate to worker agents rather than
+   * edit code itself. Resolved by the orchestrator from the run's `Agent.role`;
+   * absent/"worker" (the default) is today's plain behavior, unchanged. Only
+   * the Claude runner acts on it today: it exposes a `spawn_worker` tool
+   * (see `RunnerEvents.onSpawnWorker`) that a worker-role run never gets.
+   */
+  role?: "manager" | "worker";
 }
 
 /**
@@ -145,6 +154,17 @@ export interface RunnerEvents {
    * or empty just means "nothing to check," never a signal on its own.
    */
   onHitl(runId: string, raise: HitlRaise, untrustedReads?: UntrustedRead[]): void;
+  /**
+   * A manager-role run (see `StartSpec.role`) delegating a subtask — the
+   * orchestrator provisions a real, first-class worker `TaskRun` under this
+   * manager (own runner/worktree/branch/HITL/merge, `parentId` set to this
+   * run) and returns its id. Only ever called from the `spawn_worker` tool the
+   * Claude runner exposes to a manager-role run. Optional (like `onUsage`)
+   * since most `RunnerEvents` consumers — every headless review/consult
+   * harness in this codebase — never start a manager-role session and so
+   * never need it; the real orchestrator's `events()` always supplies it.
+   */
+  onSpawnWorker?(runId: string, task: string, modules: string[]): Promise<{ agentId: string }>;
   onCompleted(runId: string, branch: string): void;
   /**
    * The runner could NOT execute (binary missing, auth failure, crash). This is

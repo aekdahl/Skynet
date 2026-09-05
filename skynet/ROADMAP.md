@@ -30,8 +30,9 @@ funnel; governance is the launch wedge; portable, open memory is the moat.**
 found these rare-to-absent), and where they live:
 1. **Open portable memory — one second brain across every agent** (v4; thin v0 in v1.5): user-owned,
    cross-vendor, exposed as an **MCP memory server any tool can read/write, even outside Skynet**.
-2. **Cross-vendor consensus runs** (v1.5): same task on Claude + Codex + Gemini, auto-diff, keep/merge
-   the winner — or have them peer-review each other.
+2. **Cross-vendor consensus runs** (v1.5, landed): same task on 2+ providers, auto-diff, and an eligible
+   fleet agent peer-reviews the siblings and picks a winner (a human still confirms unless the project
+   is autonomous) — keep/merge follows automatically.
 3. **Prompt-injection / tool-poisoning firewall** (v1, landed): gate tool calls steered by untrusted content the
    agent read (issue / web page / dependency). The category's first agent-security layer.
 4. **Provably-improving fleet** (v5): measure which memory + task phrasings one-shot vs. churn, promote
@@ -45,11 +46,11 @@ found these rare-to-absent), and where they live:
 largely shipped)** — ship in this order:
 **(1) Security + reliability debt** — the 7 Aug-2026 security findings and the task-write-atomicity race
 are both *confirmed, pre-existing* issues (one already caused real data loss) with broad blast radius;
-close these before anything else compounds on top of them. **(2) Memory v0** (nothing has shipped here
-yet, and it's the wedge that keeps us from being "just another orchestrator") **+ Cross-vendor consensus
-runs** (provider breadth landed — Codex/Gemini/Cursor/Copilot/Hermes/OpenCode/Kimi Code — so this
-signature bet is now unblocked, no longer gated on it). **(3) v1.5 ease-of-use** (Charter-assisted project
-creation, the remaining operator-ergonomics/design-token tail) **+ desktop code-signing** (the last GTM
+close these before anything else compounds on top of them. **(2) Memory v0** (phases 1+2 have now
+shipped — operator-authored + decision-derived facts, both injected and exportable; only the
+workspace-scoped MCP server and v4's LLM distillation remain) — **Cross-vendor consensus
+runs**' fan-out+diff+merge has now landed; only the peer-review half remains. **(3) v1.5 ease-of-use** (the remaining
+operator-ergonomics/design-token tail) **+ desktop code-signing** (the last GTM
 blocker on the committed release — mac auto-update silently no-ops without it). Provider breadth and the
 Governance-to-SOTA launch wedge — the prior #1/#2 here — are both essentially done; see
 [the archive](ROADMAP-ARCHIVE.md). Everything below stays directional.
@@ -59,20 +60,20 @@ Items are ranked PMF > Platform > Product within each batch:
 
 | Batch | # | Item | Track |
 |-------|---|------|-------|
-| **N (now)** | 1 | 🔒 Security hardening — Aug 2026 audit remediation (7 findings, see v1 section) | Security |
-| | 2 | 🐛 Task-write atomicity — confirmed live data loss, needs a design decision (see v1 section) | Reliability |
-| | 3 | Memory v0 — operator-authored facts, injected per project | Platform |
-| | 4 | deep-review / breaker-review settings UI toggle (both already built, PATCH-API-only today) | PMF |
-| | 5 | Mass inform — Fleet/Project UI (multi-select + whole-project) | Product |
-| | 6 | First-run onboarding telemetry (anonymous install events) | PMF |
+| **N (now)** | 1 | 🔒 Security hardening — Aug 2026 audit remediation (5 open findings, see v1 section) | Security |
+| | 2 | ✅ 🐛 Task-write atomicity — fixed, PR #649 (see v1 section) | Reliability |
+| | 3 | ✅ Memory v0 phase 1 — shipped, PR #656 (see v1.5 section) | Platform |
+| | 4 | Memory v0 phase 2 — decision-derived fact capture from `hitl_audit` | Platform |
+| | 5 | Manager/worker UI — Subway/Roster lines + an Inbox filter for the shipped `spawn_worker` hierarchy (see v2 section) | Platform |
+| | 6 | deep-review / breaker-review settings UI toggle (both already built, PATCH-API-only today) | PMF |
+| | 7 | Mass inform — Fleet/Project UI (multi-select + whole-project) | Product |
+| | 8 | ✅ First-run onboarding telemetry — shipped, PR #653 | PMF |
 | **N+1** | 1 | Cross-vendor consensus runs (same task, 2+ agents, auto-diff) — unblocked now that provider breadth has landed | Platform |
-| | 2 | Memory v0 — decision-derived fact capture from `hitl_audit` | Platform |
-| | 3 | Desktop code-signing (macOS + Windows) | GTM |
-| | 4 | Preview Phase 2 — service-container runtime + auto-rebuild on merge | Product |
-| **N+2** | 1 | Memory v0 — workspace-scoped MCP read/write server | Platform |
-| | 2 | Charter-assisted project creation | Platform |
-| | 3 | Autonomy telemetry dashboard (ZTMR, HITL volume, resolution time) | PMF |
-| | 4 | Plan entity + project view panel (Product Steward foundation) | Platform |
+| | 2 | ✅ Desktop code-signing (macOS + Windows) — engineering done (PR #488), blocked on certs | GTM |
+| | 3 | Preview Phase 2 — service-container runtime + auto-rebuild on merge | Product |
+| **N+2** | 1 | Memory v0 phase 3 — workspace-scoped MCP read/write server | Platform |
+| | 2 | Autonomy telemetry dashboard (ZTMR, HITL volume, resolution time) | PMF |
+| | 3 | Plan entity + project view panel (Product Steward foundation) | Platform |
 
 Legend: 🔬 = needs an LLM / open research · 🔗 = has a design brief · ⛓ = depends on earlier version ·
 🏢 = hosted-only (deferred; **not** needed for the local desktop release).
@@ -152,19 +153,24 @@ Crystallize). What's still open or partially landed:
 
 Ordered by priority (urgent bug → launch-wedge remainder → product debt → GTM/infra → hosted-deferred):
 
-- [ ] **🐛 Task-write atomicity — no optimistic concurrency, confirmed real data loss.** Reported live
-  (2026-08): a batch task-update lost `description` on 7 tasks (a genuine PATCH-semantics footgun,
-  mitigated with tighter MCP tool guidance). A deeper issue surfaced during recovery: every one of the
-  25+ `upsertTask` call sites across `orchestrator.ts`/`operations.ts` does a non-atomic
-  read-modify-write (fetch → spread → write the whole record back, no version/etag check) — safe when a
-  task had one writer at a time, not safe now that autonomous writers (triage, auto-review, the
-  self-replenishing backlog) run concurrently with human/scripted edits on the same record. **Needs a
-  real design decision before implementing** — options include a monotonic `version`/`updatedAt` field
-  checked-and-incremented at the Store layer, narrowing the highest-risk autonomous paths to
-  single-field atomic patches, or a compare-and-swap primitive every caller routes through. The race is
-  systemic (likely beyond just `Task`), not local to one call site — scope deliberately rather than
-  bolting a fix onto one path. **Highest-priority open item in this section** — it's a confirmed,
-  live bug, not a feature gap.
+- [x] **🐛 Task-write atomicity — no optimistic concurrency, confirmed real data loss.** Fixed
+  (PR #649, `reliability/task-write-optimistic-concurrency`). Reported live (2026-08): a batch
+  task-update lost `description` on 7 tasks (a genuine PATCH-semantics footgun, mitigated separately
+  with tighter MCP tool guidance). The deeper issue found during recovery — every one of the 25+
+  `upsertTask` call sites across `orchestrator.ts`/`operations.ts` did a non-atomic read-modify-write
+  (fetch → spread → write the whole record back, no version/etag check), unsafe once autonomous writers
+  (triage, auto-review, the self-replenishing backlog) run concurrently with human/scripted edits on the
+  same record — is closed: `Task.version` (shared contracts) is now checked-and-incremented atomically
+  at the Store layer (`Store.putTask(task, expectedVersion?)`, a real CAS in both `MemoryStore` and
+  `PostgresStore`, throwing `VersionConflictError` on a stale write; mapped to HTTP 409 at the API
+  layer), and every update call site now routes through one shared retry helper,
+  `Hub.patchTask(id, patch, opts?)`, which re-reads and re-applies (function-form patches/guards
+  re-evaluate against the fresh value, not blindly reapply) on a version conflict, up to `maxRetries`.
+  `tests/task-write-concurrency.test.ts` reproduces the actual incident deterministically (a delayed-
+  store harness controlling write interleaving) and proves the final record carries both concurrent
+  writers' fields — the old pattern would have silently dropped one. Scoped to `Task` only (confirmed
+  the only two `Store` implementations were migrated); generalizing the same pattern to other entities
+  was deliberately left for a second confirmed incident rather than fixed pre-emptively.
 - [~] **⭐ Governance to SOTA (the launch wedge — already the white space; make it best-in-class).**
   Nearly all landed: policy-as-code command policy, budget ceiling + cost-aware allocation/pacing,
   context-aware (blast-radius) risk classification, the prompt-injection/tool-poisoning firewall,
@@ -176,9 +182,16 @@ Ordered by priority (urgent bug → launch-wedge remainder → product debt → 
 - [~] **Deeper runner-capability surfacing** — pull more native capability through the `runner-sdk`
   seam. Landed: real plan steps, token/cost telemetry, a Claude plan-mode HITL gate, token-by-token
   streaming (Claude/Gemini/Cursor), a per-project `disallowedTools` deny-list, structured diffs in
-  review, and Copilot's move to real structured-event dispatch. **Remaining:** a full `allowedTools`
-  allow-list (the safer deny-list landed first, on purpose), `settingSources` (CLAUDE.md) support, and
-  token streaming for Codex/Copilot (neither exposes a chunked wire format to stream from).
+  review, Copilot's move to real structured-event dispatch, and `settingSources: ['project']` on the
+  main Claude run so a repo's own CLAUDE.md actually reaches the agent (landed in #437 — gated behind a
+  mandatory approval whenever the same repo also defines `.claude/settings.json` hooks, since the SDK
+  can't load one without the other; see `packages/runner-sdk/src/claude.ts`). **Remaining:** token
+  streaming for Codex/Copilot — confirmed vendor-blocked (both wire protocols are line-per-JSON-message,
+  not sub-message deltas), nothing to build until either vendor exposes one; not on us. A full
+  `allowedTools` allow-list is a **considered non-goal, not a TODO**: `packages/shared/src/contracts.ts`'s
+  `disallowedTools` field documents why the deny-list shipped instead of it — an allow-list risks
+  silently breaking an agent that needs a tool nobody thought to list. Not revisiting without a concrete
+  need for a stricter default.
 - [~] **Mass inform** — select multiple agents (or a whole project) and attach a note that rides the
   *next* prompt each already receives, no extra turn. Shipped: the `inform` interaction type
   (`POST /api/runs/inform`), live-session push for Claude, buffered-note delivery for the CLI runners
@@ -190,14 +203,17 @@ Ordered by priority (urgent bug → launch-wedge remainder → product debt → 
   live-verified against each vendor's current CLI). Reactive breadth from the candidate list
   ([docs/runner-catalog.md](docs/runner-catalog.md)) stays open-ended — no fixed target, lowest urgency
   now that the field-trailing gap this closed is gone.
-- [~] **UI system polish (P2 of [docs/ux-review.md](docs/ux-review.md)).** Landed: untangled
+- [x] **UI system polish (P2 of [docs/ux-review.md](docs/ux-review.md)).** Landed: untangled
   `--accent`/`--warn` (were an accidental hex duplicate), a real Lucide-based nav icon set, motion
   tokens (`--motion-fast`/`--motion-base`), a real `:active` press state + a global `:focus-visible`
-  fallback, 9 missing icon-button `aria-label`s + 4 `aria-expanded` toggles, and 3 of 4 named
-  legibility-floor violations. **Deliberately not done:** *purposeful* two-column layouts for the
-  still-sparse Fleet/Integrations views (a bigger layout redesign, not a token fix — its own PR), and a
-  full sweep of the ~90 other `--faint` usages beyond the 4 named examples (tracked under v0.5's
-  "Legibility floor," already shipped for the ones that carried meaning).
+  fallback, 9 missing icon-button `aria-label`s + 4 `aria-expanded` toggles, and all 4 named
+  legibility-floor violations (the folder-picker hint was the last holdout). The two pieces deferred
+  for their own PR are now in too: purposeful two-column layouts for Fleet (roster left, an aggregate
+  utilization/cost-by-provider panel right) and Integrations (a real catalog grid, not a 640px-capped
+  single column); and a full sweep of the ~90 remaining `--faint` usages — text that carries meaning
+  (costs, counts, attribution, table headers, status/hint copy) moved to `--muted`, pure decoration
+  (carets, dismiss icons, timestamps, disabled marks, placeholders, structural dividers) stayed
+  `--faint`, matching the standard v0.5's "Legibility floor" sweep set.
 - [~] **🔗 Per-project live preview — "see what it builds", any software.** Phase 1 (web/sites) shipped:
   project + per-run preview managers, descriptor→heuristic→agent-assisted recipe resolution
   (`.skynet/preview.json`), refresh-on-merge, and a resizable split-screen dock ⇄ modal reachable from a
@@ -210,12 +226,16 @@ Ordered by priority (urgent bug → launch-wedge remainder → product debt → 
   Phase 2 (done): repo checklist files (`- [ ]` items import as tasks; completing one checks the box,
   committed via the GitHub Contents API). **Remaining:** Phase 3, external/webhook sources
   (Linear/Jira) + optional two-way sync. Full design: [docs/task-source-sync.md](docs/task-source-sync.md).
-- [ ] **Desktop code-signing & notarization** *(split out of v0 #9, which ships beta unsigned)* — sign
+- [~] **Desktop code-signing & notarization** *(split out of v0 #9, which ships beta unsigned)* — sign
   the macOS build (Apple Developer ID + hardened runtime + entitlements + notarization) so Gatekeeper
   opens it cleanly and **mac auto-update works** (it silently no-ops on an unsigned build today); sign
-  the Windows build (code-signing cert) to clear SmartScreen. The electron-builder config + CI
-  secret-passthrough are straightforward to wire; the gating input is the **certs** — an Apple
-  Developer ID cert + a Windows code-signing cert added as repo secrets. Last remaining GTM blocker on
+  the Windows build (code-signing cert) to clear SmartScreen. **Engineering done** (PR #488): mac
+  `hardenedRuntime`/entitlements/`notarize` block + win `nsis` target in electron-builder config, CI
+  secret-passthrough (`.github/workflows/desktop-release.yml`) for both cert pairs, docs in
+  [apps/desktop/README.md](apps/desktop/README.md#releases--auto-update). Verified no repo secrets are
+  set yet (`gh secret list`), so builds still ship unsigned. **Blocked on:** an operator obtaining an
+  Apple Developer ID cert (Apple Developer Program enrollment, $99/yr) + a Windows code-signing cert
+  and adding both as repo secrets — a paid/human step, not engineering. Last remaining GTM blocker on
   the committed release.
 - [ ] 🏢 **Scale + containerized runner:** Redis multi-replica fan-out; **GKE Jobs for runners** — one
   container per agent, completing the v0 sandbox item's deferred half: memory/CPU caps (cgroups) and a
@@ -232,14 +252,15 @@ Full-codebase security audit of `main` (8 finder agents by area + a skeptical fi
 candidate finding, confidence ≥ 8/10 kept) surfaced 7 real, independently-confirmed vulnerabilities —
 none introduced by any in-flight PR, all pre-existing on `main`. Grouped as one epic because they share
 urgency (credential exposure, path traversal, auth escalation — governance-track trust, not feature
-work); the 7 have no ordering dependency and can ship in parallel.
+work); the 7 have no ordering dependency and can ship in parallel. **2 of the 7 are now fixed** (one
+below, plus the elevated-viewer token loophole further down) — **5 remain genuinely open.**
 
-- [ ] **Redact GitHub token from push/sync error logs** — `pushBranch`/`syncBase`
-  (`apps/server/src/github/provider.ts`) embed the token in the git remote URL with no try/catch,
-  unlike the sibling `cloneRepo` which already redacts; a push/fetch failure's raw error message (which
-  embeds the token) reaches `hub.runLog()` and broadcasts live to the operator's UI. Fix: apply
-  `cloneRepo`'s `redactToken()` pattern to both; consider generic scrubbing at the `runLog` layer too.
-  *Severity: High. `apps/server/src/github/provider.ts:258-264,348-352`.*
+- [x] **Redact GitHub token from push/sync error logs.** Already fixed (PR #598,
+  `apps/server/src/github/provider.ts`'s `pushBranch`/`syncBase` both wrap their git-remote call in a
+  `catch` that runs the raw error message through `redactToken()` before it can reach `hub.runLog()`)
+  — this landed *before* the Aug-2026 audit ran, so the audit's own finding was stale the moment it was
+  written; caught only now by re-checking the finding against the live code instead of trusting the
+  checklist. No action needed.
 - [ ] **Contain `roadmapPath`/`repoPath` reads to the project's own repo** — an "author"-scoped
   `PATCH /api/projects/:id` can set `roadmapPath`/`repoPath` to an arbitrary filesystem path with zero
   containment check, and `GET /api/projects/:id/roadmap` then returns that file's raw content. Fix:
@@ -253,12 +274,22 @@ work); the 7 have no ordering dependency and can ship in parallel.
   this (`PREVIEW_ENV_DENYLIST`/`previewEnv()`) — the Fly path never adopted the wrapper. Fix: pass
   `previewEnv()` into `deploy.ts`'s `ensureDeps`/`runToCompletion` calls.
   *Severity: High. `apps/server/src/fly/deploy.ts:233,235`.*
-- [ ] **Stop same-origin preview iframes from exposing the session token** — both preview surfaces set
-  `sandbox="allow-scripts allow-same-origin ..."` while serving agent-built content on Skynet's own
-  origin by default, so injected/malicious in-preview JS can read `localStorage`'s session token for a
-  full session hijack. Fix: drop `allow-same-origin`, or refuse to boot the preview proxy without a
-  genuinely distinct origin; longer-term, move the session token out of `localStorage`.
-  *Severity: High. `apps/web/src/components/preview.tsx:47`, `apps/web/src/views/project.tsx:2275`.*
+- [x] **Stop same-origin preview iframes from exposing the session token.** Both preview surfaces set
+  `sandbox="allow-scripts allow-same-origin ..."`; the artifact-preview route
+  (`apps/server/src/preview/route.ts`) defaults to Skynet's own origin unless an operator sets
+  `SKYNET_PREVIEW_BASE_URL`, and the live-preview reverse proxy (`preview-proxy.ts`) has no
+  separate-origin option at all — a hosted/remote-reachable install always serves it at `/p/<token>/`
+  on the console's own origin (`project-preview.ts`'s `state()`, via `publicOrigin()`) so it's reachable
+  from a phone. Same-origin plus those sandbox flags let injected/malicious in-preview JS (the previewed
+  branch is agent-built, plausibly prompt-injected) read `localStorage`'s `skynet_token` — the same
+  token driving both REST and WS auth — for a full session hijack. Fix: dropped `allow-same-origin` from
+  both iframes (`components/preview.tsx`'s `PreviewFrame`, `views/project.tsx`'s `LivePreviewModal`) —
+  the framed document now gets an opaque origin regardless of the URL it's served from, so previewed
+  code still runs (scripts/forms/popups/modals all still allowed) but can never read this origin's
+  storage. Verified manually: both iframes still render/run; no code (frontend or server) reads or
+  asserts the sandbox string, so nothing else depended on the dropped flag. Moving the session token out
+  of `localStorage` entirely stays a longer-term follow-up, not done here.
+  *Severity: High. `apps/web/src/components/preview.tsx`, `apps/web/src/views/project.tsx`.*
 - [ ] **Bring `.skynet/preview.json` build/install commands under the command-safety gate** — the
   live-preview `install` step always runs unsandboxed, and `dev`/`start` only sandboxes behind an
   off-by-default flag (and even then it's write-confinement only, not a real boundary). This executes
@@ -266,19 +297,49 @@ work); the 7 have no ordering dependency and can ship in parallel.
   `command-safety.ts`/`injection-firewall.ts` gates applied elsewhere. Fix: route through the same
   bounded-execution/scrubbed-env discipline, and make the sandbox mandatory for `install`.
   *Severity: High. `apps/server/src/preview/worktree.ts:39-45,71-76`.*
-- [ ] **Close the elevated-viewer permanent-token loophole** — `POST /api/service-tokens`'s
-  `requireHuman()` checks only the live, elevation-inflated scopes, not the caller's *persisted* role
-  the way `requireAdmin()` deliberately does. A viewer temporarily elevated to full authority can mint a
-  standalone bearer token with a high scope set and no forced expiry, which survives past the
-  elevation's lapse. Fix: gate service-token routes with the same persisted-role check, and enforce a
-  mandatory TTL ceiling on tokens minted by a non-persisted-admin caller.
+- [x] **Close the elevated-viewer permanent-token loophole.** `POST /api/service-tokens`'s
+  `requireHuman()` checked only the live, elevation-inflated `scopes` value (`undefined` = full
+  authority) — identical to a real admin's, and identical to the exact loophole `requireAdmin()`'s own
+  doc comment already named for the promote route. A viewer riding an active break-glass elevation could
+  mint a standalone, independently-stored bearer token with a high scope set and no forced expiry,
+  outliving the elevation that authorized minting it. Fix: `requireTokenManager` (replacing
+  `requireHuman`, all 3 routes) looks up the caller's PERSISTED role via `operators.getByIdentity` —
+  never trusts live scopes, mirroring `requireAdmin` exactly — and additionally recognizes an active
+  elevation (`principal.elevatedUntil` still in the future) so break-glass access to token management
+  isn't shut out entirely (a genuinely non-elevated viewer never reaches these routes at all: the
+  workspace mutation-scope gate, `auth-guard.ts`, already requires "author" scope for POST/DELETE before
+  this file runs, which a plain `scopes:["observe"]` session never has — GET carries no such gate, so
+  this check is what protects it too, confirmed by reading `requiredScope()`). A real persisted admin's
+  request is completely unaffected (`ttlMs: null` = no forced expiry still honored verbatim); a caller
+  who reaches the mint route only via elevation gets a MANDATORY, non-optional TTL: their requested
+  `ttlMs` (or `null`, the old exploit's move) is always clamped to whatever remains of THEIR OWN
+  elevation window (`Math.min(requested, elevatedUntil - now())`), so a minted token can never survive
+  the specific grant that authorized minting it — closing exactly the "survives past the elevation's
+  lapse" gap named in the finding, not just narrowing it to a fixed ceiling that could still outlive an
+  elevation minted early in a long window. Regression-guarded end-to-end against a real Fastify app +
+  real stores (`tests/service-token-elevation-loophole.test.ts`, mirrors `admin-promotion.test.ts`'s own
+  pattern for this exact class of bug): a plain non-elevated viewer refused on all 3 routes (baseline,
+  still correct); a real admin's no-forced-expiry mint unaffected; an elevated viewer's mint always
+  returns a real, non-null, correctly-clamped `expiresAt` — including when it deliberately over-asks for
+  more than its remaining window; list/revoke also gated uniformly; the same viewer refused again the
+  instant its elevation is forced into the past; a scoped service token still can never manage other
+  tokens (the pre-existing no-self-escalation guarantee, unaffected). Stashed the fix, confirmed exactly
+  the 2 TTL-ceiling assertions fail against the original code (everything else — including the
+  unrelated self-escalation guarantee — still passed, a precise regression proof rather than a blanket
+  one), restored.
   *Severity: High. `apps/server/src/auth/routes.ts:216-252`.*
-- [ ] **Validate `path` against traversal in the GitHub Contents API calls** — `getFile`/`putFile`
-  concatenate the Contents API URL with no `..`-segment rejection, so a crafted `path` can retarget the
-  request at a different repo; `import_repo_file` (an MCP tool, nominally project-confined) and
-  `resync_source`/`commitRepoFile` both replay it unvalidated, giving a write leg too. Fix: reject any
-  `path` containing a `.`/`..` segment before it reaches `getFile`/`putFile`
-  (and `readRepoFile`/`listRepoRoot`), and percent-encode each segment individually.
+- [x] **Validate `path` against traversal in the GitHub Contents API calls.** Fixed (PR #665,
+  `security/github-contents-path-traversal`). `getFile`/`putFile` concatenated the Contents API URL
+  with no `..`-segment rejection, so a crafted `path` could retarget the request at a different repo
+  entirely (`fetch`'s URL parser normalizes dot-segments); `import_repo_file` (an MCP tool, nominally
+  project-confined) and `resync_source`/`commitRepoFile` both replayed it unvalidated, giving a write
+  leg too. Closed with one choke point, `safeRepoPath()` (`provider.ts`), applied at every real
+  Contents API call site: `getFile`/`putFile`, and `GitHubService.readRepoFile`'s own separate `fetch`
+  call — `listRepoRoot` takes no `path` param so needed no change. Rejects (throws) any `.`/`..`/empty
+  segment and percent-encodes each segment individually, so an encoded slash inside one segment can't
+  smuggle in an extra path level. `tests/github-contents-path-traversal.test.ts` proves `getFile`/
+  `putFile` reject a traversal path BEFORE `fetch` is ever called, not just that the eventual response
+  is safe.
   *Severity: High. `apps/server/src/github/provider.ts:211-231`, `apps/server/src/mcp/tools.ts:514`.*
 
 Two related findings landed just under the confidence bar (≥8 kept; these hit 7) and are tracked as
@@ -295,21 +356,33 @@ parallel with v1 hardening. (Rivals make you pre-auth each CLI and learn worktre
 features below are white space.) 10 items from the original UX/ease list have shipped — see
 [the archive](ROADMAP-ARCHIVE.md#v15--ship-the-wedge-onboarding-fluency--memory-v0).
 
-Ordered by priority — the two signature bets first (nothing shipped on Memory v0 yet; consensus runs
-just got unblocked), then remaining ease-of-use work, then the lowest-urgency UI polish tail:
+Ordered by priority — the two signature bets first (Memory v0 phase 1 just shipped, phase 2 is next;
+consensus runs just got unblocked), then remaining ease-of-use work, then the lowest-urgency UI polish tail:
 
 **Memory v0 (thin moat, pulled forward from v4):**
-- [ ] Operator-authored + **decision-derived** facts (every `hitl_audit` "decided X because Y" becomes a memory
-  fact), scoped (workspace / project / area / agent), injected into any vendor via the `runner-sdk` seam, and
-  **exportable/owned** (git-committable). No LLM distillation yet (that's v4) — but it makes launch
-  not-just-another-orchestrator and starts the corpus compounding on day one. **Nothing here has shipped
-  yet — highest-priority open item in this version.**
+- [x] **Phase 1 — operator-authored facts, injected per project (shipped).** Scoped (workspace / project /
+  area / agent) facts, injected into any vendor's run through the `runner-sdk` seam, exportable and
+  operator-owned (git-committed to `.skynet/memory/*.md`, not locked in a database). Reuses TASK 28's
+  commit-attribution mechanism for writes. No LLM distillation (that's v4).
+- [ ] **Phase 2 — decision-derived facts from `hitl_audit`.** Every "decided X because Y" resolution
+  already recorded in the audit trail becomes a memory fact automatically, no operator authoring
+  required — same scoping and export path as phase 1. **Now the highest-priority open item in this
+  version**, since phase 1 is done.
+- [ ] **Phase 3 — workspace-scoped MCP read/write server.** Expose the full memory surface over MCP so
+  any agent or tool can read/write it, scoped at the workspace level — beyond the project-scoped thin
+  v0 MCP tools that already ship under v4 (`list_memory`/`add_memory`/`delete_memory`/`refresh_memory`).
 
 **⭐ Cross-vendor consensus runs (signature bet):**
-- [ ] Fire the same task at Claude + Codex + Gemini in parallel, auto-diff the results, keep/merge the winner, or
-  have them peer-review each other. The vendor-neutral seam is what makes true cross-*vendor* bake-offs
-  possible (rivals' "councils" are single-tool). **Now unblocked** — the multi-provider runners this needed
-  (v1: Codex/Gemini/Cursor/Copilot/Hermes/OpenCode/Kimi Code) have all landed.
+- [x] Fire the same task at 2+ providers in parallel, each in its own worktree off the same base
+  commit, auto-diff the results, and keep/merge the winner — landed (`Orchestrator.startBakeoff`,
+  `TaskRun`/`Task`/`HitlItem.bakeoffId`, the "Bake-off ⇉" board action + N-way comparison view). The
+  vendor-neutral seam is what makes true cross-*vendor* bake-offs possible (rivals' "councils" are
+  single-tool). **Peer-review now also landed**: an eligible non-participant fleet agent
+  (`Orchestrator.autoJudgeBakeoff`) compares every sibling's diff summary and picks a winner —
+  ALWAYS records `Task.bakeoffVerdict` as an audit trail (an unreadable reply flags for a human,
+  never guesses), and only auto-resolves the pick when the project is autonomous, same lever
+  `autoReview` already uses. A human can still force it on demand ("Judge now") or just pick manually
+  — the agent's recommendation is shown, never forced.
 
 **Easier to use than anyone else:**
 - [~] **Project assistant → co-operator (actions from chat).** Steward (the shared brain,
@@ -320,11 +393,6 @@ just got unblocked), then remaining ease-of-use work, then the lowest-urgency UI
   `Project.roadmapPath` so the Roadmap tab (and Steward's own grounding) can point at any repo-relative
   file, not just `ROADMAP.md`. **Remaining:** broader action coverage (fleet ops, credentials) +
   Telegram parity on the newer actions.
-- [ ] **Charter-assisted project creation** — creating a project is a short LLM-drafted intake, not a
-  name field: goals, non-goals, risks, constraints, definition of done — operator corrects and approves
-  (the Charter). Uses the **user's own key** via the existing secret store (one cheap call; metered).
-  The Charter is what the auto dev team (v2 north star) later sizes itself from, and what **auto
-  task/milestone proposal** plans against. See [docs/dev-team-blueprint.md](docs/dev-team-blueprint.md) §1.
 - [~] **Chat → canvas handoff, zero cold start** — a reply can carry a deep link straight into the exact
   web-app view (project/task pre-focused) instead of cramming it into a chat bubble. **Desktop half
   shipped:** a `skynet://` OS protocol handler (`app.setAsDefaultProtocolClient`), handling both macOS's
@@ -340,15 +408,6 @@ just got unblocked), then remaining ease-of-use work, then the lowest-urgency UI
   (zoom, brush, click-through) — unscoped.
 
 **UX/UI to SOTA (pre-release review — high & polish, lowest urgency of this version's open items):**
-- [~] **Design tokens, a11y, and an Inbox-first mobile/PWA shell.** Mostly landed: a published `--fz-*`
-  type-scale token per distinct font size in use, a single `--input-focus-border` token consolidating 4
-  drifted text-input focus treatments, ambient looping animations now guarded behind
-  `prefers-reduced-motion`, a keyboard walkthrough of assign→decide→merge with two real dead-ends fixed
-  (task-card tool buttons, the read-only task-detail modal), and the semantic palette / Inbox-first PWA
-  shell confirmed already correct. **Deliberately not done:** an 8px spacing rhythm — unlike font-size,
-  `padding`/`margin`/`gap` in `styles.css` aren't a latent consistent ladder; a faithful pass means real
-  design consolidation (choosing canonical steps, remapping ~700+ declarations) with real
-  visual-regression risk, not just token-naming — left as scoped future work.
 - [ ] **Text-contrast ramp** (ink / muted / faint, checked ratios — muted currently sits at the reading
   floor) + a **systematized button/state token set** (primary / ghost / danger, each with explicit
   hover · focus-visible · disabled · loading).
@@ -357,11 +416,20 @@ just got unblocked), then remaining ease-of-use work, then the lowest-urgency UI
 Per-project LLM **area managers** decompose an area's goal and spawn first-class **worker subagents**
 via a `spawn_worker` tool; risk-based escalation; worker→manager→project merge.
 [docs/agent-hierarchy.md](docs/agent-hierarchy.md)
-- [ ] 🔬 The decomposition is **LLM planning** — Skynet supplies the area goal + module map + the
-  `spawn_worker` tool, surfaces a `plan` HITL, and spawns workers on approval. The model does the "how."
-- [ ] **Managers organize by area *or* role** — same mechanism, different scope: a "Billing manager"
-  (module area) or a "Review / QA / Security manager" (function). Role-managers are how specialized
-  agents are arranged; workers under them inherit the role's prompt + tool scope.
+- [x] **The core mechanism — LLM-planned decomposition, "role" and "area" managers alike (shipped).**
+  A run provisioned with `role:"manager"` gets a real, in-process `spawn_worker` MCP tool that provisions
+  a first-class worker `TaskRun` under it (own runner/worktree/branch/HITL/merge, never an in-process
+  subagent); a worker's low-risk question/plan HITL gates auto-resolve against its manager instead of
+  paging a human; an approved worker diff integrates into the manager's own branch first. "Role" vs
+  "area" needed no schema split — both are just a manager run with a task brief and an optional module
+  scope. **Deliberately not built yet:** any web UI (Subway/Roster manager lines, an Inbox
+  "auto-resolved by manager" filter) or a polished "start a manager" flow — only a minimal server
+  entrypoint exists today (`Operations.assignManager`). That UI gap is the natural next item here.
+- [ ] **Manager/worker UI — make the shipped hierarchy visible and operable.** The backend above is real
+  and merging; there's no way to see or start it from the app. Needs: manager/worker lines on the
+  Subway and Roster views, an Inbox filter for gates a manager auto-resolved (so a human can audit them
+  without them cluttering the main queue), and a real "start a manager" flow in place of the raw
+  `assignManager` API call.
 - [ ] **Agent-to-agent handoff on feature completion** — when a Feature reaches `shipped`, or a
   milestone flips to `shipped`, the orchestrator fans out to configured **role-agents**: a
   **change-manager** commits the CHANGELOG.md entry (HITL-gated diff), a **docs-writer** updates

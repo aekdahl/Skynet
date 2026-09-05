@@ -40,6 +40,20 @@ import type { StoredServiceToken } from "../auth/service-tokens.js";
 
 export type { AuditRecord };
 
+// Thrown by a `putTask(task, expectedVersion)` call when the stored record's
+// version no longer matches `expectedVersion` — someone else wrote this task
+// since the caller last read it. Callers reload and retry (or give up); see
+// Hub.patchTask, the one place that's done automatically.
+export class VersionConflictError extends Error {
+  constructor(
+    public readonly entity: string,
+    public readonly id: string,
+  ) {
+    super(`version conflict writing ${entity} ${id} — reload and retry`);
+    this.name = "VersionConflictError";
+  }
+}
+
 export interface Store {
   /** Full connect-time snapshot of one workspace's collections. */
   snapshot(workspaceId: string): Promise<Snapshot>;
@@ -77,7 +91,13 @@ export interface Store {
   // tasks
   listTasks(workspaceId: string): Promise<Task[]>;
   getTask(id: string): Promise<Task | undefined>;
-  putTask(task: Task): Promise<Task>;
+  // `expectedVersion` omitted → plain upsert (task creation, where there's no
+  // prior version to race against). Passed → atomic compare-and-swap: the
+  // write only lands if the stored record's current version still equals
+  // `expectedVersion`; otherwise throws VersionConflictError and nothing is
+  // written. The returned Task's `version` is always the new, post-write
+  // value — never trust `task.version` on the way in for that.
+  putTask(task: Task, expectedVersion?: number): Promise<Task>;
   deleteTask(id: string): Promise<void>;
 
   // features (task grouping)
@@ -186,6 +206,16 @@ export interface Store {
   // durable-Store pattern as the GitHub connection; undefined until first set.
   getWorkspaceSettings(workspaceId: string): Promise<WorkspaceSettings | undefined>;
   putWorkspaceSettings(settings: WorkspaceSettings): Promise<void>;
+
+  /**
+   * Onboarding telemetry milestone (PMF v1.5 — see apps/server/src/
+   * telemetry.ts). Idempotent per (workspaceId, kind): records it and
+   * returns true only the FIRST time this exact milestone is reached for
+   * this workspace, so a repeat of the same action (e.g. adding a second
+   * runner) never re-fires it. Purely local bookkeeping — never itself sent
+   * anywhere; the caller decides whether to ALSO phone home on a true return.
+   */
+  recordTelemetryMilestone(workspaceId: string, kind: string, at: number): Promise<boolean>;
 
   // roadmap doc cache (Phase 24) — one parsed RoadmapDoc per project, keyed
   // by projectId; a re-sync overwrites wholesale.

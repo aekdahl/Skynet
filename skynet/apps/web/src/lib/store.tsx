@@ -134,6 +134,14 @@ export interface Store extends StoreState {
     action: ResolveAction,
     extra?: { optionIndex?: number; guidance?: string; remember?: boolean; targetBranch?: string; memoryNote?: string; resetWork?: boolean },
   ) => Promise<void>;
+  // Gate batching — resolve several open decisions in one call. Returns what
+  // actually happened (never throws for a partial batch) so the Inbox can
+  // tell the operator if some of the N didn't go through.
+  resolveHitlBatch: (
+    ids: string[],
+    action: ResolveAction,
+    extra?: { optionIndex?: number; guidance?: string; remember?: boolean; targetBranch?: string; memoryNote?: string; resetWork?: boolean },
+  ) => Promise<{ resolved: HitlItem[]; skipped: Array<{ id: string; reason: string }> }>;
   sendAgentMessage: (id: string, text: string) => Promise<string>;
   streamAgentMessage: (id: string, text: string, onDelta: (chunk: string) => void) => Promise<string>;
   // `inform` — mass-select runs (explicit ids and/or a whole project's live
@@ -297,6 +305,10 @@ export interface Store extends StoreState {
   reassignTaskAgent: (projectId: string, taskId: string, agentId: string) => Promise<void>;
   resyncProjectSource: (projectId: string) => Promise<void>;
   assignTask: (projectId: string, taskId: string) => Promise<TaskRun | null>;
+  // Cross-vendor consensus run: fire the task at 2+ providers in parallel.
+  startBakeoff: (projectId: string, taskId: string, providerIds: ProviderId[]) => Promise<TaskRun[] | null>;
+  // Bake-off peer review: have an agent compare the siblings and pick a winner.
+  requestBakeoffJudgment: (projectId: string, taskId: string) => Promise<void>;
   dismissTaskLint: (projectId: string, taskId: string) => Promise<void>;
   answerClarification: (projectId: string, taskId: string, answer: string) => Promise<void>;
   // Momentum Board (Phase 5) — accept a suggested_subtask Proposal into a real
@@ -692,6 +704,18 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           toast(serverMessage(e, "Couldn't resolve that decision."));
         }
       },
+      resolveHitlBatch: async (ids, action, extra) => {
+        try {
+          const result = await api.resolveHitlBatch(ids, { action, ...extra });
+          if (result.skipped.length > 0) {
+            toast(`${result.resolved.length} of ${ids.length} resolved — ${result.skipped.length} couldn't be (already handled?).`);
+          }
+          return result;
+        } catch (e) {
+          toast(serverMessage(e, "Couldn't resolve that batch."));
+          return { resolved: [], skipped: ids.map((id) => ({ id, reason: "request failed" })) };
+        }
+      },
       sendAgentMessage: async (id, text) => {
         const { reply } = await api.sendAgentMessage(id, text);
         return reply;
@@ -959,6 +983,24 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             return null;
           }
           throw e;
+        }
+      },
+      startBakeoff: async (projectId, taskId, providerIds) => {
+        try {
+          return await api.startBakeoff(projectId, taskId, providerIds);
+        } catch (e) {
+          if (e instanceof api.ApiError) {
+            toast(serverMessage(e, "Couldn't start the bake-off."));
+            return null;
+          }
+          throw e;
+        }
+      },
+      requestBakeoffJudgment: async (projectId, taskId) => {
+        try {
+          await api.requestBakeoffJudgment(projectId, taskId);
+        } catch (e) {
+          if (e instanceof api.ApiError) toast(serverMessage(e, "Couldn't judge the bake-off."));
         }
       },
       dismissTaskLint: async (projectId, taskId) => {

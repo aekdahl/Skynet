@@ -17,7 +17,8 @@ export const DEFAULT_PROVIDERS: ProviderInfo[] = [
   { id: "codex", name: "Codex", glyph: "◌", color: "#19C2A8", models: ["gpt-5.2-codex", "gpt-5.2-codex-mini"] },
   { id: "gemini", name: "Gemini CLI", glyph: "✦", color: "#5EA2FF", models: ["gemini-3-pro", "gemini-3-flash"] },
   { id: "cursor", name: "Cursor Agent", glyph: "▎", color: "#A78BFA", models: ["composer-2"] },
-  { id: "copilot", name: "GitHub Copilot", glyph: "◈", color: "#8B93A5", models: ["copilot-workspace"] },
+  // Doesn't implement RunnerHandle.inform() yet — see ProviderInfo.supportsInform.
+  { id: "copilot", name: "GitHub Copilot", glyph: "◈", color: "#8B93A5", models: ["copilot-workspace"], supportsInform: false },
   { id: "hermes", name: "Hermes Agent", glyph: "⬡", color: "#E0B341", models: ["anthropic/claude-sonnet-4.6", "openai/gpt-5.2", "nousresearch/hermes-4-405b"] },
   { id: "opencode", name: "OpenCode", glyph: "◆", color: "#2ED3B7", models: ["anthropic/claude-opus-5", "anthropic/claude-sonnet-5", "anthropic/claude-haiku-4-5"] },
   // Kimi Code's own models by default (bare id); a "<type>/<id>" model routes
