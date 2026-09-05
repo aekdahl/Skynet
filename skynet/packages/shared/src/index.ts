@@ -10,3 +10,4 @@ export * from "./kanban.js";
 export * from "./autonomy.js";
 export * from "./roadmap-doc.js";
 export * from "./roadmap-proposals.js";
+export * from "./memory.js";

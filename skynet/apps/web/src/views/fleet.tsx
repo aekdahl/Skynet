@@ -625,13 +625,22 @@ function AgentCard({
 }) {
   const cost = costOf(costRoll);
   const { tag } = classifyRun(busy, hitl, now, STALE_HEARTBEAT_SEC);
+  // supportsInform is undefined for every provider except Copilot (back-compat
+  // default: supported) — see ProviderInfo.supportsInform.
+  const informSupported = p.supportsInform !== false;
   return (
     <div className="fleet-card fleet-busy">
-      {informMode && (
-        <label className="fleet-inform-pick" title="Include this agent in the note">
-          <input type="checkbox" checked={!!informSelected} onChange={onToggleInform} />
-        </label>
-      )}
+      {informMode &&
+        (informSupported ? (
+          <label className="fleet-inform-pick" title="Include this agent in the note">
+            <input type="checkbox" checked={!!informSelected} onChange={onToggleInform} />
+          </label>
+        ) : (
+          <label className="fleet-inform-pick fleet-inform-unsupported" title={`${p.name} doesn't support inform yet`}>
+            <input type="checkbox" disabled />
+            not supported
+          </label>
+        ))}
       <button className="fleet-cardhead" title="Open this agent's detail & task history" onClick={() => actions.onOpenAgent(r.id)}>
         <div className="fleet-top">
           <span className="fleet-prov" style={{ color: p.color }}>

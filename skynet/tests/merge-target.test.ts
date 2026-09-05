@@ -1,9 +1,9 @@
 // Merge-target resolution (agent-hierarchy brief §5 / VCS brief §7) — a pure
-// function, so its "inert until a manager exists" claim is covered
-// deterministically here rather than by exercising the real orchestrator/git.
+// function, covered deterministically here rather than by exercising the real
+// orchestrator/git.
 import { describe, it, expect } from "vitest";
 import type { Agent, TaskRun } from "@skynet/shared";
-import { resolveMergeTarget } from "../apps/server/src/derive/merge-target.js";
+import { isManagerDelegated, resolveMergeTarget } from "../apps/server/src/derive/merge-target.js";
 
 const run = (id: string, extra: Partial<TaskRun> = {}): TaskRun =>
   ({ id, branch: `agent/${id}`, parentId: null, ...extra }) as unknown as TaskRun;
@@ -45,5 +45,28 @@ describe("resolveMergeTarget", () => {
     const worker1 = run("worker-1", { parentId: "mgr", branch: "agent/worker-1" });
     const worker2 = run("worker-2", { parentId: "worker-1" });
     expect(resolveMergeTarget(worker2, worker1, runner("worker"), "main")).toBe("main");
+  });
+});
+
+describe("isManagerDelegated", () => {
+  it("false with no parent", () => {
+    expect(isManagerDelegated(run("solo"), undefined, undefined)).toBe(false);
+  });
+
+  it("false when the parent's runner is role:'worker'", () => {
+    const parent = run("parent");
+    const child = run("child", { parentId: "parent" });
+    expect(isManagerDelegated(child, parent, runner("worker"))).toBe(false);
+  });
+
+  it("false when the parent's runner is unresolvable", () => {
+    const child = run("child", { parentId: "ghost" });
+    expect(isManagerDelegated(child, undefined, runner("manager"))).toBe(false);
+  });
+
+  it("true when the direct parent's runner is role:'manager'", () => {
+    const manager = run("mgr", { branch: "skynet/mgr/billing" });
+    const worker = run("worker-1", { parentId: "mgr" });
+    expect(isManagerDelegated(worker, manager, runner("manager"))).toBe(true);
   });
 });

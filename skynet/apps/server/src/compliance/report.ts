@@ -65,6 +65,14 @@ export function classifyApprover(
       reasonFromReviewer: v?.reason ?? null,
     };
   }
+  if (operatorId.startsWith("manager:")) {
+    // A manager agent auto-resolving a worker's low-risk question/plan gate
+    // (agent-hierarchy.md §4, orchestrator.ts's raise()) — same bucket as
+    // "autonomy" above (a fleet agent's own call), kept in sync with
+    // classifyOperatorId (packages/shared/compliance.ts) per this function's
+    // own contract: one split, never two.
+    return { approverType: "agent-review", policyDetail: "manager auto-resolve", reasonFromReviewer: null };
+  }
   return { approverType: "human", policyDetail: null, reasonFromReviewer: null };
 }
 

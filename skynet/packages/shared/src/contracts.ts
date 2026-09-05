@@ -925,6 +925,12 @@ export const Task = z.object({
   id: z.string(),
   workspaceId: z.string(),
   projectId: z.string(),
+  // Optimistic-concurrency counter — the Store bumps this by 1 on every
+  // write; a caller updating a stale copy (its read's `version` no longer
+  // matches what's stored) gets rejected instead of silently clobbering a
+  // concurrent write (see Hub.patchTask / Store.putTask's `expectedVersion`).
+  // Never set by callers directly — always carried forward from a real read.
+  version: z.number().int().default(1),
   text: z.string(), // the short task NAME (kept concise for the board/subway)
   // Optional longer detail — the full brief the agent gets, but not shown as the
   // name. Keeps names scannable while allowing a rich description when needed.
@@ -1669,6 +1675,13 @@ export const ProviderInfo = z.object({
   // Live detection: is the required CLI binary on the server's PATH? null = not
   // applicable (in-process SDK provider); undefined = not probed.
   binOnPath: z.boolean().nullable().optional(),
+  // Does this provider's runner implement RunnerHandle.inform() — the "mass
+  // inform" note that rides a run's next prompt at no extra turn? Undefined =
+  // supported (only Copilot lacks it today). Lets the client gray out an
+  // unsupported agent up front instead of learning about it from a skipped
+  // count after sending — see RunnerHandle.inform's doc comment for exactly
+  // which runners implement it.
+  supportsInform: z.boolean().optional(),
 });
 export type ProviderInfo = z.infer<typeof ProviderInfo>;
 
@@ -2311,6 +2324,16 @@ export const WorkspaceSettings = z.object({
   // over both. This toggle is the day-to-day operator control — flip it live,
   // no restart, no env var edit.
   requireLoginVerification: z.boolean().default(false),
+  // Opt OUT of anonymous install-event telemetry (PMF v1.5 — see
+  // apps/server/src/telemetry.ts): five one-time onboarding milestones
+  // (workspace named, repo connected, key added, runner added, first task
+  // created), each firing at most once per workspace. The outbound ping
+  // carries only {event, at} — no workspace id, no operator id, no project/
+  // task content, nothing joinable back to this install or a person. Off
+  // (telemetry ON) by default, same as every other workspace setting here;
+  // flip it any time, no restart. A server-wide SKYNET_TELEMETRY_DISABLE=true
+  // env flag overrides this regardless (an infra-level kill switch).
+  telemetryOptOut: z.boolean().default(false),
 });
 export type WorkspaceSettings = z.infer<typeof WorkspaceSettings>;
 
@@ -2323,6 +2346,7 @@ export const UpdateWorkspaceSettingsRequest = z.object({
   exploreModel: z.string().min(1).optional(),
   browserTools: z.boolean().optional(),
   requireLoginVerification: z.boolean().optional(),
+  telemetryOptOut: z.boolean().optional(),
 });
 export type UpdateWorkspaceSettingsRequest = z.infer<typeof UpdateWorkspaceSettingsRequest>;
 
