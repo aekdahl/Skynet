@@ -179,9 +179,16 @@ Ordered by priority (urgent bug → launch-wedge remainder → product debt → 
 - [~] **Deeper runner-capability surfacing** — pull more native capability through the `runner-sdk`
   seam. Landed: real plan steps, token/cost telemetry, a Claude plan-mode HITL gate, token-by-token
   streaming (Claude/Gemini/Cursor), a per-project `disallowedTools` deny-list, structured diffs in
-  review, and Copilot's move to real structured-event dispatch. **Remaining:** a full `allowedTools`
-  allow-list (the safer deny-list landed first, on purpose), `settingSources` (CLAUDE.md) support, and
-  token streaming for Codex/Copilot (neither exposes a chunked wire format to stream from).
+  review, Copilot's move to real structured-event dispatch, and `settingSources: ['project']` on the
+  main Claude run so a repo's own CLAUDE.md actually reaches the agent (landed in #437 — gated behind a
+  mandatory approval whenever the same repo also defines `.claude/settings.json` hooks, since the SDK
+  can't load one without the other; see `packages/runner-sdk/src/claude.ts`). **Remaining:** token
+  streaming for Codex/Copilot — confirmed vendor-blocked (both wire protocols are line-per-JSON-message,
+  not sub-message deltas), nothing to build until either vendor exposes one; not on us. A full
+  `allowedTools` allow-list is a **considered non-goal, not a TODO**: `packages/shared/src/contracts.ts`'s
+  `disallowedTools` field documents why the deny-list shipped instead of it — an allow-list risks
+  silently breaking an agent that needs a tool nobody thought to list. Not revisiting without a concrete
+  need for a stricter default.
 - [~] **Mass inform** — select multiple agents (or a whole project) and attach a note that rides the
   *next* prompt each already receives, no extra turn. Shipped: the `inform` interaction type
   (`POST /api/runs/inform`), live-session push for Claude, buffered-note delivery for the CLI runners
