@@ -263,12 +263,22 @@ work); the 7 have no ordering dependency and can ship in parallel.
   this (`PREVIEW_ENV_DENYLIST`/`previewEnv()`) — the Fly path never adopted the wrapper. Fix: pass
   `previewEnv()` into `deploy.ts`'s `ensureDeps`/`runToCompletion` calls.
   *Severity: High. `apps/server/src/fly/deploy.ts:233,235`.*
-- [ ] **Stop same-origin preview iframes from exposing the session token** — both preview surfaces set
-  `sandbox="allow-scripts allow-same-origin ..."` while serving agent-built content on Skynet's own
-  origin by default, so injected/malicious in-preview JS can read `localStorage`'s session token for a
-  full session hijack. Fix: drop `allow-same-origin`, or refuse to boot the preview proxy without a
-  genuinely distinct origin; longer-term, move the session token out of `localStorage`.
-  *Severity: High. `apps/web/src/components/preview.tsx:47`, `apps/web/src/views/project.tsx:2275`.*
+- [x] **Stop same-origin preview iframes from exposing the session token.** Both preview surfaces set
+  `sandbox="allow-scripts allow-same-origin ..."`; the artifact-preview route
+  (`apps/server/src/preview/route.ts`) defaults to Skynet's own origin unless an operator sets
+  `SKYNET_PREVIEW_BASE_URL`, and the live-preview reverse proxy (`preview-proxy.ts`) has no
+  separate-origin option at all — a hosted/remote-reachable install always serves it at `/p/<token>/`
+  on the console's own origin (`project-preview.ts`'s `state()`, via `publicOrigin()`) so it's reachable
+  from a phone. Same-origin plus those sandbox flags let injected/malicious in-preview JS (the previewed
+  branch is agent-built, plausibly prompt-injected) read `localStorage`'s `skynet_token` — the same
+  token driving both REST and WS auth — for a full session hijack. Fix: dropped `allow-same-origin` from
+  both iframes (`components/preview.tsx`'s `PreviewFrame`, `views/project.tsx`'s `LivePreviewModal`) —
+  the framed document now gets an opaque origin regardless of the URL it's served from, so previewed
+  code still runs (scripts/forms/popups/modals all still allowed) but can never read this origin's
+  storage. Verified manually: both iframes still render/run; no code (frontend or server) reads or
+  asserts the sandbox string, so nothing else depended on the dropped flag. Moving the session token out
+  of `localStorage` entirely stays a longer-term follow-up, not done here.
+  *Severity: High. `apps/web/src/components/preview.tsx`, `apps/web/src/views/project.tsx`.*
 - [ ] **Bring `.skynet/preview.json` build/install commands under the command-safety gate** — the
   live-preview `install` step always runs unsandboxed, and `dev`/`start` only sandboxes behind an
   off-by-default flag (and even then it's write-confinement only, not a real boundary). This executes
