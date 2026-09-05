@@ -54,6 +54,8 @@ import {
   type ProposeRoadmapChangeRequest,
   type CommitRoadmapLineEditRequest,
   type RoadmapWorkspaceRollup,
+  type MemoryFactSummary,
+  type CreateMemoryFactRequest,
 } from "@skynet/shared";
 import { parseStewardStream, type StewardReply } from "./steward-stream";
 import { toast } from "../components/toast";
@@ -584,6 +586,14 @@ export function commitRoadmapLineEdit(projectId: string, body: CommitRoadmapLine
   return req<{ committed: boolean; sha?: string }>("POST", `/api/projects/${projectId}/roadmap/commit-edit`, body);
 }
 
+// ── Memory v0, phase 1 (operator-authored facts) ──────────────────────────
+export function fetchProjectMemory(projectId: string) {
+  return req<MemoryFactSummary[]>("GET", `/api/projects/${projectId}/memory`);
+}
+export function addMemoryFact(projectId: string, body: CreateMemoryFactRequest) {
+  return req<MemoryFactSummary>("POST", `/api/projects/${projectId}/memory`, body);
+}
+
 /** "Without a file there is no roadmap — create one from the board." */
 export function scaffoldProjectRoadmap(projectId: string) {
   return req<RoadmapDoc>("POST", `/api/projects/${projectId}/roadmap/scaffold`);
@@ -1045,6 +1055,12 @@ export function archiveTask(projectId: string, taskId: string, archived = true) 
 }
 export function assignTask(projectId: string, taskId: string) {
   return req<TaskRun>("POST", `/api/projects/${projectId}/tasks/${taskId}/assign`);
+}
+/** Cross-vendor consensus run: fire the task at 2+ providers in parallel,
+ *  each in its own worktree off the same base commit. Picking a winner is
+ *  just approving that sibling's own diff HITL — see resolveHitl. */
+export function startBakeoff(projectId: string, taskId: string, providerIds: ProviderId[]) {
+  return req<TaskRun[]>("POST", `/api/projects/${projectId}/tasks/${taskId}/bakeoff`, { providerIds });
 }
 /** Answer triage's clarifying questions — appends the operator's own words to
  *  the task description and returns it to backlog for re-triage. */

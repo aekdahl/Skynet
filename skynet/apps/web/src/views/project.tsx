@@ -5,6 +5,7 @@ import { useStore } from "../lib/store";
 import * as api from "../lib/client";
 import { useEscapeLayer } from "../lib/escape-stack";
 import { Blocked, PrimaryButton } from "../components/empty";
+import { BakeoffPicker } from "../components/bakeoff-picker";
 import {
   agentsForProject,
   computeUsageRollup,
@@ -29,6 +30,7 @@ import { SwDiagram } from "../components/subway-diagram";
 import { QueueCard } from "./queue";
 import { TimelineView } from "./home";
 import { RoadmapDocView } from "./project-roadmap";
+import { ProjectMemoryView } from "./project-memory";
 import { ProjectQualityView } from "./project-quality";
 import { ProjectContextView } from "./project-context";
 import { InformComposer, toastInformResult } from "./fleet";
@@ -358,6 +360,7 @@ function TaskCard({
     reassignTaskAgent,
     archiveTask,
     assignTask,
+    startBakeoff,
     transitionTask,
     moveTask,
     dismissTaskLint,
@@ -419,6 +422,10 @@ function TaskCard({
   // run opens a read-only detail modal (the card itself clamps title/description).
   const openCard = openRun ?? (() => setDetail(true));
   const noFleet = fleet.length === 0;
+  // Providers a bake-off can actually fire at — only ones with a configured
+  // fleet agent (startBakeoff resolves a model/credential template from one).
+  const bakeoffProviders = providers.filter((p) => fleet.some((a) => a.provider === p.id));
+  const [bakeoffOpen, setBakeoffOpen] = useState(false);
   const dnd = useContext(BoardDnd);
   const dragging = dnd?.drag?.taskId === task.id;
   // Once a run exists, the eligibility ("any agent") is moot — surface WHO is
@@ -819,6 +826,34 @@ function TaskCard({
                 Start →
               </button>
             </Blocked>
+          )}
+          {(s === "backlog" || s === "todo") && (
+            <Blocked
+              disabled={bakeoffProviders.length < 2}
+              reason={bakeoffProviders.length < 2 ? "Configure at least 2 providers in Fleet to run a bake-off." : undefined}
+            >
+              <button
+                className="kb-move kb-bakeoff"
+                disabled={bakeoffProviders.length < 2}
+                title={bakeoffProviders.length < 2 ? undefined : "Fire this task at multiple providers in parallel and compare their diffs."}
+                onClick={() => setBakeoffOpen(true)}
+              >
+                Bake-off ⇉
+              </button>
+            </Blocked>
+          )}
+          {bakeoffOpen && (
+            <BakeoffPicker
+              providers={bakeoffProviders}
+              onCancel={() => setBakeoffOpen(false)}
+              onStart={async (providerIds) => {
+                setBakeoffOpen(false);
+                const runs = await startBakeoff(pid, task.id, providerIds);
+                if (runs && runs.length > 0) {
+                  window.dispatchEvent(new CustomEvent("skynet:open-bakeoff", { detail: { bakeoffId: runs[0]!.bakeoffId } }));
+                }
+              }}
+            />
           )}
           {s === "backlog" && (
             <button
@@ -1705,10 +1740,10 @@ export function ProjectView({
   // Per-project lens (Kanban is the default; Archived shows soft-hidden tasks +
   // restore; Roadmap renders ROADMAP.md from the repo). Persisted per-project in
   // sessionStorage so switching back restores the last chosen lens.
-  const [lens, setLens] = useState<"kanban" | "roadmap" | "context" | "coverage" | "rules" | "keys" | "feed" | "archived" | "health">(() => {
+  const [lens, setLens] = useState<"kanban" | "roadmap" | "memory" | "context" | "coverage" | "rules" | "keys" | "feed" | "archived" | "health">(() => {
     if (typeof sessionStorage === "undefined") return "kanban";
     const v = sessionStorage.getItem(`skynet.proj.lens.${project.id}`);
-    return v === "roadmap" || v === "context" || v === "coverage" || v === "rules" || v === "keys" || v === "feed" || v === "archived" || v === "health" ? v : "kanban";
+    return v === "roadmap" || v === "memory" || v === "context" || v === "coverage" || v === "rules" || v === "keys" || v === "feed" || v === "archived" || v === "health" ? v : "kanban";
   });
   useEffect(() => {
     if (typeof sessionStorage !== "undefined")
@@ -2188,6 +2223,7 @@ export function ProjectView({
               // uses, so unlike Rules this is never gated on newBoardEnabled.
               "keys",
               "roadmap",
+              "memory",
               "context",
               "coverage",
               "feed",
@@ -2200,7 +2236,7 @@ export function ProjectView({
               className={"lens-btn" + (lens === id ? " on" : "")}
               onClick={() => setLens(id)}
             >
-              {id === "kanban" ? "Kanban" : id === "rules" ? "Rules" : id === "keys" ? "Keys" : id === "roadmap" ? "Roadmap" : id === "context" ? "Context" : id === "coverage" ? "Coverage" : id === "feed" ? "Feed" : id === "health" ? "Health" : "Archived"}
+              {id === "kanban" ? "Kanban" : id === "rules" ? "Rules" : id === "keys" ? "Keys" : id === "roadmap" ? "Roadmap" : id === "memory" ? "Memory" : id === "context" ? "Context" : id === "coverage" ? "Coverage" : id === "feed" ? "Feed" : id === "health" ? "Health" : "Archived"}
               {id === "archived" && archivedTasks.length > 0 && (
                 <span className="lens-btn-count">{archivedTasks.length}</span>
               )}
@@ -2228,6 +2264,8 @@ export function ProjectView({
         <KeysBudgetPanel project={project} runs={runs} />
       ) : lens === "roadmap" ? (
         <RoadmapDocView project={project} tasks={tasks} />
+      ) : lens === "memory" ? (
+        <ProjectMemoryView project={project} />
       ) : lens === "coverage" ? (
         <ProjectQualityView project={project} />
       ) : lens === "context" ? (

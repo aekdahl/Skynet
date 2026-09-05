@@ -105,6 +105,7 @@ describe("buildAgentContext — section presence + order", () => {
     const out = buildAgentContext({
       project: project({ goal: "Ship it", instructions: "Use tabs." }),
       feature: feature(),
+      memory: "[workspace]\n- Prefer snake_case for Python files",
       primer: "primer text",
       brief: "brief text",
       siblings: ["sibling"],
@@ -114,16 +115,30 @@ describe("buildAgentContext — section presence + order", () => {
     expect(out.endsWith("Add a health check endpoint")).toBe(true); // TASK is always last
   });
 
-  it("sections appear in the fixed order: PROJECT, INSTRUCTIONS, PRIMER, FEATURE, SOLUTION BRIEF, IN FLIGHT, TASK", () => {
+  it("emits === MEMORY (operator-authored facts) === only when memory is set (Memory v0)", () => {
+    const bare = buildAgentContext({ project: project(), body: "task" });
+    expect(bare).not.toContain("=== MEMORY");
+
+    const withMemory = buildAgentContext({
+      project: project(),
+      memory: "[workspace]\n- Prefer snake_case for Python files",
+      body: "task",
+    });
+    expect(withMemory).toContain("=== MEMORY (operator-authored facts) ===");
+    expect(withMemory).toContain("Prefer snake_case for Python files");
+  });
+
+  it("sections appear in the fixed order: PROJECT, INSTRUCTIONS, MEMORY, PRIMER, FEATURE, SOLUTION BRIEF, IN FLIGHT, TASK", () => {
     const out = buildAgentContext({
       project: project({ goal: "Ship it", instructions: "Use tabs." }),
       feature: feature(),
+      memory: "[workspace]\n- a fact",
       primer: "primer text",
       brief: "brief text",
       siblings: ["sibling"],
       body: "the ask",
     });
-    const order = ["=== PROJECT ===", "=== PROJECT INSTRUCTIONS", "=== PRIMER ===", "=== FEATURE ===", "=== SOLUTION BRIEF ===", "=== IN FLIGHT ===", "=== TASK ==="];
+    const order = ["=== PROJECT ===", "=== PROJECT INSTRUCTIONS", "=== MEMORY", "=== PRIMER ===", "=== FEATURE ===", "=== SOLUTION BRIEF ===", "=== IN FLIGHT ===", "=== TASK ==="];
     const indices = order.map((marker) => out.indexOf(marker));
     expect(indices.every((i) => i >= 0)).toBe(true);
     for (let i = 1; i < indices.length; i++) expect(indices[i]).toBeGreaterThan(indices[i - 1]!);
@@ -208,5 +223,21 @@ describe("buildAgentContext — total-budget truncation", () => {
     const out = buildAgentContext({ project: project({ instructions: longInstructions }), body: longBody });
     expect(out).toContain(longInstructions.trim());
     expect(out).toContain(longBody);
+  });
+
+  it("Memory v0: memory is capped per-call (MEMORY_CHAR_CAP) but never dropped by the overflow cascade", () => {
+    const hugeMemory = "z".repeat(5_000);
+    const out = buildAgentContext({
+      project: project(),
+      memory: hugeMemory,
+      siblings: ["a sibling"],
+      primer: "a primer",
+      body: "task",
+    });
+    expect(out).toContain("=== MEMORY (operator-authored facts) ===");
+    // Capped well under the full 5,000 chars, but still present — unlike
+    // siblings (dropped) and primer (shaved to nothing) it's never removed.
+    expect(out).not.toContain(hugeMemory);
+    expect(out).toContain("z".repeat(1_000));
   });
 });

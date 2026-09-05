@@ -111,7 +111,7 @@ describe("viewer role: an observe-only principal is denied every mutation route,
 
     app = Fastify();
     await registerApi(app, { operations, orchestrator });
-    await registerSecretsRoutes(app);
+    await registerSecretsRoutes(app, operations);
     await registerGithubRoutes(app);
     await registerEvalsRoutes(app);
     app.setNotFoundHandler((_req, reply) => reply.code(404).send({ error: "Not found" }));

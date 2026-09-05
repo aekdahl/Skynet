@@ -54,6 +54,15 @@ const ALLOW = new Set<string>([
   // a real scaffolded+attributed commit, cross-repo milestone grouping) is
   // covered server-side by tests/roadmap-workspace-rollup.test.ts instead.
   "fetchWorkspaceRoadmapRollup", "scaffoldProjectRoadmap",
+  // Memory v0, phase 1 — the project Memory tab's list+add. Needs a project
+  // genuinely bound to a real git repo, same fixture gap as the roadmap
+  // features above; no offline journey has one. The full read+write round
+  // trip (workspace/project/agent/area scopes, real commit attribution,
+  // supersession, the shared local-repo-write.ts path also used by roadmap
+  // edits) is covered server-side by tests/memory-operations.test.ts, and
+  // the injection-reaches-the-real-prompt path by
+  // tests/memory-injection-wiring.test.ts.
+  "fetchProjectMemory", "addMemoryFact",
   // add a second named credential for a provider — needs a real key + the secret
   // store (master key), so no offline journey; the route is guarded server-side
   // and the set/delete-by-id paths it shares ARE journey-covered.
@@ -355,6 +364,15 @@ const ALLOW = new Set<string>([
   // attributed commit parsed back out of the git object) in
   // tests/roadmap-drift.test.ts.
   "proposeRoadmapChange", "commitRoadmapLineEdit",
+  // Cross-vendor consensus runs — firing a real bake-off needs 2+ genuinely
+  // configured fleet agents on DIFFERENT providers plus real provider
+  // credentials to start, same "needs live fleet state" shape as
+  // reassignTaskAgent above; no offline journey fixture reproduces that. The
+  // full fan-out/rollback/collapse-on-approve orchestration (shared baseRef,
+  // all-or-nothing acquisition, retiring losers, repointing the task at the
+  // winner) is exercised against a real Orchestrator + throwaway git repo in
+  // tests/bakeoff.test.ts.
+  "startBakeoff",
 ]);
 
 describe("client API coverage", () => {

@@ -46,6 +46,7 @@ const agent: TaskRun = {
   dependsOn: [],
   parentId: null,
   branchFromStep: null,
+  bakeoffId: null,
   archived: false,
   pr: null,
   mergedAt: null,
@@ -211,7 +212,7 @@ describe("contracts round-trip", () => {
   it("every ServerEvent variant round-trips through its discriminated union", () => {
     const resolution: Resolution = { action: "approve", optionIndex: null, guidance: null, targetBranch: null, memoryNote: null, resetWork: false, by: "op-1", at: 5 };
     const hitl: HitlItem = {
-      id: "q1", workspaceId: DEFAULT_WORKSPACE, runId: "billing", kind: "approval",
+      id: "q1", workspaceId: DEFAULT_WORKSPACE, runId: "billing", bakeoffId: null, kind: "approval",
       title: "t", why: "w", risk: "medium", raisedAt: 1, expiresAt: null, resolvedAt: null, resolution: null,
       command: "deploy", options: null, recommended: null, steps: null, diff: null, output: null, rationale: null, flags: [],
       sourceBranchOverride: null, projectId: null, roadmapProposalId: null,

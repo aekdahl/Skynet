@@ -209,22 +209,44 @@ export async function registerAuthRoutes(app: FastifyInstance, deps: AuthRouteDe
  */
 export async function registerServiceTokenRoutes(
   app: FastifyInstance,
-  deps: { serviceTokens: ServiceTokenStore; operations: Pick<Operations, "listProjects"> },
+  deps: { serviceTokens: ServiceTokenStore; operators: OperatorDirectory; operations: Pick<Operations, "listProjects"> },
 ): Promise<void> {
-  const { serviceTokens, operations } = deps;
+  const { serviceTokens, operators, operations } = deps;
 
-  // Only a human operator (no scopes = full authority) may manage tokens.
-  const requireHuman = (req: FastifyRequest, reply: FastifyReply): boolean => {
-    if (req.principal!.scopes !== undefined) {
-      reply.code(403).send({ error: "Service tokens can only be managed by an operator" });
-      return false;
+  // Never trust a live Principal's scopes here — same discipline as
+  // requireAdmin (auth/routes.ts, above) and for the identical reason: an
+  // elevated viewer's live scopes (undefined) are indistinguishable from a
+  // real admin's. Checking `scopes !== undefined` alone let a viewer,
+  // riding an active break-glass elevation, mint a standalone, independently
+  // -stored bearer token with a high scope set and NO forced expiry — one
+  // that outlives the elevation that authorized it (the vulnerability this
+  // closes). A genuinely non-elevated viewer never reaches here at all: the
+  // workspace mutation-scope gate (auth-guard.ts) already requires "author"
+  // scope for POST/DELETE before this file runs, which a plain
+  // scopes:["observe"] session never has; GET carries no such gate, so this
+  // check is what protects it too.
+  //
+  // An elevated (non-persisted-admin) caller is still let through here —
+  // shutting the break-glass workflow out of token management entirely
+  // would be a worse regression than the bug — but see the mandatory TTL
+  // ceiling in the mint handler below: a token minted this way can never
+  // outlive the specific elevation grant that authorized minting it.
+  const requireTokenManager = (req: FastifyRequest, reply: FastifyReply): { isAdmin: boolean; elevatedUntil: number | null } | undefined => {
+    const principal = req.principal!;
+    const record = operators.getByIdentity(principal.workspaceId, principal.operatorId);
+    const isAdmin = record?.role === "admin";
+    const activeElevation = principal.elevatedUntil != null && principal.elevatedUntil > now() ? principal.elevatedUntil : null;
+    if (!record || (!isAdmin && activeElevation == null)) {
+      reply.code(403).send({ error: "Service tokens can only be managed by an admin, or a viewer with an active elevation." });
+      return undefined;
     }
-    return true;
+    return { isAdmin, elevatedUntil: isAdmin ? null : activeElevation };
   };
 
   // Mint a token — the raw secret is returned ONCE here and never again.
   app.post("/api/service-tokens", async (req: FastifyRequest, reply: FastifyReply) => {
-    if (!requireHuman(req, reply)) return reply;
+    const manager = requireTokenManager(req, reply);
+    if (!manager) return reply;
     const body = CreateServiceTokenRequest.safeParse(req.body);
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
     const ws = req.principal!.workspaceId;
@@ -239,13 +261,23 @@ export async function registerServiceTokenRoutes(
         return reply.code(400).send({ error: `Unknown project(s) for this workspace: ${unknown.join(", ")}` });
       }
     }
+    // Mandatory TTL ceiling for anyone who isn't a persisted admin: a token
+    // minted during an elevation grant must not survive it. `null` (an
+    // admin's "no forced expiry" request) is honored only for a genuine
+    // persisted admin; an elevated caller's ttlMs — requested or omitted —
+    // is always clamped to whatever's left of THEIR OWN elevation window.
+    let ttlMs = body.data.ttlMs ?? null;
+    if (manager.elevatedUntil != null) {
+      const remaining = Math.max(0, manager.elevatedUntil - now());
+      ttlMs = ttlMs == null ? remaining : Math.min(ttlMs, remaining);
+    }
     const created = await serviceTokens.create({
       workspaceId: ws,
       operatorId: `token:${body.data.label}`, // attribution in the audit trail
       scopes: body.data.scopes,
       label: body.data.label,
       projectIds,
-      ttlMs: body.data.ttlMs ?? null,
+      ttlMs,
     });
     // Return the secret token plus the metadata; callers must store it now.
     return reply.code(201).send({ token: created.token, id: created.id, scopes: body.data.scopes, projectIds, label: created.label, expiresAt: created.expiresAt });
@@ -253,13 +285,13 @@ export async function registerServiceTokenRoutes(
 
   // List this workspace's tokens as non-secret metadata.
   app.get("/api/service-tokens", async (req: FastifyRequest, reply: FastifyReply) => {
-    if (!requireHuman(req, reply)) return reply;
+    if (!requireTokenManager(req, reply)) return reply;
     return serviceTokens.list(req.principal!.workspaceId);
   });
 
   // Revoke a token by id (scoped to the caller's workspace).
   app.delete<{ Params: { id: string } }>("/api/service-tokens/:id", async (req: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
-    if (!requireHuman(req, reply)) return reply;
+    if (!requireTokenManager(req, reply)) return reply;
     const metas = await serviceTokens.list(req.principal!.workspaceId);
     if (!metas.some((m) => m.id === req.params.id)) return reply.code(404).send({ error: "Token not found" });
     await serviceTokens.revoke(req.params.id);

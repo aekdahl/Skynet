@@ -37,6 +37,9 @@ export async function registerSecretsRoutes(app: FastifyInstance, operations: Op
     const body = CreateCredentialRequest.safeParse(req.body);
     if (!body.success) return reply.code(400).send({ error: "provider, name and apiKey are required" });
     const { workspaceId, operatorId } = req.principal!;
+    // Onboarding telemetry (PMF v1.5) — read BEFORE the write, so this tells
+    // us whether the workspace had ANY credential at all, not just this one.
+    const hadAnySecretBefore = (await secretService.list(workspaceId)).length > 0;
     try {
       const meta = await secretService.createCredential(
         workspaceId,
@@ -47,6 +50,7 @@ export async function registerSecretsRoutes(app: FastifyInstance, operations: Op
         now(),
         body.data.baseUrl,
       );
+      if (!hadAnySecretBefore) void operations.recordTelemetryMilestone(workspaceId, "key_added");
       return reply.code(200).send({ secret: meta });
     } catch (err) {
       if (err instanceof SecretsDisabledError) return reply.code(501).send({ error: err.message });
@@ -63,8 +67,13 @@ export async function registerSecretsRoutes(app: FastifyInstance, operations: Op
       const body = SetSecretRequest.safeParse(req.body);
       if (!body.success) return reply.code(400).send({ error: "apiKey is required" });
       const { workspaceId, operatorId } = req.principal!;
+      // Same "before" check as createCredential above — a rotation of an
+      // EXISTING credential must never re-fire this, only a workspace's
+      // genuinely first-ever key.
+      const hadAnySecretBefore = (await secretService.list(workspaceId)).length > 0;
       try {
         const meta = await secretService.setKey(workspaceId, req.params.id, body.data.apiKey, operatorId, now(), body.data.baseUrl);
+        if (!hadAnySecretBefore) void operations.recordTelemetryMilestone(workspaceId, "key_added");
         return reply.code(200).send({ secret: meta });
       } catch (err) {
         if (err instanceof SecretsDisabledError) return reply.code(501).send({ error: err.message });
