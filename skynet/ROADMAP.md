@@ -193,14 +193,17 @@ Ordered by priority (urgent bug → launch-wedge remainder → product debt → 
   live-verified against each vendor's current CLI). Reactive breadth from the candidate list
   ([docs/runner-catalog.md](docs/runner-catalog.md)) stays open-ended — no fixed target, lowest urgency
   now that the field-trailing gap this closed is gone.
-- [~] **UI system polish (P2 of [docs/ux-review.md](docs/ux-review.md)).** Landed: untangled
+- [x] **UI system polish (P2 of [docs/ux-review.md](docs/ux-review.md)).** Landed: untangled
   `--accent`/`--warn` (were an accidental hex duplicate), a real Lucide-based nav icon set, motion
   tokens (`--motion-fast`/`--motion-base`), a real `:active` press state + a global `:focus-visible`
-  fallback, 9 missing icon-button `aria-label`s + 4 `aria-expanded` toggles, and 3 of 4 named
-  legibility-floor violations. **Deliberately not done:** *purposeful* two-column layouts for the
-  still-sparse Fleet/Integrations views (a bigger layout redesign, not a token fix — its own PR), and a
-  full sweep of the ~90 other `--faint` usages beyond the 4 named examples (tracked under v0.5's
-  "Legibility floor," already shipped for the ones that carried meaning).
+  fallback, 9 missing icon-button `aria-label`s + 4 `aria-expanded` toggles, and all 4 named
+  legibility-floor violations (the folder-picker hint was the last holdout). The two pieces deferred
+  for their own PR are now in too: purposeful two-column layouts for Fleet (roster left, an aggregate
+  utilization/cost-by-provider panel right) and Integrations (a real catalog grid, not a 640px-capped
+  single column); and a full sweep of the ~90 remaining `--faint` usages — text that carries meaning
+  (costs, counts, attribution, table headers, status/hint copy) moved to `--muted`, pure decoration
+  (carets, dismiss icons, timestamps, disabled marks, placeholders, structural dividers) stayed
+  `--faint`, matching the standard v0.5's "Legibility floor" sweep set.
 - [~] **🔗 Per-project live preview — "see what it builds", any software.** Phase 1 (web/sites) shipped:
   project + per-run preview managers, descriptor→heuristic→agent-assisted recipe resolution
   (`.skynet/preview.json`), refresh-on-merge, and a resizable split-screen dock ⇄ modal reachable from a
