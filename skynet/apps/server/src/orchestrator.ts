@@ -2879,6 +2879,7 @@ export class Orchestrator {
       endpoint: workerEndpoint,
       merge: null,
       handoff: null,
+      bakeoffId: null,
       workspaceId: manager.workspaceId,
       projectId: manager.projectId,
       name: task,
