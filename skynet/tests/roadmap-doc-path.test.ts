@@ -54,4 +54,37 @@ describe("resolveRoadmapDoc — default candidates vs. an explicit override", ()
       rmSync(repo, { recursive: true, force: true });
     }
   });
+
+  // Security: roadmapPath is operator/Steward-supplied, not one of the fixed
+  // ROADMAP_PATHS constants — an author-scoped PATCH /api/projects/:id could
+  // otherwise set it to a `../`-escaping value and read any file the server
+  // process can reach via GET /api/projects/:id/roadmap. A traversal attempt
+  // must read exactly like "not found", never like a distinct error that
+  // would confirm the file's existence or leak why the read failed.
+  it("a roadmapPath that escapes repoPath via '..' never reads outside the repo", async () => {
+    const parent = mkdtempSync(join(tmpdir(), "rdp-parent-"));
+    const repo = join(parent, "repo");
+    mkdirSync(repo);
+    try {
+      writeFileSync(join(parent, "secret.txt"), "outside the repo — must never be readable");
+      const doc = await resolveRoadmapDoc(WS, project(repo, "../secret.txt"));
+      expect(doc).toBeNull();
+    } finally {
+      rmSync(parent, { recursive: true, force: true });
+    }
+  });
+
+  it("a roadmapPath given as an absolute path elsewhere on disk never reads outside the repo", async () => {
+    const parent = mkdtempSync(join(tmpdir(), "rdp-parent-"));
+    const repo = join(parent, "repo");
+    mkdirSync(repo);
+    try {
+      const secretPath = join(parent, "secret.txt");
+      writeFileSync(secretPath, "outside the repo — must never be readable");
+      const doc = await resolveRoadmapDoc(WS, project(repo, secretPath));
+      expect(doc).toBeNull();
+    } finally {
+      rmSync(parent, { recursive: true, force: true });
+    }
+  });
 });

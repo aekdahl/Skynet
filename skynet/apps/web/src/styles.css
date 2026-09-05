@@ -1209,7 +1209,6 @@ button.ct-seg { cursor: pointer; }
 .pv-dp-note { font-family: var(--font-mono); font-size: var(--fz-9-5); color: #5A6170; }
 /* pipeline mini-mock */
 .pv-pipe { display: flex; align-items: center; gap: 0; flex-wrap: wrap; row-gap: var(--space-8); }
-.pv-pipe-st { font-family: var(--font-mono); font-size: var(--fz-10-5); padding: var(--space-4) var(--space-12); border-radius: 14px; border: 1px solid var(--line); color: var(--faint); white-space: nowrap; }
 .pv-pipe-done { color: var(--ok); border-color: color-mix(in oklch, var(--ok), transparent 60%); }
 .pv-pipe-now { color: var(--warn); border-color: color-mix(in oklch, var(--warn), transparent 55%); }
 .pv-pipe-seg { width: 14px; height: 2px; background: var(--line); flex: none; }
@@ -2101,7 +2100,6 @@ button.kb-done:hover { opacity: 1; }
 /* Mass-inform pick: a checkbox row at the top of a card in select mode. Idle
    agents show disabled + a note instead of a live-run target. */
 .fleet-inform-pick { display: flex; align-items: center; gap: var(--space-8); padding-bottom: 2px; }
-.fleet-inform-idle { font-size: var(--fz-11); color: var(--faint, var(--muted)); }
 .fleet-inform-unsupported { font-size: var(--fz-11); color: var(--faint, var(--muted)); cursor: not-allowed; }
 /* The `inform` note composer (Fleet multi-select + Project whole-project). */
 .inform-panel { display: flex; flex-direction: column; gap: var(--space-8); margin-bottom: var(--sp); }
@@ -2367,7 +2365,6 @@ button.rb-proj:hover { color: var(--accent); }
    runner's custom label alone. Name inherits the provider color from inline style. */
 .rb-prov-glyph { flex: none; font-size: var(--fz-12); line-height: 1; }
 .rb-prov-name { font-size: var(--fz-12); font-weight: 500; }
-.rb-off { color: var(--faint); }
 .rb-time { font-family: var(--font-mono); font-size: var(--fz-11-5); color: var(--muted); }
 
 .rb-chip { display: inline-flex; align-items: center; gap: var(--space-4); font-family: var(--font-mono); font-size: var(--fz-11); padding: 3px var(--space-8); border-radius: 999px; border: 1px solid transparent; white-space: nowrap; }
@@ -2852,7 +2849,6 @@ button.rb-proj:hover { color: var(--accent); }
 .ob-prov.on { background: var(--raised); }
 .ob-prov:disabled { opacity: 0.4; cursor: not-allowed; }
 .ob-prov-glyph { font-size: var(--fz-16); width: 18px; text-align: center; }
-.ob-prov-models { display: block; font-family: var(--font-mono); font-size: var(--fz-10); color: var(--faint); margin-top: 2px; }
 .ob-prov-check { margin-left: auto; font-family: var(--font-mono); font-size: var(--fz-12); color: var(--ok); opacity: 0; }
 .ob-prov.on .ob-prov-check { opacity: 1; }
 /* Fleet builder — one row per agent (provider + model), add/remove */
@@ -3306,10 +3302,8 @@ button.rb-proj:hover { color: var(--accent); }
 .prd-phase:first-child { border-top: none; }
 .prd-phase-summary { width: 100%; display: flex; align-items: center; gap: var(--space-12); padding: var(--space-12) var(--space-4); background: none; border: none; cursor: pointer; text-align: left; font: inherit; color: inherit; }
 .prd-phase-summary:focus-visible { border-radius: 6px; }
-.prd-phase-caret { flex: none; font-size: var(--fz-10); color: var(--faint); width: 12px; }
 .prd-phase-title { font-size: var(--fz-14); font-weight: 600; flex: 1; min-width: 0; }
 .prd-phase-summary:hover .prd-phase-title { color: var(--accent); }
-.prd-phase-summary:hover .prd-phase-caret { color: var(--accent); }
 .prd-phase-shipped .prd-phase-title { color: var(--muted); }
 .prd-phase-pill { font-family: var(--font-mono); font-size: var(--fz-10); letter-spacing: 0.06em; text-transform: uppercase; color: var(--accent); border: 1px solid color-mix(in oklch, var(--accent), transparent 55%); background: color-mix(in oklch, var(--accent), transparent 88%); border-radius: 999px; padding: 2px var(--space-8); flex: none; }
 .prd-phase-frac { flex: none; font-size: var(--fz-11); color: var(--muted); }

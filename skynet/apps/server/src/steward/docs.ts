@@ -10,7 +10,7 @@
 import type { Project } from "@skynet/shared";
 import { createHash } from "node:crypto";
 import { readFile, readdir } from "node:fs/promises";
-import { join } from "node:path";
+import { resolve, sep } from "node:path";
 import { githubService } from "../github/index.js";
 
 /** Docs worth prefetching for Steward's grounding, in priority order. */
@@ -31,11 +31,29 @@ export interface ProjectDoc {
 }
 
 /**
+ * Join `relPath` onto `root` and refuse if the resolved result would land
+ * outside it. `relPath` here is NOT always a fixed constant (KEY_DOCS /
+ * ROADMAP_PATHS) — `resolveRoadmapDoc` passes the operator/Steward-supplied
+ * `project.roadmapPath` straight through, and `updateProjectRoadmap` passes
+ * the request body's own `path` — so a `../../etc/passwd`-style value must be
+ * caught here rather than trusted. Same containment pattern as
+ * preview/route.ts's `safeFile` traversal guard (resolve, then verify the
+ * result still starts with the root + a separator).
+ */
+function containedPath(root: string, relPath: string): string | null {
+  const base = resolve(root);
+  const target = resolve(base, relPath);
+  return target === base || target.startsWith(base + sep) ? target : null;
+}
+
+/**
  * Read one file from a project's bound repo. Returns `null` when the project
- * is unbound (neither `repoPath` nor `repo`) or the file doesn't exist there.
- * A read that fails for another reason (e.g. an expired/missing GitHub
- * credential) THROWS — callers distinguish "no such file" from "can't read
- * the repo at all" rather than treating both as absence.
+ * is unbound (neither `repoPath` nor `repo`), the file doesn't exist there, or
+ * `relPath` would escape `repoPath` (treated as absence, not a distinct error,
+ * so a traversal attempt reads no differently from a missing file). A read
+ * that fails for another reason (e.g. an expired/missing GitHub credential)
+ * THROWS — callers distinguish "no such file" from "can't read the repo at
+ * all" rather than treating both as absence.
  */
 export async function readProjectDoc(
   workspaceId: string,
@@ -45,9 +63,9 @@ export async function readProjectDoc(
 ): Promise<ProjectDoc | null> {
   const maxChars = opts.maxChars ?? Infinity;
   if (project.repoPath) {
-    // relPath always comes from a fixed constant list (KEY_DOCS / ROADMAP_PATHS),
-    // never user input, so this join can't escape the repo.
-    const content = await readFile(join(project.repoPath, relPath), "utf8").catch((err: NodeJS.ErrnoException) => {
+    const target = containedPath(project.repoPath, relPath);
+    if (!target) return null;
+    const content = await readFile(target, "utf8").catch((err: NodeJS.ErrnoException) => {
       if (err?.code === "ENOENT") return null;
       throw err;
     });

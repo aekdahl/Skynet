@@ -906,6 +906,12 @@ export class Operations {
       if (input.remember && input.action === "approve" && item.kind === "approval" && item.command) {
         await this.rememberApproval(ws, item.runId, item.command, operatorId);
       }
+      // Memory v0, phase 2: a "+ Also remember" note on an approval becomes a
+      // real memory fact automatically — no operator authoring step. Never
+      // lets a memory-write failure fail the approval it rides on.
+      if (resolution.memoryNote) {
+        await this.captureDecisionMemory(ws, item, resolution).catch(() => undefined);
+      }
     }
     return resolved ?? item;
   }
@@ -924,6 +930,52 @@ export class Operations {
     if (project.approvalRules.some((r) => normalizeCommand(r.command) === norm)) return; // de-dupe
     const rule = { id: this.uid("ar"), command: norm, riskCap: cap, createdBy: operatorId, createdAt: now() };
     await this.hub.upsertProject({ ...project, approvalRules: [...project.approvalRules, rule] });
+  }
+
+  /**
+   * Memory v0, phase 2 — every approved decision carrying a `memoryNote`
+   * ("+ Also remember") becomes a real memory fact automatically, the
+   * missing half of phase 1 (which only wrote operator-authored facts via
+   * the dedicated addMemoryFact form). Always workspace-scoped: unlike
+   * `addMemoryFact`, which lets the operator pick a scope, this has no
+   * operator input to pick one from, and `Orchestrator.memoryDigestFor`
+   * (the only place memory actually reaches a running agent today) reads
+   * just `workspace.md` and `agents/<family>.md` — a project/area-scoped
+   * fact would be captured but never fed back to an agent, undermining the
+   * "compounds from usage" point of this phase. No LLM paraphrasing (that's
+   * v4's distillation): the heading is the operator's own note, verbatim.
+   * Best-effort by design (note the caller always `.catch()`s this) — a
+   * memory-write failure (no bound repo, a git error) must never fail the
+   * approval it rides on.
+   */
+  private async captureDecisionMemory(ws: string, item: HitlItem, resolution: Resolution): Promise<void> {
+    const run = await this.store.getRun(item.runId);
+    const project = run ? await this.store.getProject(run.projectId) : undefined;
+    if (!project || (!project.repoPath && !project.repo)) return;
+
+    const relPath = memoryFilePath("workspace", memorySlug(project.name));
+    const current = await readProjectDoc(ws, project, relPath).catch(() => null);
+    const fact = {
+      id: this.uid("fact"),
+      heading: resolution.memoryNote!.trim(),
+      body: `Captured from an approve decision on "${item.title}"${run ? ` (${run.branch})` : ""}.`,
+      source: "decision" as const,
+      author: resolution.by,
+      created: new Date(resolution.at).toISOString(),
+      confidence: "derived" as const,
+      run: item.runId,
+      hitl: item.id,
+    };
+    const header = current ? undefined : newMemoryFileHeader("workspace");
+    const newContent = appendFact(current?.content ?? "", fact, header);
+    const identity = operatorGitIdentity(resolution.by);
+    const message = `Skynet: capture a decision as memory (${item.runId})`;
+
+    if (project.repoPath) {
+      await commitLocalRepoFile(project.repoPath, relPath, newContent, current?.content ?? null, message, identity);
+    } else {
+      await githubService.commitRepoFile(ws, project.repo!, relPath, newContent, current?.sha, message, project.githubCredentialId, identity);
+    }
   }
 
   // ── agent actions ───────────────────────────────────────────────────────
@@ -1146,6 +1198,14 @@ export class Operations {
     // created — the operator sees the GitHub error, not an orphaned project. A new
     // repo supersedes any local folder; the fresh repo is auto-cloned below.
     let repo = input.repo;
+    // Binding straight to a local folder is the same server-filesystem exposure
+    // /api/fs/list gates behind config.allowLocalFs (local/desktop only, MUST
+    // stay off for a hosted/multi-user deployment) — without this, any caller
+    // who can create a project could point repoPath at an arbitrary path the
+    // server process can read (e.g. "/etc"), with nothing to contain it.
+    if (input.repoPath && !config.allowLocalFs) {
+      throw new Error("Binding a project to a local folder is disabled on this server.");
+    }
     let repoPath = input.repoPath ? resolvePath(input.repoPath) : null;
     // Cloning an EXISTING repo: the operator pastes its git URL (HTTPS/SSH) — we
     // normalize it to the "owner/repo" slug and bind to it, so the existing
@@ -1269,6 +1329,11 @@ export class Operations {
     const existing = await this.store.getProject(id);
     if (!existing || existing.workspaceId !== ws) throw new NotFoundError("Project");
     // Rebinding the local folder recomputes git-backing (null clears it).
+    // Setting a NEW path (clearing to null is always fine) needs the same
+    // config.allowLocalFs gate createProject applies — see its comment.
+    if (patch.repoPath && !config.allowLocalFs) {
+      throw new Error("Binding a project to a local folder is disabled on this server.");
+    }
     const rebind =
       patch.repoPath !== undefined
         ? (() => {
