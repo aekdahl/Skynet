@@ -378,6 +378,12 @@ const ALLOW = new Set<string>([
   // winner) is exercised against a real Orchestrator + throwaway git repo in
   // tests/bakeoff.test.ts.
   "startBakeoff",
+  // The bake-off sibling of requestReview: force the N-way judge pass now
+  // instead of waiting for a periodic tick. Needs the same real multi-sibling
+  // bake-off + idle judge fixture as startBakeoff above; no offline journey
+  // reproduces it. Covered against a real Orchestrator + throwaway git repo
+  // in tests/bakeoff-judge.test.ts.
+  "requestBakeoffJudgment",
   // Governance-to-SOTA — policy-driven gate batching. Needs 2+ open
   // approval gates sharing an identical command to mean anything; no
   // offline journey/acceptance fixture raises two real HITL gates at once.
