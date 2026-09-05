@@ -85,6 +85,7 @@ import {
   RunnerBusyError,
 } from "./operations.js";
 import { CrystallizeParseError } from "./steward/crystallize.js";
+import { VersionConflictError } from "./store/store.js";
 import type { ChatTurn } from "./project-assistant.js";
 import { simulateConversational } from "./telegram/index.js";
 import { simulationGrade } from "./simulation/grade.js";
@@ -130,7 +131,8 @@ function fail(reply: FastifyReply, err: unknown): FastifyReply {
     err instanceof NoReviewerAvailableError ||
     err instanceof NothingToReviewError ||
     err instanceof NoTriageTargetError ||
-    err instanceof ProposalAlreadyResolvedError
+    err instanceof ProposalAlreadyResolvedError ||
+    err instanceof VersionConflictError
   ) {
     return reply.code(409).send({ error: (err as Error).message });
   }

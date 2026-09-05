@@ -38,7 +38,7 @@ import type {
 import type { AuditRecord } from "@skynet/shared";
 import { chainAuditRecord } from "../audit-chain.js";
 import { now } from "../config.js";
-import type { Store } from "./store.js";
+import { VersionConflictError, type Store } from "./store.js";
 import type { StoredServiceToken } from "../auth/service-tokens.js";
 import { PROVIDERS } from "./providers.js";
 
@@ -130,7 +130,19 @@ export class MemoryStore implements Store {
 
   async listTasks(ws: string) { return [...this.tasks.values()].filter((t) => t.workspaceId === ws); }
   async getTask(id: string) { return this.tasks.get(id); }
-  async putTask(task: Task) { this.tasks.set(task.id, task); this.persist(); return task; }
+  // No `await` between the version check and the write below — Node's single
+  // thread means nothing else can interleave a conflicting write in between,
+  // so this synchronous check-then-set is genuinely atomic.
+  async putTask(task: Task, expectedVersion?: number) {
+    const current = this.tasks.get(task.id);
+    if (expectedVersion !== undefined && (current?.version ?? 0) !== expectedVersion) {
+      throw new VersionConflictError("task", task.id);
+    }
+    const next = { ...task, version: (current?.version ?? 0) + 1 };
+    this.tasks.set(task.id, next);
+    this.persist();
+    return next;
+  }
   async deleteTask(id: string) { this.tasks.delete(id); this.persist(); }
 
   async listFeatures(ws: string) { return [...this.features.values()].filter((f) => f.workspaceId === ws); }

@@ -60,7 +60,7 @@ Items are ranked PMF > Platform > Product within each batch:
 | Batch | # | Item | Track |
 |-------|---|------|-------|
 | **N (now)** | 1 | 🔒 Security hardening — Aug 2026 audit remediation (7 findings, see v1 section) | Security |
-| | 2 | 🐛 Task-write atomicity — confirmed live data loss, needs a design decision (see v1 section) | Reliability |
+| | 2 | ✅ 🐛 Task-write atomicity — fixed, PR #649 (see v1 section) | Reliability |
 | | 3 | Memory v0 — operator-authored facts, injected per project | Platform |
 | | 4 | deep-review / breaker-review settings UI toggle (both already built, PATCH-API-only today) | PMF |
 | | 5 | Mass inform — Fleet/Project UI (multi-select + whole-project) | Product |
@@ -152,19 +152,24 @@ Crystallize). What's still open or partially landed:
 
 Ordered by priority (urgent bug → launch-wedge remainder → product debt → GTM/infra → hosted-deferred):
 
-- [ ] **🐛 Task-write atomicity — no optimistic concurrency, confirmed real data loss.** Reported live
-  (2026-08): a batch task-update lost `description` on 7 tasks (a genuine PATCH-semantics footgun,
-  mitigated with tighter MCP tool guidance). A deeper issue surfaced during recovery: every one of the
-  25+ `upsertTask` call sites across `orchestrator.ts`/`operations.ts` does a non-atomic
-  read-modify-write (fetch → spread → write the whole record back, no version/etag check) — safe when a
-  task had one writer at a time, not safe now that autonomous writers (triage, auto-review, the
-  self-replenishing backlog) run concurrently with human/scripted edits on the same record. **Needs a
-  real design decision before implementing** — options include a monotonic `version`/`updatedAt` field
-  checked-and-incremented at the Store layer, narrowing the highest-risk autonomous paths to
-  single-field atomic patches, or a compare-and-swap primitive every caller routes through. The race is
-  systemic (likely beyond just `Task`), not local to one call site — scope deliberately rather than
-  bolting a fix onto one path. **Highest-priority open item in this section** — it's a confirmed,
-  live bug, not a feature gap.
+- [x] **🐛 Task-write atomicity — no optimistic concurrency, confirmed real data loss.** Fixed
+  (PR #649, `reliability/task-write-optimistic-concurrency`). Reported live (2026-08): a batch
+  task-update lost `description` on 7 tasks (a genuine PATCH-semantics footgun, mitigated separately
+  with tighter MCP tool guidance). The deeper issue found during recovery — every one of the 25+
+  `upsertTask` call sites across `orchestrator.ts`/`operations.ts` did a non-atomic read-modify-write
+  (fetch → spread → write the whole record back, no version/etag check), unsafe once autonomous writers
+  (triage, auto-review, the self-replenishing backlog) run concurrently with human/scripted edits on the
+  same record — is closed: `Task.version` (shared contracts) is now checked-and-incremented atomically
+  at the Store layer (`Store.putTask(task, expectedVersion?)`, a real CAS in both `MemoryStore` and
+  `PostgresStore`, throwing `VersionConflictError` on a stale write; mapped to HTTP 409 at the API
+  layer), and every update call site now routes through one shared retry helper,
+  `Hub.patchTask(id, patch, opts?)`, which re-reads and re-applies (function-form patches/guards
+  re-evaluate against the fresh value, not blindly reapply) on a version conflict, up to `maxRetries`.
+  `tests/task-write-concurrency.test.ts` reproduces the actual incident deterministically (a delayed-
+  store harness controlling write interleaving) and proves the final record carries both concurrent
+  writers' fields — the old pattern would have silently dropped one. Scoped to `Task` only (confirmed
+  the only two `Store` implementations were migrated); generalizing the same pattern to other entities
+  was deliberately left for a second confirmed incident rather than fixed pre-emptively.
 - [~] **⭐ Governance to SOTA (the launch wedge — already the white space; make it best-in-class).**
   Nearly all landed: policy-as-code command policy, budget ceiling + cost-aware allocation/pacing,
   context-aware (blast-radius) risk classification, the prompt-injection/tool-poisoning firewall,
