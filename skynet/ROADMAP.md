@@ -45,8 +45,9 @@ found these rare-to-absent), and where they live:
 largely shipped)** — ship in this order:
 **(1) Security + reliability debt** — the 7 Aug-2026 security findings and the task-write-atomicity race
 are both *confirmed, pre-existing* issues (one already caused real data loss) with broad blast radius;
-close these before anything else compounds on top of them. **(2) Memory v0** (nothing has shipped here
-yet, and it's the wedge that keeps us from being "just another orchestrator") — **Cross-vendor consensus
+close these before anything else compounds on top of them. **(2) Memory v0** (phases 1+2 have now
+shipped — operator-authored + decision-derived facts, both injected and exportable; only the
+workspace-scoped MCP server and v4's LLM distillation remain) — **Cross-vendor consensus
 runs**' fan-out+diff+merge has now landed; only the peer-review half remains. **(3) v1.5 ease-of-use** (the remaining
 operator-ergonomics/design-token tail) **+ desktop code-signing** (the last GTM
 blocker on the committed release — mac auto-update silently no-ops without it). Provider breadth and the
