@@ -1056,6 +1056,12 @@ export function archiveTask(projectId: string, taskId: string, archived = true) 
 export function assignTask(projectId: string, taskId: string) {
   return req<TaskRun>("POST", `/api/projects/${projectId}/tasks/${taskId}/assign`);
 }
+/** Cross-vendor consensus run: fire the task at 2+ providers in parallel,
+ *  each in its own worktree off the same base commit. Picking a winner is
+ *  just approving that sibling's own diff HITL — see resolveHitl. */
+export function startBakeoff(projectId: string, taskId: string, providerIds: ProviderId[]) {
+  return req<TaskRun[]>("POST", `/api/projects/${projectId}/tasks/${taskId}/bakeoff`, { providerIds });
+}
 /** Answer triage's clarifying questions — appends the operator's own words to
  *  the task description and returns it to backlog for re-triage. */
 export function answerClarification(projectId: string, taskId: string, answer: string) {
@@ -1311,6 +1317,9 @@ export function refreshProjectContext(projectId: string) {
 
 // ─── Live preview (Phase-1: web/sites) ──────────────────────────────────────
 export type PreviewSource = "main" | "merged" | "latest";
+// "service" (Phase 2) rebuilds/restarts automatically when the fleet merges,
+// instead of relying on the dev server's own HMR — see docs/live-preview.md.
+export type PreviewKind = "web" | "service";
 export interface PreviewState {
   status: "idle" | "starting" | "live" | "failed" | "stopped";
   url: string | null;
@@ -1321,6 +1330,7 @@ export interface PreviewState {
   startedAt: number | null;
   source: PreviewSource;
   combined: { total: number; included: number; skipped: number } | null;
+  kind: PreviewKind;
 }
 export function previewStatus(projectId: string) {
   return req<PreviewState>("GET", `/api/projects/${projectId}/preview`);

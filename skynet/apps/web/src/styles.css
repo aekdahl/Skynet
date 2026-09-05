@@ -498,8 +498,8 @@ kbd {
 .feature-brief-tasks li { display: flex; align-items: baseline; gap: var(--space-4); }
 .feature-brief-task-mark { color: var(--ok); font-family: var(--font-mono); flex-shrink: 0; }
 .feature-brief-flagged .feature-brief-task-mark { color: var(--warn); }
-.feature-brief-reviewer { color: var(--faint); }
-.feature-brief-spend { margin: 0; font-size: var(--fz-11-5); color: var(--faint); }
+.feature-brief-reviewer { color: var(--muted); }
+.feature-brief-spend { margin: 0; font-size: var(--fz-11-5); color: var(--muted); }
 .qcard-why { font-size: var(--fs); color: var(--muted); line-height: 1.55; text-wrap: pretty; }
 .qcard-reason { margin: 2px 0 var(--space-4); font-size: var(--fz-13); color: var(--muted); font-style: italic; line-height: 1.5; }
 
@@ -624,7 +624,7 @@ kbd {
 .merge-stat b.del { color: var(--danger); font-weight: 600; }
 .merge-attribution { font-size: var(--fz-12); color: var(--muted); margin: 2px 0; }
 .merge-attribution b { color: var(--text); font-weight: 600; }
-.merge-nocheck { font-size: var(--fz-11); color: var(--faint); font-style: italic; }
+.merge-nocheck { font-size: var(--fz-11); color: var(--muted); font-style: italic; }
 .qcard-project { font-size: var(--fz-12); color: var(--muted); white-space: nowrap; }
 /* Path globs a diff/merge touches — surfaced next to size/risk so a reviewer
    sees WHAT areas changed without opening the diff (see queue.tsx/merges.tsx). */
@@ -1185,7 +1185,6 @@ button.ct-seg { cursor: pointer; }
 .pv-dp-note { font-family: var(--font-mono); font-size: var(--fz-9-5); color: #5A6170; }
 /* pipeline mini-mock */
 .pv-pipe { display: flex; align-items: center; gap: 0; flex-wrap: wrap; row-gap: var(--space-8); }
-.pv-pipe-st { font-family: var(--font-mono); font-size: var(--fz-10-5); padding: var(--space-4) var(--space-12); border-radius: 14px; border: 1px solid var(--line); color: var(--faint); white-space: nowrap; }
 .pv-pipe-done { color: var(--ok); border-color: color-mix(in oklch, var(--ok), transparent 60%); }
 .pv-pipe-now { color: var(--warn); border-color: color-mix(in oklch, var(--warn), transparent 55%); }
 .pv-pipe-seg { width: 14px; height: 2px; background: var(--line); flex: none; }
@@ -2048,11 +2047,35 @@ button.kb-done:hover { opacity: 1; }
 .fleet-head { display: flex; justify-content: space-between; align-items: flex-start; gap: var(--space-20); }
 .fleet-head-actions { display: flex; align-items: center; gap: var(--space-8); }
 .fleet-head-actions .btn-ghost.on { background: var(--raised); border-color: var(--accent); color: var(--accent); }
+/* Roster (left, dominant) + aggregate utilization/cost (right, narrow) — the
+   still-sparse single-column layout read as unfinished at width; this gives
+   the empty right half a real, load-bearing second column instead of just
+   centering the content. Collapses to one column under the same breakpoint
+   .detail-cols uses for the same reason (task.tsx). */
+.fleet-layout { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: var(--sp); align-items: start; }
+@media (max-width: 900px) { .fleet-layout { grid-template-columns: 1fr; } }
+.fleet-main { display: flex; flex-direction: column; gap: 26px; min-width: 0; }
+.fleet-overview { position: sticky; top: calc(var(--sp) * 1.4); display: flex; flex-direction: column; gap: 16px; }
+.fleet-ov-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.fleet-ov-stat { display: flex; flex-direction: column; gap: 2px; }
+.fleet-ov-stat-n { font-size: var(--fz-20); font-weight: 600; font-variant-numeric: tabular-nums; }
+.fleet-ov-stat-lbl { font-size: var(--fz-10-5); text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+.fleet-ov-util { display: flex; flex-direction: column; gap: 6px; }
+.fleet-ov-util-row { display: flex; justify-content: space-between; font-size: var(--fz-11-5); color: var(--muted); }
+.fleet-ov-util-track { height: 6px; border-radius: 4px; background: var(--raised); overflow: hidden; }
+.fleet-ov-util-fill { height: 100%; background: var(--accent); border-radius: 4px; transition: width var(--motion-base); }
+.fleet-ov-cost-total { display: flex; align-items: baseline; justify-content: space-between; }
+.fleet-ov-cost-total-n { font-size: var(--fz-19); font-weight: 600; font-variant-numeric: tabular-nums; }
+.fleet-ov-cost-total-meta { font-size: var(--fz-10-5); color: var(--muted); }
+.fleet-ov-providers { display: flex; flex-direction: column; gap: 6px; }
+.fleet-ov-provider-row { display: flex; align-items: center; gap: 8px; font-size: var(--fz-12); }
+.fleet-ov-provider-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fleet-ov-provider-cost { font-family: var(--font-mono); font-size: var(--fz-11-5); color: var(--muted); flex: none; }
+.fleet-ov-empty { font-size: var(--fz-12); color: var(--muted); }
 .fleet-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: var(--sp); }
 /* Mass-inform pick: a checkbox row at the top of a card in select mode. Idle
    agents show disabled + a note instead of a live-run target. */
 .fleet-inform-pick { display: flex; align-items: center; gap: var(--space-8); padding-bottom: 2px; }
-.fleet-inform-idle { font-size: var(--fz-11); color: var(--faint, var(--muted)); }
 .fleet-inform-unsupported { font-size: var(--fz-11); color: var(--faint, var(--muted)); cursor: not-allowed; }
 /* The `inform` note composer (Fleet multi-select + Project whole-project). */
 .inform-panel { display: flex; flex-direction: column; gap: var(--space-8); margin-bottom: var(--sp); }
@@ -2064,7 +2087,7 @@ button.kb-done:hover { opacity: 1; }
 .fleet-group + .fleet-group { margin-top: var(--space-20); }
 .fleet-group-head { display: flex; align-items: baseline; gap: var(--space-8); }
 .fleet-group-name { font-size: var(--fz-12); font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
-.fleet-group-count { font-size: var(--fz-11); color: var(--faint, var(--muted)); }
+.fleet-group-count { font-size: var(--fz-11); color: var(--muted); }
 .fleet-card { background: var(--panel); border: 1px solid var(--line); border-radius: 11px; padding: var(--space-16) var(--space-16); display: flex; flex-direction: column; gap: var(--space-12); }
 .fleet-busy { border-color: color-mix(in oklch, var(--ok), transparent 70%); }
 .fleet-top { display: flex; align-items: center; gap: var(--space-8); }
@@ -2081,7 +2104,7 @@ button.kb-done:hover { opacity: 1; }
 button.fleet-task-link { display: flex; align-items: center; gap: var(--space-8); width: 100%; border: 1px solid transparent; font: inherit; text-align: left; cursor: pointer; transition: background var(--motion-fast), border-color var(--motion-fast); }
 button.fleet-task-link:hover { background: var(--hover, var(--raised)); border-color: var(--border); }
 .fleet-task-link .fleet-task-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.fleet-task-link .fleet-task-cta { flex: none; font-size: var(--fz-11); color: var(--muted, var(--faint)); opacity: 0; transition: opacity var(--motion-fast); }
+.fleet-task-link .fleet-task-cta { flex: none; font-size: var(--fz-11); color: var(--muted); opacity: 0; transition: opacity var(--motion-fast); }
 button.fleet-task-link:hover .fleet-task-cta { opacity: 1; }
 .fleet-actions { display: flex; flex-wrap: wrap; gap: var(--space-4) var(--space-8); border-top: 1px solid var(--line-soft); padding-top: var(--space-12); }
 .fleet-actions .btn { padding: var(--space-4) var(--space-8); font-size: var(--fz-12); min-height: 30px; }
@@ -2119,7 +2142,7 @@ button.fleet-cardhead:hover .fleet-caret { color: var(--accent); transform: tran
    below — several identical "idle 6d" cards carry no signal, so give that
    space back to whatever IS happening. */
 .fleet-working + .fleet-idle { margin-top: var(--space-16); }
-.fleet-sub-label { font-size: var(--fz-10-5); font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--faint); margin-bottom: var(--space-8); }
+.fleet-sub-label { font-size: var(--fz-10-5); font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); margin-bottom: var(--space-8); }
 .fleet-sub-label .mono { font-weight: 400; letter-spacing: 0; }
 .fleet-idle-roster { background: var(--panel); border: 1px solid var(--line); border-radius: 11px; overflow: hidden; }
 .fleet-idle-row { display: grid; grid-template-columns: 1fr auto auto auto auto auto; align-items: center; gap: var(--space-12); padding: var(--space-8) var(--space-16); border-bottom: 1px solid var(--line-soft); }
@@ -2260,7 +2283,7 @@ button.ad-hist-row:hover { border-color: var(--border); background: var(--raised
 .hm-first3-wait { font-size: var(--fz-12); color: var(--muted); }
 .hm-first3-title { font-size: var(--fz-13-5); font-weight: 600; color: var(--text); }
 .hm-first3-meta { font-size: var(--fz-11); color: var(--muted); }
-.hm-first3-footnote { margin-top: var(--space-8); font-size: var(--fz-11); color: var(--faint); }
+.hm-first3-footnote { margin-top: var(--space-8); font-size: var(--fz-11); color: var(--muted); }
 
 /* lens switcher */
 .lens-switch { display: inline-flex; gap: 3px; background: var(--panel); border: 1px solid var(--line); border-radius: 9px; padding: 3px; align-self: flex-start; }
@@ -2318,7 +2341,6 @@ button.rb-proj:hover { color: var(--accent); }
    runner's custom label alone. Name inherits the provider color from inline style. */
 .rb-prov-glyph { flex: none; font-size: var(--fz-12); line-height: 1; }
 .rb-prov-name { font-size: var(--fz-12); font-weight: 500; }
-.rb-off { color: var(--faint); }
 .rb-time { font-family: var(--font-mono); font-size: var(--fz-11-5); color: var(--muted); }
 
 .rb-chip { display: inline-flex; align-items: center; gap: var(--space-4); font-family: var(--font-mono); font-size: var(--fz-11); padding: 3px var(--space-8); border-radius: 999px; border: 1px solid transparent; white-space: nowrap; }
@@ -2421,7 +2443,7 @@ button.rb-proj:hover { color: var(--accent); }
 .op-navitem .badge-human { background: var(--ak-human); color: var(--ak-canvas); }
 .op-navitem .badge-lime-outline { background: none; color: var(--ak-machine); border: 1px solid var(--ak-machine); padding: 0 var(--space-4); }
 /* Projects/Fleet — a plain count, not a decision signal, so no chip. */
-.op-navcount { margin-left: auto; font-family: var(--font-mono); font-size: var(--fz-11); color: var(--faint); }
+.op-navcount { margin-left: auto; font-family: var(--font-mono); font-size: var(--fz-11); color: var(--muted); }
 /* Integrations — a bare dot, not a count (there's nothing to count, just a
    flag). Same warn hue as the dot state above, slightly larger for legibility
    as a standalone mark. */
@@ -2462,7 +2484,7 @@ button.rb-proj:hover { color: var(--accent); }
 .op-pstatus { flex: none; font-family: var(--font-mono); font-size: var(--fz-11); white-space: nowrap; }
 .op-pstatus-human { color: var(--ak-human); }
 .op-pstatus-warn { color: var(--warn); }
-.op-pstatus-track { color: var(--faint); }
+.op-pstatus-track { color: var(--muted); }
 .op-side-foot { margin-top: auto; display: flex; align-items: center; gap: var(--space-8); padding: var(--space-12) var(--space-12); border-top: 1px solid var(--line-soft); }
 .op-side-foot .who { font-size: var(--fz-12); } .op-side-foot .role { font-size: var(--fz-11); color: var(--muted); }
 .op-role-viewer { color: var(--warn); font-weight: 600; }
@@ -2632,7 +2654,7 @@ button.rb-proj:hover { color: var(--accent); }
 .audit-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-16); }
 .audit-bulk { display: flex; align-items: center; gap: var(--space-8); flex: none; padding-top: var(--space-4); }
 .audit-actions { display: flex; align-items: center; gap: var(--space-8); margin-top: var(--space-4); padding-top: var(--space-8); border-top: 1px solid var(--line-soft); }
-.audit-del { color: var(--faint); }
+.audit-del { color: var(--muted); }
 .audit-del:hover { color: var(--danger); border-color: var(--danger); }
 .audit-row-archived { opacity: 0.7; }
 /* compliance evidence pack export — a floating dropdown, not in normal flow,
@@ -2658,7 +2680,13 @@ button.rb-proj:hover { color: var(--accent); }
 ::-webkit-scrollbar-track { background: transparent; }
 
 /* ─── Integrations (GitHub) ─────────────────────────────────────────────── */
-.gh-wrap { max-width: 640px; }
+/* Catalog grid, not a single hugging column — a two-integration workspace
+   still reads as unfinished capped at 640px inside the view's 1180px
+   container. Each card manages its own collapse state, so uneven expanded
+   heights just size their own grid row (same tolerance .fleet-grid already
+   accepts for busy vs idle agent cards). */
+.gh-wrap { display: grid; grid-template-columns: repeat(auto-fill, minmax(420px, 1fr)); gap: var(--sp); align-items: start; }
+.gh-card { max-width: 640px; }
 .gh-octi { width: 16px; height: 16px; vertical-align: -3px; fill: currentColor; }
 .gh-card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: var(--space-20); }
 .gh-card + .gh-card { margin-top: var(--space-16); }
@@ -2710,7 +2738,7 @@ button.rb-proj:hover { color: var(--accent); }
 /* ─── Repo picker (one repo per project) ────────────────────────────────── */
 .rp { display: block; }
 .rp-label { display: block; font-family: var(--font-mono); font-size: var(--fz-11); color: var(--muted); margin-bottom: var(--space-4); }
-.rp-hint { color: var(--faint); }
+.rp-hint { color: var(--muted); }
 .rp-select { width: 100%; background: var(--raised); border: 1px solid var(--line); border-radius: 8px; color: var(--text); font-family: var(--font-mono); font-size: var(--fz-12-5); padding: var(--space-8) var(--space-12); }
 .rp-select:focus-visible { outline: none; border-color: var(--input-focus-border); }
 .rp-note { font-family: var(--font-mono); font-size: var(--fz-11-5); color: var(--muted); }
@@ -2788,7 +2816,7 @@ button.rb-proj:hover { color: var(--accent); }
 .ob-label { display: flex; align-items: center; gap: var(--space-8); font-family: var(--font-mono); font-size: var(--fz-11); color: var(--muted); margin-bottom: var(--space-4); }
 .ob-key-link { margin-left: auto; font-family: var(--font-mono); font-size: var(--fz-11); color: var(--accent); text-decoration: none; }
 .ob-key-link:hover { text-decoration: underline; }
-.ob-hint { font-family: var(--font-mono); font-size: var(--fz-11); color: var(--faint); margin-top: var(--space-4); }
+.ob-hint { font-family: var(--font-mono); font-size: var(--fz-11); color: var(--muted); margin-top: var(--space-4); }
 .ob-mods { display: flex; flex-wrap: wrap; gap: var(--space-8); }
 .ob-mod-chip { font-size: var(--fz-11); color: var(--text); background: var(--raised); border: 1px solid var(--line); border-radius: 16px; padding: var(--space-4) var(--space-12); }
 .ob-prov-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-8); margin-bottom: var(--space-12); }
@@ -2797,7 +2825,6 @@ button.rb-proj:hover { color: var(--accent); }
 .ob-prov.on { background: var(--raised); }
 .ob-prov:disabled { opacity: 0.4; cursor: not-allowed; }
 .ob-prov-glyph { font-size: var(--fz-16); width: 18px; text-align: center; }
-.ob-prov-models { display: block; font-family: var(--font-mono); font-size: var(--fz-10); color: var(--faint); margin-top: 2px; }
 .ob-prov-check { margin-left: auto; font-family: var(--font-mono); font-size: var(--fz-12); color: var(--ok); opacity: 0; }
 .ob-prov.on .ob-prov-check { opacity: 1; }
 /* Fleet builder — one row per agent (provider + model), add/remove */
@@ -2814,8 +2841,8 @@ button.rb-proj:hover { color: var(--accent); }
 
 .ob-nav { display: flex; align-items: center; gap: var(--space-8); margin-top: var(--space-28); }
 .ob-nav .ob-spacer { flex: 1; }
-.ob-skip { display: block; margin: var(--space-20) auto 0; background: none; border: none; color: var(--faint); font-family: var(--font-ui); font-size: var(--fz-12); cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }
-.ob-skip:hover { color: var(--muted); }
+.ob-skip { display: block; margin: var(--space-20) auto 0; background: none; border: none; color: var(--muted); font-family: var(--font-ui); font-size: var(--fz-12); cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }
+.ob-skip:hover { color: var(--text); }
 
 /* ─── Collapsible integration section ───────────────────────────────────── */
 .gh-int + .gh-int { margin-top: var(--space-12); }
@@ -3251,10 +3278,8 @@ button.rb-proj:hover { color: var(--accent); }
 .prd-phase:first-child { border-top: none; }
 .prd-phase-summary { width: 100%; display: flex; align-items: center; gap: var(--space-12); padding: var(--space-12) var(--space-4); background: none; border: none; cursor: pointer; text-align: left; font: inherit; color: inherit; }
 .prd-phase-summary:focus-visible { border-radius: 6px; }
-.prd-phase-caret { flex: none; font-size: var(--fz-10); color: var(--faint); width: 12px; }
 .prd-phase-title { font-size: var(--fz-14); font-weight: 600; flex: 1; min-width: 0; }
 .prd-phase-summary:hover .prd-phase-title { color: var(--accent); }
-.prd-phase-summary:hover .prd-phase-caret { color: var(--accent); }
 .prd-phase-shipped .prd-phase-title { color: var(--muted); }
 .prd-phase-pill { font-family: var(--font-mono); font-size: var(--fz-10); letter-spacing: 0.06em; text-transform: uppercase; color: var(--accent); border: 1px solid color-mix(in oklch, var(--accent), transparent 55%); background: color-mix(in oklch, var(--accent), transparent 88%); border-radius: 999px; padding: 2px var(--space-8); flex: none; }
 .prd-phase-frac { flex: none; font-size: var(--fz-11); color: var(--muted); }
@@ -3273,11 +3298,11 @@ button.rb-proj:hover { color: var(--accent); }
 .prj-ctx-add { display: flex; flex-direction: column; gap: var(--space-8); border: 1px solid var(--line-soft); border-radius: 10px; padding: var(--space-12); }
 .prj-ctx-textarea-wrap { position: relative; }
 .prj-ctx-textarea { resize: vertical; min-height: 80px; font: inherit; width: 100%; }
-.prj-ctx-char-count { position: absolute; right: 8px; bottom: 8px; font-size: var(--fz-10); color: var(--faint); background: var(--panel, var(--bg)); padding: 1px var(--space-4); border-radius: 4px; pointer-events: none; }
+.prj-ctx-char-count { position: absolute; right: 8px; bottom: 8px; font-size: var(--fz-10); color: var(--muted); background: var(--panel, var(--bg)); padding: 1px var(--space-4); border-radius: 4px; pointer-events: none; }
 .prj-ctx-add-actions { display: flex; align-items: center; gap: var(--space-8); }
 .prj-ctx-upload-label { position: relative; cursor: pointer; }
 .prj-ctx-upload-input { position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; }
-.prj-ctx-hint { font-size: var(--fz-10-5); color: var(--faint); margin-left: auto; }
+.prj-ctx-hint { font-size: var(--fz-10-5); color: var(--muted); margin-left: auto; }
 
 .prj-ctx-list-total { font-size: var(--fz-10-5); color: var(--muted); margin-bottom: -8px; }
 .prj-ctx-list { display: flex; flex-direction: column; gap: var(--space-8); }
@@ -3287,7 +3312,7 @@ button.rb-proj:hover { color: var(--accent); }
 .prj-ctx-badge-paste { color: var(--accent); border: 1px solid color-mix(in oklch, var(--accent), transparent 55%); background: color-mix(in oklch, var(--accent), transparent 88%); }
 .prj-ctx-badge-upload { color: var(--ok, var(--muted)); border: 1px solid color-mix(in oklch, var(--ok, var(--muted)), transparent 55%); background: color-mix(in oklch, var(--ok, var(--muted)), transparent 88%); }
 .prj-ctx-entry-label { font-weight: 600; font-size: var(--fz-13); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.prj-ctx-entry-chars { font-size: var(--fz-10-5); color: var(--faint); flex: none; }
+.prj-ctx-entry-chars { font-size: var(--fz-10-5); color: var(--muted); flex: none; }
 .prj-ctx-entry-date { font-size: var(--fz-10-5); color: var(--muted); flex: none; }
 .prj-ctx-entry-body { font-size: var(--fz-12-5); color: var(--muted); line-height: 1.5; max-height: 4.5em; overflow: hidden; white-space: pre-wrap; }
 
@@ -3572,7 +3597,7 @@ button.rb-proj:hover { color: var(--accent); }
 .cmdk-item.disabled { color: var(--faint); cursor: default; }
 .cmdk-item-icon { color: var(--muted); width: 16px; text-align: center; flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center; gap: var(--space-4); }
 .cmdk-item-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.cmdk-item-hint { font-size: var(--fz-11); color: var(--faint); }
+.cmdk-item-hint { font-size: var(--fz-11); color: var(--muted); }
 /* TASK 24 — a decision row's selected state is its own treatment, not the
    generic `--raised` wash every other group uses: a fixed dark bg + a human
    (blue) border, so it reads as "this is a live decision" even before you
@@ -3607,7 +3632,7 @@ button.rb-proj:hover { color: var(--accent); }
 .clarify-qs li { margin: 0 0 2px; }
 .clarify-answer { resize: vertical; min-height: 52px; font: inherit; width: 100%; }
 .clarify-actions { display: flex; align-items: center; gap: var(--space-8); flex-wrap: wrap; }
-.clarify-hint { font-size: var(--fz-10-5); color: var(--faint); }
+.clarify-hint { font-size: var(--fz-10-5); color: var(--muted); }
 .settings-saved { font-size: var(--fz-11); color: var(--ok, var(--accent)); margin-top: var(--space-4); }
 
 /* ── Project Coverage tab: scenario coverage ─────────────────────────────── */
@@ -3628,8 +3653,8 @@ button.rb-proj:hover { color: var(--accent); }
 .qa-axis-gap { border-color: color-mix(in oklch, var(--warn), transparent 60%); }
 .qa-axis-head { display: flex; align-items: baseline; gap: var(--space-8); }
 .qa-axis-name { font-size: var(--fz-12-5); font-weight: 600; }
-.qa-axis-kind { font-size: var(--fz-10); color: var(--faint); text-transform: uppercase; letter-spacing: 0.05em; }
-.qa-axis-file { font-size: var(--fz-10-5); color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
+.qa-axis-kind { font-size: var(--fz-10); color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+.qa-axis-file { font-size: var(--fz-10-5); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
 .qa-axis-count { font-size: var(--fz-11); color: var(--muted); flex: none; }
 .qa-count-gap { color: var(--warn); }
 .qa-cases { display: flex; flex-wrap: wrap; gap: var(--space-4); }
@@ -3647,7 +3672,7 @@ button.rb-proj:hover { color: var(--accent); }
 .qt-row { display: flex; align-items: center; gap: var(--space-8); width: 100%; background: none; border: 0; cursor: pointer;
   font-family: var(--font-ui); color: var(--fg); text-align: left; padding: 3px var(--space-4); border-radius: 5px; }
 .qt-row:hover { background: var(--bg2); }
-.qt-row-clean { color: var(--faint); }
+.qt-row-clean { color: var(--muted); }
 .qt-caret { font-size: var(--fz-10); color: var(--faint); width: 9px; flex: none; }
 .qt-caret-none { visibility: hidden; }
 .qt-name { font-size: var(--fz-11-5); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -3674,13 +3699,13 @@ button.rb-proj:hover { color: var(--accent); }
 .settings-vendor { border: 1px solid var(--line-soft); border-radius: 8px; padding: var(--space-8) var(--space-12); display: flex; flex-direction: column; gap: var(--space-8); }
 .settings-vendor-url { font-size: var(--fz-11); color: var(--accent); }
 .settings-rates { border-collapse: collapse; font-size: var(--fz-11); width: 100%; max-width: 620px; }
-.settings-rates th { text-align: right; font-weight: 500; color: var(--faint); padding: 2px var(--space-8); font-size: var(--fz-10-5); }
+.settings-rates th { text-align: right; font-weight: 500; color: var(--muted); padding: 2px var(--space-8); font-size: var(--fz-10-5); }
 .settings-rates th:first-child { text-align: left; }
 .settings-rates td { text-align: right; padding: 2px var(--space-8); color: var(--muted); white-space: nowrap; }
 .settings-rates td:first-child { text-align: left; color: var(--text); width: 100%; }
-.settings-rate-note { color: var(--faint); font-family: var(--font-ui); }
-.settings-rate-base td { border-top: 1px dashed var(--line-soft); color: var(--faint); padding-top: var(--space-4); }
-.settings-rate-foot { font-size: var(--fz-10-5); color: var(--faint); margin: 0; }
+.settings-rate-note { color: var(--muted); font-family: var(--font-ui); }
+.settings-rate-base td { border-top: 1px dashed var(--line-soft); color: var(--muted); padding-top: var(--space-4); }
+.settings-rate-foot { font-size: var(--fz-10-5); color: var(--muted); margin: 0; }
 .settings-vendor-caveat { font-size: var(--fz-11); color: var(--warn); line-height: 1.5; margin: 0; max-width: 78ch; }
 /* "via <vendor>" — a runner on a Claude-compatible endpoint. It still shows the
    Claude glyph (the Agent SDK really is driving it), so without this chip there
@@ -3700,7 +3725,7 @@ button.rb-proj:hover { color: var(--accent); }
 .smoke-verdict { font-size: var(--fz-12-5); font-weight: 600; }
 .smoke-verdict.ok { color: var(--ok); }
 .smoke-verdict.bad { color: var(--warn); }
-.smoke-sub { font-size: var(--fz-10-5); color: var(--faint); }
+.smoke-sub { font-size: var(--fz-10-5); color: var(--muted); }
 .smoke-checks { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--space-4); }
 .smoke-check { display: flex; gap: var(--space-8); font-size: var(--fz-11-5); line-height: 1.5; align-items: baseline; }
 .smoke-mark { flex: none; width: 12px; text-align: center; }
@@ -3757,5 +3782,5 @@ button.rb-proj:hover { color: var(--accent); }
 .dock-needsyou { margin: var(--space-8) var(--space-12) 0; padding: var(--space-8) var(--space-8); border-radius: 7px; font-size: var(--fz-11-5);
   color: var(--warn); background: color-mix(in oklch, var(--warn), transparent 90%);
   border: 1px solid color-mix(in oklch, var(--warn), transparent 60%); line-height: 1.5; }
-.steward-scopeline { font-size: var(--fz-10-5); color: var(--faint); padding: var(--space-4) var(--space-12) 0; }
+.steward-scopeline { font-size: var(--fz-10-5); color: var(--muted); padding: var(--space-4) var(--space-12) 0; }
 .fleet-auto-model-input { width: 150px; flex: none; font-size: var(--fz-12); }

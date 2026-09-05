@@ -30,8 +30,8 @@ funnel; governance is the launch wedge; portable, open memory is the moat.**
 found these rare-to-absent), and where they live:
 1. **Open portable memory — one second brain across every agent** (v4; thin v0 in v1.5): user-owned,
    cross-vendor, exposed as an **MCP memory server any tool can read/write, even outside Skynet**.
-2. **Cross-vendor consensus runs** (v1.5): same task on Claude + Codex + Gemini, auto-diff, keep/merge
-   the winner — or have them peer-review each other.
+2. **Cross-vendor consensus runs** (v1.5, fan-out+diff+merge landed): same task on 2+ providers, auto-diff,
+   keep/merge the winner. Having them peer-review each other instead of a human picking is still open.
 3. **Prompt-injection / tool-poisoning firewall** (v1, landed): gate tool calls steered by untrusted content the
    agent read (issue / web page / dependency). The category's first agent-security layer.
 4. **Provably-improving fleet** (v5): measure which memory + task phrasings one-shot vs. churn, promote
@@ -41,16 +41,16 @@ found these rare-to-absent), and where they live:
 6. **Org-wide knowledge diffusion** (v1 mass-inform + v4): one teammate's decision instantly informs
    every teammate's agents.
 
-**Recommended near-term order (re-prioritized as fixes land)** — ship in this order:
-**(1) Security + the manager/worker UI gap** — 5 of the 7 Aug-2026 security findings are still
-genuinely open (2 are fixed — verified against the live code, not just the checklist) with broad blast
-radius; close these first. The v2 hierarchy's core mechanism (`spawn_worker`) just shipped with **no UI
-at all** — cheap, high-leverage to close that gap before it's forgotten. **(2) Memory v0 phase 2**
-(decision-derived facts — phase 1 shipped) **+ Cross-vendor consensus runs** (provider breadth landed —
-Codex/Gemini/Cursor/Copilot/Hermes/OpenCode/Kimi Code — so this signature bet is unblocked, no longer
-gated on it). **(3) v1.5 ease-of-use** (the remaining operator-ergonomics/design-token tail). Desktop
-code-signing's engineering is done (PR #488) — it's now blocked on an operator buying certs, not on
-development. Provider breadth and the Governance-to-SOTA launch wedge are both essentially done; see
+**Recommended near-term order (re-prioritized now that provider breadth + the governance wedge are both
+largely shipped)** — ship in this order:
+**(1) Security + reliability debt** — the 7 Aug-2026 security findings and the task-write-atomicity race
+are both *confirmed, pre-existing* issues (one already caused real data loss) with broad blast radius;
+close these before anything else compounds on top of them. **(2) Memory v0** (nothing has shipped here
+yet, and it's the wedge that keeps us from being "just another orchestrator") — **Cross-vendor consensus
+runs**' fan-out+diff+merge has now landed; only the peer-review half remains. **(3) v1.5 ease-of-use** (the remaining
+operator-ergonomics/design-token tail) **+ desktop code-signing** (the last GTM
+blocker on the committed release — mac auto-update silently no-ops without it). Provider breadth and the
+Governance-to-SOTA launch wedge — the prior #1/#2 here — are both essentially done; see
 [the archive](ROADMAP-ARCHIVE.md). Everything below stays directional.
 
 **Current batch priority order** — see [docs/operating-memo.md](docs/operating-memo.md) §8 for full rationale.
@@ -194,14 +194,17 @@ Ordered by priority (urgent bug → launch-wedge remainder → product debt → 
   live-verified against each vendor's current CLI). Reactive breadth from the candidate list
   ([docs/runner-catalog.md](docs/runner-catalog.md)) stays open-ended — no fixed target, lowest urgency
   now that the field-trailing gap this closed is gone.
-- [~] **UI system polish (P2 of [docs/ux-review.md](docs/ux-review.md)).** Landed: untangled
+- [x] **UI system polish (P2 of [docs/ux-review.md](docs/ux-review.md)).** Landed: untangled
   `--accent`/`--warn` (were an accidental hex duplicate), a real Lucide-based nav icon set, motion
   tokens (`--motion-fast`/`--motion-base`), a real `:active` press state + a global `:focus-visible`
-  fallback, 9 missing icon-button `aria-label`s + 4 `aria-expanded` toggles, and 3 of 4 named
-  legibility-floor violations. **Deliberately not done:** *purposeful* two-column layouts for the
-  still-sparse Fleet/Integrations views (a bigger layout redesign, not a token fix — its own PR), and a
-  full sweep of the ~90 other `--faint` usages beyond the 4 named examples (tracked under v0.5's
-  "Legibility floor," already shipped for the ones that carried meaning).
+  fallback, 9 missing icon-button `aria-label`s + 4 `aria-expanded` toggles, and all 4 named
+  legibility-floor violations (the folder-picker hint was the last holdout). The two pieces deferred
+  for their own PR are now in too: purposeful two-column layouts for Fleet (roster left, an aggregate
+  utilization/cost-by-provider panel right) and Integrations (a real catalog grid, not a 640px-capped
+  single column); and a full sweep of the ~90 remaining `--faint` usages — text that carries meaning
+  (costs, counts, attribution, table headers, status/hint copy) moved to `--muted`, pure decoration
+  (carets, dismiss icons, timestamps, disabled marks, placeholders, structural dividers) stayed
+  `--faint`, matching the standard v0.5's "Legibility floor" sweep set.
 - [~] **🔗 Per-project live preview — "see what it builds", any software.** Phase 1 (web/sites) shipped:
   project + per-run preview managers, descriptor→heuristic→agent-assisted recipe resolution
   (`.skynet/preview.json`), refresh-on-merge, and a resizable split-screen dock ⇄ modal reachable from a
@@ -345,10 +348,13 @@ consensus runs just got unblocked), then remaining ease-of-use work, then the lo
   v0 MCP tools that already ship under v4 (`list_memory`/`add_memory`/`delete_memory`/`refresh_memory`).
 
 **⭐ Cross-vendor consensus runs (signature bet):**
-- [ ] Fire the same task at Claude + Codex + Gemini in parallel, auto-diff the results, keep/merge the winner, or
-  have them peer-review each other. The vendor-neutral seam is what makes true cross-*vendor* bake-offs
-  possible (rivals' "councils" are single-tool). **Now unblocked** — the multi-provider runners this needed
-  (v1: Codex/Gemini/Cursor/Copilot/Hermes/OpenCode/Kimi Code) have all landed.
+- [~] Fire the same task at 2+ providers in parallel, each in its own worktree off the same base
+  commit, auto-diff the results, and keep/merge the winner — landed (`Orchestrator.startBakeoff`,
+  `TaskRun`/`Task`/`HitlItem.bakeoffId`, the "Bake-off ⇉" board action + N-way comparison view). The
+  vendor-neutral seam is what makes true cross-*vendor* bake-offs possible (rivals' "councils" are
+  single-tool). Having them **peer-review each other** instead of a human picking is still open — the
+  schema (a bare `bakeoffId` grouping key, not a rigid one-shot entity) was deliberately left room for
+  it, but the review pipeline itself isn't built.
 
 **Easier to use than anyone else:**
 - [~] **Project assistant → co-operator (actions from chat).** Steward (the shared brain,

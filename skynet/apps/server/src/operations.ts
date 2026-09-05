@@ -1482,6 +1482,7 @@ export class Operations {
       description: input.description?.trim() || null,
       state: "backlog",
       runId: null,
+      bakeoffId: null,
       autoPick: false,
       assessment: null,
       assessmentEffort: null,
@@ -2105,6 +2106,13 @@ export class Operations {
     const project = await this.store.getProject(projectId);
     if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
     return this.orchestrator.assignTask(projectId, tid);
+  }
+
+  /** Fire the same task at 2+ providers in parallel — see Orchestrator.startBakeoff. */
+  async startBakeoff(ws: string, projectId: string, tid: string, providerIds: TaskRun["provider"][]): Promise<TaskRun[]> {
+    const project = await this.store.getProject(projectId);
+    if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
+    return this.orchestrator.startBakeoff(projectId, tid, providerIds);
   }
 
   /**
@@ -3180,6 +3188,7 @@ export class Operations {
         // normally, same as any other newly-created task (see S7 spec).
         state: "backlog",
         runId: null,
+        bakeoffId: null,
         autoPick: false,
         assessment: null,
         assessmentEffort: t.effort,
@@ -3554,6 +3563,7 @@ export class Operations {
       id: this.uid("q-roadmap"),
       workspaceId: proposal.workspaceId,
       runId: `roadmap:${proposal.id}`,
+      bakeoffId: null,
       projectId: proposal.projectId,
       roadmapProposalId: proposal.id,
       kind: "roadmap_edit",

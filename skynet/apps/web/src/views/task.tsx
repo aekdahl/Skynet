@@ -374,6 +374,17 @@ export function TaskDetail({
           >
             ⇱ Chat in dock
           </button>
+          {agent.bakeoffId && (
+            <button
+              className="btn btn-ghost btn-sm"
+              title="This run is (or was) one contestant in a cross-vendor bake-off — compare it against the others."
+              onClick={() =>
+                window.dispatchEvent(new CustomEvent("skynet:open-bakeoff", { detail: { bakeoffId: agent.bakeoffId } }))
+              }
+            >
+              ⇉ View bake-off
+            </button>
+          )}
           {/* Undo — the reversibility that lets an operator stop pre-clearing
               every merge. Only ever shown for a run that actually landed. */}
           {agent.merge && !agent.merge.revertedAt && (
