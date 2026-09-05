@@ -116,6 +116,7 @@ named one, for traceability back through git history.
 8. **Per-project agent instructions (house rules)** — a per-project instructions field on every prompt, plus a shared context assembler (goal, feature, sibling-run digest).
 9. **Project Context** — pasted/uploaded notes, emails, and docs condensed into a short primer grounding both task prompts and project chat.
 10. **Per-project isolation for credentials & GitHub identity** — a project can pin its own LLM credential and GitHub PAT; two real enforcement gaps found and fixed (triage/review picking sites bypassing the key allowlist, and `mergePr` never honoring the pinned GitHub credential).
+11. **Charter-assisted project creation** — creating a project drafts a short LLM intake (goals, non-goals, risks, constraints, definition of done) via the operator's own key/secret store (one cheap, metered call), which the operator corrects and approves before create. See [docs/dev-team-blueprint.md](docs/dev-team-blueprint.md) §1.
 
 ## v3 — Triggers & integrations
 

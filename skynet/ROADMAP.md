@@ -48,8 +48,8 @@ are both *confirmed, pre-existing* issues (one already caused real data loss) wi
 close these before anything else compounds on top of them. **(2) Memory v0** (nothing has shipped here
 yet, and it's the wedge that keeps us from being "just another orchestrator") **+ Cross-vendor consensus
 runs** (provider breadth landed — Codex/Gemini/Cursor/Copilot/Hermes/OpenCode/Kimi Code — so this
-signature bet is now unblocked, no longer gated on it). **(3) v1.5 ease-of-use** (Charter-assisted project
-creation, the remaining operator-ergonomics/design-token tail) **+ desktop code-signing** (the last GTM
+signature bet is now unblocked, no longer gated on it). **(3) v1.5 ease-of-use** (the remaining
+operator-ergonomics/design-token tail) **+ desktop code-signing** (the last GTM
 blocker on the committed release — mac auto-update silently no-ops without it). Provider breadth and the
 Governance-to-SOTA launch wedge — the prior #1/#2 here — are both essentially done; see
 [the archive](ROADMAP-ARCHIVE.md). Everything below stays directional.
@@ -70,9 +70,8 @@ Items are ranked PMF > Platform > Product within each batch:
 | | 3 | Desktop code-signing (macOS + Windows) | GTM |
 | | 4 | Preview Phase 2 — service-container runtime + auto-rebuild on merge | Product |
 | **N+2** | 1 | Memory v0 — workspace-scoped MCP read/write server | Platform |
-| | 2 | Charter-assisted project creation | Platform |
-| | 3 | Autonomy telemetry dashboard (ZTMR, HITL volume, resolution time) | PMF |
-| | 4 | Plan entity + project view panel (Product Steward foundation) | Platform |
+| | 2 | Autonomy telemetry dashboard (ZTMR, HITL volume, resolution time) | PMF |
+| | 3 | Plan entity + project view panel (Product Steward foundation) | Platform |
 
 Legend: 🔬 = needs an LLM / open research · 🔗 = has a design brief · ⛓ = depends on earlier version ·
 🏢 = hosted-only (deferred; **not** needed for the local desktop release).
@@ -320,11 +319,6 @@ just got unblocked), then remaining ease-of-use work, then the lowest-urgency UI
   `Project.roadmapPath` so the Roadmap tab (and Steward's own grounding) can point at any repo-relative
   file, not just `ROADMAP.md`. **Remaining:** broader action coverage (fleet ops, credentials) +
   Telegram parity on the newer actions.
-- [ ] **Charter-assisted project creation** — creating a project is a short LLM-drafted intake, not a
-  name field: goals, non-goals, risks, constraints, definition of done — operator corrects and approves
-  (the Charter). Uses the **user's own key** via the existing secret store (one cheap call; metered).
-  The Charter is what the auto dev team (v2 north star) later sizes itself from, and what **auto
-  task/milestone proposal** plans against. See [docs/dev-team-blueprint.md](docs/dev-team-blueprint.md) §1.
 - [~] **Chat → canvas handoff, zero cold start** — a reply can carry a deep link straight into the exact
   web-app view (project/task pre-focused) instead of cramming it into a chat bubble. **Desktop half
   shipped:** a `skynet://` OS protocol handler (`app.setAsDefaultProtocolClient`), handling both macOS's
