@@ -299,6 +299,8 @@ export interface Store extends StoreState {
   assignTask: (projectId: string, taskId: string) => Promise<TaskRun | null>;
   // Cross-vendor consensus run: fire the task at 2+ providers in parallel.
   startBakeoff: (projectId: string, taskId: string, providerIds: ProviderId[]) => Promise<TaskRun[] | null>;
+  // Bake-off peer review: have an agent compare the siblings and pick a winner.
+  requestBakeoffJudgment: (projectId: string, taskId: string) => Promise<void>;
   dismissTaskLint: (projectId: string, taskId: string) => Promise<void>;
   answerClarification: (projectId: string, taskId: string, answer: string) => Promise<void>;
   // Momentum Board (Phase 5) — accept a suggested_subtask Proposal into a real
@@ -972,6 +974,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             return null;
           }
           throw e;
+        }
+      },
+      requestBakeoffJudgment: async (projectId, taskId) => {
+        try {
+          await api.requestBakeoffJudgment(projectId, taskId);
+        } catch (e) {
+          if (e instanceof api.ApiError) toast(serverMessage(e, "Couldn't judge the bake-off."));
         }
       },
       dismissTaskLint: async (projectId, taskId) => {

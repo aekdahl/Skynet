@@ -26,6 +26,7 @@ import { decideAutoApproval } from "./approval-policy.js";
 import { resolveActivePolicy } from "./command-policy.js";
 import { isManagerDelegated, resolveMergeTarget } from "./derive/merge-target.js";
 import { parseReviewVerdict, extractJsonObject, REVIEW_OUTPUT_INSTRUCTION, parseReviewProposals, type ProposedTask } from "./review-verdict.js";
+import { parseComparativeVerdict, comparativeReviewInstruction } from "./bakeoff-verdict.js";
 import { parseBreakerVerdict, BREAKER_OUTPUT_INSTRUCTION, type BreakerVerdictOut } from "./breaker-verdict.js";
 import { parseInjectionVerdict, buildInjectionPrompt } from "./injection-firewall.js";
 import { parseDiffWalkthrough, DIFF_WALKTHROUGH_INSTRUCTION, DIFF_WALKTHROUGH_SYSTEM } from "./diff-walkthrough.js";
@@ -148,6 +149,25 @@ export class NoReviewerAvailableError extends Error {
   constructor() {
     super("No other agent is free to review this right now — try again once one is idle, or review it yourself.");
     this.name = "NoReviewerAvailableError";
+  }
+}
+
+/**
+ * requestBakeoffJudgment()'s failure modes — the N-way sibling of
+ * requestReview()'s errors above. `NoReviewerAvailableError` is reused as-is
+ * (same honest "no eligible agent free right now" shape); these two cover
+ * the bake-off-specific gates it doesn't.
+ */
+export class NoOpenBakeoffReviewError extends Error {
+  constructor() {
+    super("This bake-off isn't ready to judge yet — not every sibling has finished with a diff to compare.");
+    this.name = "NoOpenBakeoffReviewError";
+  }
+}
+export class BakeoffAlreadyJudgedError extends Error {
+  constructor(by: string, winnerRunId: string | null, reason: string) {
+    super(winnerRunId ? `Already judged by ${by} — picked ${winnerRunId}: ${reason}` : `Already judged by ${by} — flagged for a human: ${reason}`);
+    this.name = "BakeoffAlreadyJudgedError";
   }
 }
 
@@ -5888,8 +5908,15 @@ export class Orchestrator {
             //    `p.autonomy` — verdict recorded either way; auto-resolve
             //    only when the project has opted in to autonomous spending.
             //    Skip tasks that already carry a verdict (idempotent) so we
-            //    don't rewrite the same LLM call every tick.
-            const review = mine.find((t) => t.state === "review" && t.runId && !t.reviewVerdict);
+            //    don't rewrite the same LLM call every tick. Excludes a task
+            //    with an in-flight bake-off (`bakeoffId` set) — that task's
+            //    `state` flips to "review" as soon as its FIRST sibling
+            //    finishes, long before the others do, and `runId` only ever
+            //    points at the anchor sibling; letting this branch loose on
+            //    it would arbitrarily auto-approve whichever sibling happened
+            //    to finish first instead of a real N-way comparison (see the
+            //    bake-off judge step below, which owns that task instead).
+            const review = mine.find((t) => t.state === "review" && t.runId && !t.reviewVerdict && !t.bakeoffId);
             if (review?.runId) {
               // The reviewer must NOT be the agent that did the work — a run
               // reviewing itself is a rubber-stamp that opens a PR without a real
@@ -5904,6 +5931,34 @@ export class Orchestrator {
                   (h) => h.runId === review.runId && !h.resolvedAt,
                 );
                 if (open) await this.autoReview(ws, reviewer, review, open, p.autonomy);
+              }
+            }
+            // 4) Judge a finished cross-vendor bake-off — the N-way
+            //    comparative sibling of the single-run review step above.
+            //    Runs REGARDLESS of `p.autonomy` for the same reason: recording
+            //    a verdict is diagnostic (an LLM consult), not a spending
+            //    action — the auto-resolve-the-winner step inside
+            //    autoJudgeBakeoff stays gated on `p.autonomy`. Waits for EVERY
+            //    sibling to reach `review` (each one's own diff HITL is raised
+            //    independently as it finishes) rather than the shared task's
+            //    `state`, which already flipped to "review" after just the
+            //    first sibling — see the comment on `review` above.
+            const bakeoff = mine.find((t) => t.bakeoffId && !t.bakeoffVerdict);
+            if (bakeoff?.bakeoffId) {
+              const siblings = (await this.store.listRuns(ws)).filter((r) => r.bakeoffId === bakeoff.bakeoffId);
+              if (siblings.length > 1 && siblings.every((r) => r.status === "review")) {
+                // No participant in this bake-off may judge its own family.
+                const participantIds = new Set(siblings.map((r) => r.agentId));
+                const judge = projectIdle.find((a) => !participantIds.has(a.id) && a.canReview !== false);
+                if (judge) {
+                  const queue = await this.store.listQueue(ws);
+                  const hitls = siblings
+                    .map((r) => queue.find((h) => h.runId === r.id && h.kind === "diff" && !h.resolvedAt))
+                    .filter((h): h is HitlItem => !!h);
+                  if (hitls.length === siblings.length) {
+                    await this.autoJudgeBakeoff(ws, judge, bakeoff, siblings, hitls, p.autonomy);
+                  }
+                }
               }
             }
           } catch (err) {
@@ -7012,6 +7067,97 @@ export class Orchestrator {
   }
 
   /**
+   * The N-way comparative sibling of `autoReview` above: given every sibling
+   * of a finished cross-vendor bake-off, has `judge` (an agent that is NOT a
+   * participant) compare them and pick a winner. Deliberately does NOT offer
+   * a deepReview/breakerReview path — those are single-run verifier passes,
+   * not a comparison; a plain `consult` over each sibling's already-computed
+   * `DiffSummary` (never N raw patches — keeps the prompt small) is the whole
+   * mechanism. ALWAYS records `Task.bakeoffVerdict` (an unreadable/undecided
+   * reply is `winnerRunId: null`, never guessed) so the human audit trail
+   * exists regardless of outcome; only APPROVES the winner's diff HITL (which
+   * flows into the existing, unmodified `deliver()` → `collapseBakeoff` path)
+   * when `canResolve` — same autonomy lever `autoReview` already uses.
+   */
+  private async autoJudgeBakeoff(
+    ws: string,
+    judge: Agent,
+    task: Task,
+    siblings: TaskRun[],
+    hitls: HitlItem[],
+    canResolve: boolean,
+  ): Promise<void> {
+    let winnerRunId: string | null = null;
+    let reason = "flagged for review — the judge's provider doesn't support consult.";
+    try {
+      const project = await this.store.getProject(task.projectId);
+      const provider = await this.getProvider(judge.provider);
+      if (provider.consult) {
+        const apiKey = await secretService.resolve(ws, judge.credentialId ?? judge.provider);
+        const baseUrl = await secretService.resolveEndpoint(ws, judge.credentialId ?? judge.provider).catch(() => undefined);
+        const rates = ratesFor(baseUrl, judge.model);
+        const feature = task.featureId ? await this.store.getFeature(task.featureId).catch(() => undefined) : undefined;
+        // Opaque labels ("A"/"B"/...), never real runIds — keeps the prompt
+        // short and gives the model nothing to malform when it answers.
+        const labels = siblings.map((_, i) => String.fromCharCode(65 + i));
+        const labelToRunId = new Map(labels.map((l, i) => [l, siblings[i]!.id]));
+        const sections = siblings.map((run, i) => {
+          const summary =
+            hitls.find((h) => h.runId === run.id)?.diff?.walkthrough?.summary ??
+            hitls.find((h) => h.runId === run.id)?.diff?.mergeBrief?.summary ??
+            "(no summary available)";
+          const risks = hitls.find((h) => h.runId === run.id)?.diff?.mergeBrief?.risks ?? [];
+          const files = hitls.find((h) => h.runId === run.id)?.diff?.files ?? [];
+          return [
+            `=== Candidate ${labels[i]} (${run.provider} · ${run.model}) ===`,
+            `Files touched: ${files.slice(0, 20).join(", ") || "(none listed)"}`,
+            `Summary: ${summary}`,
+            risks.length > 0 ? `Risks: ${risks.join("; ")}` : null,
+          ]
+            .filter((line): line is string => !!line)
+            .join("\n");
+        });
+        const context = sections.join("\n\n").slice(0, 12_000);
+        const reply = await provider.consult(
+          { task: buildAgentContext({ project, feature, body: task.text }), model: judge.model, cwd: config.runnerCwd, apiKey, baseUrl, rates, context },
+          `Compare these ${siblings.length} independent attempts at the SAME task: "${task.text}". ${comparativeReviewInstruction(labels)}`,
+        );
+        const verdict = parseComparativeVerdict(reply, labelToRunId);
+        winnerRunId = verdict.winnerRunId;
+        reason = verdict.reason;
+      }
+    } catch (err) {
+      winnerRunId = null;
+      reason = `bake-off judge consult failed: ${friendlyConsultError(err as Error)}`;
+    }
+    // Re-validate against fresh state before writing — same DEF-001 race guard
+    // as autoReview: the consult above is slow, and a human (or a different
+    // tick) may have picked a winner in the meantime.
+    const freshTask = await this.store.getTask(task.id);
+    if (!freshTask || freshTask.bakeoffId !== task.bakeoffId || freshTask.bakeoffVerdict) return;
+    const judgeName = judge.name || judge.id;
+    const at = now();
+    if (task.runId) {
+      const suffix = winnerRunId ? (canResolve ? "picked (integrating)" : "picked (awaiting human)") : "flagged for a human";
+      await this.hub.runLog(task.runId, `⟳ bake-off judged by ${judgeName} — ${suffix}`, reason).catch(() => undefined);
+    }
+    const verdict = { winnerRunId, reason, by: judgeName, at };
+    const withVerdict = await this.hub.patchTask(freshTask.id, (t) =>
+      t.bakeoffId === task.bakeoffId && !t.bakeoffVerdict ? { bakeoffVerdict: verdict } : null,
+    );
+    if (!withVerdict) return; // lost the race — someone else already judged/collapsed it
+    if (winnerRunId && canResolve) {
+      const winnerHitl = hitls.find((h) => h.runId === winnerRunId);
+      const freshHitl = winnerHitl ? await this.store.getHitl(winnerHitl.id) : undefined;
+      if (freshHitl && !freshHitl.resolvedAt) {
+        const resolution: Resolution = { action: "approve", optionIndex: null, guidance: null, targetBranch: null, memoryNote: null, resetWork: false, by: "autonomy", at };
+        const resolved = await this.hub.resolveHitl(freshHitl.id, resolution);
+        if (resolved && resolved.resolution?.at === resolution.at) await this.deliver(freshHitl, resolution);
+      }
+    }
+  }
+
+  /**
    * Manual "Request review" — an operator forcing a review pass on demand,
    * instead of waiting for a periodic tick to happen to find an idle
    * reviewer (the periodic path in tick() above only reviews opportunistically
@@ -7042,6 +7188,34 @@ export class Orchestrator {
     );
     if (!reviewer) throw new NoReviewerAvailableError();
     await this.autoReview(ws, reviewer, task, hitl, project?.autonomy ?? false);
+  }
+
+  /**
+   * Manual "Judge now" — the bake-off sibling of `requestReview` above: an
+   * operator forcing the N-way comparison on demand instead of waiting for a
+   * periodic tick to find every sibling finished AND an eligible judge idle
+   * at the same moment. Same honest-error shape as `requestReview`.
+   */
+  async requestBakeoffJudgment(ws: string, taskId: string): Promise<void> {
+    const task = await this.store.getTask(taskId);
+    if (!task || task.workspaceId !== ws || !task.bakeoffId) throw new NoOpenBakeoffReviewError();
+    if (task.bakeoffVerdict) {
+      throw new BakeoffAlreadyJudgedError(task.bakeoffVerdict.by, task.bakeoffVerdict.winnerRunId, task.bakeoffVerdict.reason);
+    }
+    const siblings = (await this.store.listRuns(ws)).filter((r) => r.bakeoffId === task.bakeoffId);
+    if (siblings.length < 2 || !siblings.every((r) => r.status === "review")) throw new NoOpenBakeoffReviewError();
+    const queue = await this.store.listQueue(ws);
+    const hitls = siblings
+      .map((r) => queue.find((h) => h.runId === r.id && h.kind === "diff" && !h.resolvedAt))
+      .filter((h): h is HitlItem => !!h);
+    if (hitls.length !== siblings.length) throw new NoOpenBakeoffReviewError();
+    const participantIds = new Set(siblings.map((r) => r.agentId));
+    const project = await this.store.getProject(task.projectId);
+    const judge = (await this.store.listAgents(ws)).find(
+      (a) => a.status === "idle" && !participantIds.has(a.id) && a.canReview !== false && this.keyAllowedForProject(a, project?.enabledRunnerCredentialIds),
+    );
+    if (!judge) throw new NoReviewerAvailableError();
+    await this.autoJudgeBakeoff(ws, judge, task, siblings, hitls, project?.autonomy ?? false);
   }
 
   /**
@@ -7138,6 +7312,7 @@ export class Orchestrator {
       assessmentRisks: [],
       clarification: null,
       reviewVerdict: null,
+      bakeoffVerdict: null,
       assignment: { mode: "unassigned", agentIds: [] },
       order: inProject.length,
       archived: false,

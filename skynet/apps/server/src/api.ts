@@ -72,6 +72,8 @@ import {
   NoReviewerAvailableError,
   NothingToReviewError,
   NoTriageTargetError,
+  NoOpenBakeoffReviewError,
+  BakeoffAlreadyJudgedError,
   type Orchestrator,
 } from "./orchestrator.js";
 import {
@@ -132,6 +134,8 @@ function fail(reply: FastifyReply, err: unknown): FastifyReply {
     err instanceof NoReviewerAvailableError ||
     err instanceof NothingToReviewError ||
     err instanceof NoTriageTargetError ||
+    err instanceof NoOpenBakeoffReviewError ||
+    err instanceof BakeoffAlreadyJudgedError ||
     err instanceof ProposalAlreadyResolvedError ||
     err instanceof VersionConflictError
   ) {
@@ -1165,6 +1169,19 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
   app.post<{ Params: { id: string; tid: string } }>("/api/projects/:id/tasks/:tid/request-review", async (req, reply) => {
     try {
       await ops.requestReview(ws(req), req.params.tid);
+      return reply.code(204).send();
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
+  // Manual "Judge now" — the bake-off sibling of "Request review" above: force
+  // the N-way comparison pass on an in-flight cross-vendor bake-off now,
+  // rather than waiting for a periodic tick to find every sibling finished
+  // and an eligible judge idle at the same moment. Same honest-409 shape.
+  app.post<{ Params: { id: string; tid: string } }>("/api/projects/:id/tasks/:tid/request-bakeoff-review", async (req, reply) => {
+    try {
+      await ops.requestBakeoffJudgment(ws(req), req.params.tid);
       return reply.code(204).send();
     } catch (err) {
       return fail(reply, err);

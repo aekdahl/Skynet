@@ -595,6 +595,30 @@ kbd {
 .dv-comment-file { font-style: italic; }
 .hitl-ctx-diff { flex-direction: column; align-items: stretch; gap: var(--space-4); }
 
+/* Bake-off comparison — N sibling diffs side by side (BakeoffView). */
+.bakeoff-verdict {
+  margin-top: var(--space-8); padding: var(--space-8) var(--space-12); font-size: var(--fz-13); color: var(--text);
+  background: color-mix(in oklch, var(--accent), transparent 94%);
+  border: 1px solid color-mix(in oklch, var(--accent), transparent 60%);
+  border-radius: 8px;
+}
+.bakeoff-verdict strong { color: var(--accent); }
+.bakeoff-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: var(--space-16); margin-top: var(--space-20); align-items: start; }
+.bakeoff-col {
+  display: flex; flex-direction: column; gap: var(--space-12);
+  background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: var(--space-16);
+}
+.bakeoff-col-recommended { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.bakeoff-col-head { display: flex; align-items: center; gap: var(--space-8); flex-wrap: wrap; }
+.bakeoff-col-title {
+  font-family: var(--font-ui); font-weight: 600; font-size: var(--fz-13); color: var(--text);
+  background: none; border: none; cursor: pointer; padding: 0; text-align: left;
+}
+.bakeoff-col-title:hover { color: var(--accent); }
+.bakeoff-col-recommend-badge { font-size: var(--fz-11); font-weight: 600; color: var(--accent); white-space: nowrap; }
+.bakeoff-col-status { margin-left: auto; font-size: var(--fz-11); color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.bakeoff-pick { align-self: flex-start; }
+
 /* Decision chips — approval risk reasons ("Flagged") / merge conflict files */
 .hitl-flags, .qcard-flags { display: flex; flex-wrap: wrap; gap: var(--space-4); align-items: center; }
 .qcard-flags { margin: var(--space-4) 0; }

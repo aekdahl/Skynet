@@ -30,8 +30,9 @@ funnel; governance is the launch wedge; portable, open memory is the moat.**
 found these rare-to-absent), and where they live:
 1. **Open portable memory — one second brain across every agent** (v4; thin v0 in v1.5): user-owned,
    cross-vendor, exposed as an **MCP memory server any tool can read/write, even outside Skynet**.
-2. **Cross-vendor consensus runs** (v1.5, fan-out+diff+merge landed): same task on 2+ providers, auto-diff,
-   keep/merge the winner. Having them peer-review each other instead of a human picking is still open.
+2. **Cross-vendor consensus runs** (v1.5, landed): same task on 2+ providers, auto-diff, and an eligible
+   fleet agent peer-reviews the siblings and picks a winner (a human still confirms unless the project
+   is autonomous) — keep/merge follows automatically.
 3. **Prompt-injection / tool-poisoning firewall** (v1, landed): gate tool calls steered by untrusted content the
    agent read (issue / web page / dependency). The category's first agent-security layer.
 4. **Provably-improving fleet** (v5): measure which memory + task phrasings one-shot vs. churn, promote
@@ -372,13 +373,16 @@ consensus runs just got unblocked), then remaining ease-of-use work, then the lo
   v0 MCP tools that already ship under v4 (`list_memory`/`add_memory`/`delete_memory`/`refresh_memory`).
 
 **⭐ Cross-vendor consensus runs (signature bet):**
-- [~] Fire the same task at 2+ providers in parallel, each in its own worktree off the same base
+- [x] Fire the same task at 2+ providers in parallel, each in its own worktree off the same base
   commit, auto-diff the results, and keep/merge the winner — landed (`Orchestrator.startBakeoff`,
   `TaskRun`/`Task`/`HitlItem.bakeoffId`, the "Bake-off ⇉" board action + N-way comparison view). The
   vendor-neutral seam is what makes true cross-*vendor* bake-offs possible (rivals' "councils" are
-  single-tool). Having them **peer-review each other** instead of a human picking is still open — the
-  schema (a bare `bakeoffId` grouping key, not a rigid one-shot entity) was deliberately left room for
-  it, but the review pipeline itself isn't built.
+  single-tool). **Peer-review now also landed**: an eligible non-participant fleet agent
+  (`Orchestrator.autoJudgeBakeoff`) compares every sibling's diff summary and picks a winner —
+  ALWAYS records `Task.bakeoffVerdict` as an audit trail (an unreadable reply flags for a human,
+  never guesses), and only auto-resolves the pick when the project is autonomous, same lever
+  `autoReview` already uses. A human can still force it on demand ("Judge now") or just pick manually
+  — the agent's recommendation is shown, never forced.
 
 **Easier to use than anyone else:**
 - [~] **Project assistant → co-operator (actions from chat).** Steward (the shared brain,
