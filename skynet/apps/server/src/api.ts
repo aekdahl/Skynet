@@ -24,6 +24,7 @@ import {
   DryRunPolicyRequest,
   ProviderId,
   ResolveRequest,
+  ResolveBatchRequest,
   ChatRequest,
   SavePolicyVersionRequest,
   InformRequest,
@@ -391,6 +392,22 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
     try {
       return await ops.resolveHitl(ws(req), req.params.id, body.data, req.principal!.operatorId);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
+  // Gate batching — resolve several open decisions (same repeatable
+  // command-approval gate raised across N runs) in one call. A distinct
+  // static route, not `/api/hitl/:id/resolve` with a list — Fastify's router
+  // matches static segments before parameterized ones regardless of
+  // registration order, so there's no ambiguity between the two.
+  app.post("/api/hitl/resolve-batch", async (req, reply) => {
+    const body = ResolveBatchRequest.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+    try {
+      const { ids, ...rest } = body.data;
+      return await ops.resolveHitlBatch(ws(req), ids, rest, req.principal!.operatorId);
     } catch (err) {
       return fail(reply, err);
     }

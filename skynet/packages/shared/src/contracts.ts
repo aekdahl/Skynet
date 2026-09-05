@@ -1736,6 +1736,19 @@ export const ResolveRequest = z.object({
 });
 export type ResolveRequest = z.infer<typeof ResolveRequest>;
 
+// Gate batching — resolve several open decisions that are the SAME
+// repeatable policy call (today: identical command-approval gates raised
+// across N runs — see apps/web/src/kanban/gate-batching.ts's grouping key)
+// in one request instead of clicking through each individually. Reuses
+// ResolveRequest's shape exactly — Operations.resolveHitlBatch calls the
+// existing single-item resolveHitl once per id, so every action/side-effect
+// (deliver, approve-and-remember, the command denylist re-check) stays
+// correct with no duplicated logic.
+export const ResolveBatchRequest = ResolveRequest.extend({
+  ids: z.array(z.string()).min(1),
+});
+export type ResolveBatchRequest = z.infer<typeof ResolveBatchRequest>;
+
 // A plain (non-conflict) roadmap_edit HITL's two actions — deliberately its
 // OWN request type rather than reusing ResolveRequest's full action set
 // (option/reassign/push/modify don't apply to a proposal with no live agent

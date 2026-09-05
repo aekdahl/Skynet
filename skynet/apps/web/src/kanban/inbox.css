@@ -282,6 +282,37 @@
 .di-open-link:hover { color: var(--ak-human); }
 
 .di-audit-link { font-size: 12.5px; color: var(--ak-text-secondary); }
+
+/* ── batched decision card (policy-driven gate batching) ── */
+.di-batch-group { margin-bottom: var(--ak-sp-8); }
+.di-batch-card { border-color: color-mix(in oklch, var(--ak-machine), var(--ak-border) 55%); }
+.di-batch-count {
+  font-size: 10px;
+  color: var(--ak-machine);
+  background: color-mix(in oklch, var(--ak-machine), transparent 88%);
+  border: 1px solid color-mix(in oklch, var(--ak-machine), transparent 55%);
+  border-radius: var(--ak-radius-pill);
+  padding: 1px var(--ak-sp-8);
+}
+.di-batch-toggle {
+  align-self: flex-start;
+  background: none; border: none; padding: 0;
+  font-family: var(--ak-font-mono);
+  font-size: 11px; color: var(--ak-text-muted);
+  cursor: pointer;
+}
+.di-batch-toggle:hover { color: var(--ak-text-secondary); }
+.di-batch-members { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--ak-sp-4); }
+.di-batch-member {
+  display: flex; align-items: center; gap: var(--ak-sp-8);
+  font-size: 11.5px; color: var(--ak-text-secondary);
+  padding: var(--ak-sp-4) var(--ak-sp-8);
+  border-radius: var(--ak-radius-sm);
+  background: var(--ak-surface-0);
+}
+.di-batch-member-project { color: var(--ak-text-muted); }
+.di-batch-member-task { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.di-batch-member-wait { color: var(--ak-text-faint); }
 .di-link-btn { background: none; border: none; padding: 0; color: var(--ak-human); font-size: 12.5px; cursor: pointer; text-decoration: underline; }
 
 /* ── roadmap_edit card (TASK 30) ──────────────────────────────────────────
