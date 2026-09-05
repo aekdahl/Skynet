@@ -62,8 +62,7 @@ Items are ranked PMF > Platform > Product within each batch:
 | | 2 | ✅ 🐛 Task-write atomicity — fixed, PR #649 (see v1 section) | Reliability |
 | | 3 | Memory v0 — operator-authored facts, injected per project | Platform |
 | | 4 | deep-review / breaker-review settings UI toggle (both already built, PATCH-API-only today) | PMF |
-| | 5 | Mass inform — Fleet/Project UI (multi-select + whole-project) | Product |
-| | 6 | First-run onboarding telemetry (anonymous install events) | PMF |
+| | 5 | First-run onboarding telemetry (anonymous install events) | PMF |
 | **N+1** | 1 | Cross-vendor consensus runs — peer-review pass (fan-out+diff+merge landed) | Platform |
 | | 2 | Memory v0 — decision-derived fact capture from `hitl_audit` | Platform |
 | | 3 | Desktop code-signing (macOS + Windows) — engineering done, blocked on certs | GTM |
@@ -182,12 +181,22 @@ Ordered by priority (urgent bug → launch-wedge remainder → product debt → 
   review, and Copilot's move to real structured-event dispatch. **Remaining:** a full `allowedTools`
   allow-list (the safer deny-list landed first, on purpose), `settingSources` (CLAUDE.md) support, and
   token streaming for Codex/Copilot (neither exposes a chunked wire format to stream from).
-- [~] **Mass inform** — select multiple agents (or a whole project) and attach a note that rides the
-  *next* prompt each already receives, no extra turn. Shipped: the `inform` interaction type
-  (`POST /api/runs/inform`), live-session push for Claude, buffered-note delivery for the CLI runners
-  (Codex/Gemini/Hermes/Cursor). Copilot doesn't implement it yet. **Remaining:** the Fleet/Project UI
-  (multi-select on Fleet, whole-project on the project page); optional "also remember" → area/workspace
-  memory promotion is still v4, not started.
+- [x] **Mass inform.** Select multiple agents (or a whole project) and attach a note that rides the
+  *next* prompt each already receives, no extra turn. `InformRequest` (contracts.ts) already accepted
+  BOTH an explicit `runIds[]` and a `projectId` in one call (unioned server-side,
+  `Operations.informRuns`), so neither UI needed a client-side loop. **Fleet** (`views/fleet.tsx`): a
+  "📣 Mass inform" toggle (shown only when at least one agent is busy — an idle agent has no next turn
+  to ride a note on) puts each `BusyAgentCard` into a checkbox-select mode; the shared `InformComposer`
+  panel resolves each selected agent to its live run id and calls `informRuns({ note, runIds })` in one
+  request. **Project** (`views/project.tsx`): a "📣 Inform active agents" toolbar button (shown only when
+  the project has ≥1 live run) opens the same `InformComposer`, calling `informRuns({ note, projectId })`
+  — every live run in the project, no per-run selection needed. Both surfaces toast a real
+  `{informed, skipped}` count back (never a silent no-op for a runner that can't take the note, e.g.
+  Copilot). `informRuns` is allowlisted in `tests/client-coverage.test.ts` with its own documented
+  rationale (needs a real live run on a real provider — no offline journey can produce one); the
+  underlying targeting/union/dedup/skip-when-not-live logic is covered server-side by `inform.test.ts`,
+  and delivery mechanics by `claude-inform.test.ts`/`cli-inform.test.ts`. Optional "also remember" →
+  area/workspace memory promotion stays out of scope, v4.
 - [~] **Remaining providers behind `runner-sdk`.** Codex, Gemini, Cursor, Copilot, Hermes, OpenCode,
   and Kimi Code are all landed as real `CliRunnerProvider`s (usage/cost telemetry, argv/env wiring,
   live-verified against each vendor's current CLI). Reactive breadth from the candidate list
