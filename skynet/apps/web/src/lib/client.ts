@@ -54,6 +54,7 @@ import {
   type ProposeRoadmapChangeRequest,
   type CommitRoadmapLineEditRequest,
   type RoadmapWorkspaceRollup,
+  type AutonomyTelemetryRollup,
   type MemoryFactSummary,
   type CreateMemoryFactRequest,
 } from "@skynet/shared";
@@ -620,6 +621,13 @@ export function scaffoldProjectRoadmap(projectId: string) {
 // access; every project in the response is one this operator can already see.
 export function fetchWorkspaceRoadmapRollup() {
   return req<RoadmapWorkspaceRollup>("GET", "/api/roadmap-rollup");
+}
+
+// ── autonomy telemetry dashboard (ZTMR / HITL volume / resolution time) ────
+// Scoped server-side the same way the roadmap roll-up is — no client filter.
+export function fetchAutonomyTelemetry(windowDays?: number) {
+  const qs = windowDays != null ? `?days=${windowDays}` : "";
+  return req<AutonomyTelemetryRollup>("GET", `/api/autonomy-telemetry${qs}`);
 }
 
 // ── roadmap proposal governance (TASK 30) ────────────────────────────────

@@ -1581,6 +1581,18 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     }
   });
 
+  // ── autonomy telemetry dashboard (ZTMR / HITL volume / resolution time) ──
+  // Read-only rollup, no new write path — see Operations.getAutonomyTelemetryRollup.
+  // Same project-scoping as the roadmap roll-up just above.
+  app.get<{ Querystring: { days?: string } }>("/api/autonomy-telemetry", async (req, reply) => {
+    const windowDays = req.query.days ? Number(req.query.days) : undefined;
+    try {
+      return await ops.getAutonomyTelemetryRollup(ws(req), req.principal!, windowDays);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
   // ── roadmap proposal governance (TASK 30) ────────────────────────────────
   // The plain approve/reject action rides the existing generic
   // POST /api/hitl/:id/resolve (Operations.resolveHitl branches on

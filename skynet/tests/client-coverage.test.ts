@@ -54,6 +54,11 @@ const ALLOW = new Set<string>([
   // a real scaffolded+attributed commit, cross-repo milestone grouping) is
   // covered server-side by tests/roadmap-workspace-rollup.test.ts instead.
   "fetchWorkspaceRoadmapRollup", "scaffoldProjectRoadmap",
+  // Autonomy telemetry dashboard — a read-only, workspace-wide rollup with no
+  // mutation for a journey to click through. Its derivation (ZTMR, gate
+  // volume/resolution time, breaker trips, by-project/by-detent grouping) is
+  // covered directly by tests/autonomy-telemetry-rollup.test.ts.
+  "fetchAutonomyTelemetry",
   // Memory v0, phase 1 — the project Memory tab's list+add. Needs a project
   // genuinely bound to a real git repo, same fixture gap as the roadmap
   // features above; no offline journey has one. The full read+write round
@@ -373,6 +378,12 @@ const ALLOW = new Set<string>([
   // winner) is exercised against a real Orchestrator + throwaway git repo in
   // tests/bakeoff.test.ts.
   "startBakeoff",
+  // The bake-off sibling of requestReview: force the N-way judge pass now
+  // instead of waiting for a periodic tick. Needs the same real multi-sibling
+  // bake-off + idle judge fixture as startBakeoff above; no offline journey
+  // reproduces it. Covered against a real Orchestrator + throwaway git repo
+  // in tests/bakeoff-judge.test.ts.
+  "requestBakeoffJudgment",
   // Governance-to-SOTA — policy-driven gate batching. Needs 2+ open
   // approval gates sharing an identical command to mean anything; no
   // offline journey/acceptance fixture raises two real HITL gates at once.

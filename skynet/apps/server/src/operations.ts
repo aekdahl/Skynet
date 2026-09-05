@@ -88,6 +88,8 @@ import type {
 } from "@skynet/shared";
 import { modelValidForProvider, ProjectCharter as ProjectCharterSchema, WorkspaceSettings } from "@skynet/shared";
 import { type AutonomyDetent, AUTONOMY_DETENT_COST_WEIGHT, detentFor, fieldsForDetent } from "@skynet/shared";
+import type { AutonomyTelemetryRollup } from "@skynet/shared";
+import { computeAutonomyTelemetryRollup } from "./autonomy-telemetry-rollup.js";
 import { DraftTaskPayload, SuggestedRulePayload, SuggestedSubtaskPayload } from "@skynet/shared";
 import { buildReplenishPrompt, parseProposedTasks } from "./steward/replenish.js";
 import { DEFAULT_AUTO_MERGE_POLICY } from "./merge-policy.js";
@@ -3980,6 +3982,20 @@ export class Operations {
     }
 
     return { rows, milestones: groupMilestones(forMilestones), noRoadmapProjects };
+  }
+
+  // ── autonomy telemetry dashboard (roadmap: ZTMR / HITL volume / resolution
+  // time) ─────────────────────────────────────────────────────────────────
+  // Read-only rollup — no new write path. Thin I/O + project-scoping shell
+  // around the pure computation in autonomy-telemetry-rollup.ts (see that
+  // file for the actual field-by-field derivation and its doc comments).
+  // Same template as getWorkspaceRoadmapRollup just above: one
+  // project-scoped fan-out, one typed payload.
+  async getAutonomyTelemetryRollup(ws: string, principal: Principal, windowDays?: number): Promise<AutonomyTelemetryRollup> {
+    const allProjects = await this.store.listProjects(ws);
+    const scoped = projectScope(principal, this, ws).filterProjects(allProjects);
+    const [runs, queue, audit] = await Promise.all([this.store.listRuns(ws), this.store.listQueue(ws), this.store.listAudit(ws)]);
+    return computeAutonomyTelemetryRollup({ projects: scoped, runs, queue, audit, windowDays: windowDays ?? 30, now: now() });
   }
 
   /**
