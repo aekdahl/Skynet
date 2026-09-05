@@ -122,6 +122,10 @@ export class FileStore extends MemoryStore {
       for (const rd of fillArray(d.roadmapDocs, RoadmapDoc, "roadmap doc")) this.roadmapDocs.set(rd.projectId, rd);
       fill(this.roadmapProposals, d.roadmapProposals, RoadmapProposal, "roadmap proposal");
       for (const c of fillArray(d.roadmapLineClaims, RoadmapLineClaim, "roadmap line claim")) this.roadmapLineClaims.set(`${c.projectId}:${c.lineId}`, c);
+      // Telemetry milestones (PMF v1.5) — a bare `${workspaceId}::${kind}` key
+      // set, no schema (server-internal bookkeeping, never sent as-is).
+      if (Array.isArray(d.telemetryMilestones))
+        for (const k of d.telemetryMilestones as unknown[]) if (typeof k === "string") this.telemetryMilestones.add(k);
     } catch {
       // Corrupt or empty file → start fresh; the next flush rewrites it cleanly.
     }
@@ -166,6 +170,7 @@ export class FileStore extends MemoryStore {
       roadmapDocs: [...this.roadmapDocs.values()],
       roadmapProposals: [...this.roadmapProposals.values()],
       roadmapLineClaims: [...this.roadmapLineClaims.values()],
+      telemetryMilestones: [...this.telemetryMilestones],
     };
     try {
       const tmp = `${this.path}.tmp`;

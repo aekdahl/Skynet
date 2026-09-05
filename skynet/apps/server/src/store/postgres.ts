@@ -41,7 +41,7 @@ import type {
 } from "@skynet/shared";
 import { chainAuditRecord } from "../audit-chain.js";
 import { now } from "../config.js";
-import type { Store } from "./store.js";
+import { VersionConflictError, type Store } from "./store.js";
 import type { StoredServiceToken } from "../auth/service-tokens.js";
 import { PROVIDERS } from "./providers.js";
 
@@ -51,6 +51,12 @@ CREATE TABLE IF NOT EXISTS checkpoints (id text PRIMARY KEY, run_id text NOT NUL
 CREATE TABLE IF NOT EXISTS hitl_queue (id text PRIMARY KEY, workspace_id text NOT NULL, data jsonb NOT NULL);
 CREATE TABLE IF NOT EXISTS projects   (id text PRIMARY KEY, workspace_id text NOT NULL, data jsonb NOT NULL);
 CREATE TABLE IF NOT EXISTS tasks      (id text PRIMARY KEY, workspace_id text NOT NULL, data jsonb NOT NULL);
+-- Optimistic-concurrency counter for compare-and-swap writes (see
+-- Store.putTask's expectedVersion param) — a real column, not just the
+-- version carried inside the data JSONB blob, so the CAS check and the
+-- increment happen in the same atomic UPDATE ... WHERE, no read-then-write
+-- race in Postgres itself.
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS version int NOT NULL DEFAULT 1;
 CREATE TABLE IF NOT EXISTS features   (id text PRIMARY KEY, workspace_id text NOT NULL, data jsonb NOT NULL);
 CREATE TABLE IF NOT EXISTS milestones (id text PRIMARY KEY, workspace_id text NOT NULL, data jsonb NOT NULL);
 CREATE TABLE IF NOT EXISTS context_entries (id text PRIMARY KEY, workspace_id text NOT NULL, data jsonb NOT NULL);
@@ -75,6 +81,9 @@ ALTER TABLE hitl_audit ADD COLUMN IF NOT EXISTS hash text;
 ALTER TABLE hitl_audit ADD COLUMN IF NOT EXISTS prev_hash text;
 CREATE TABLE IF NOT EXISTS github_connections (workspace_id text PRIMARY KEY, data jsonb NOT NULL);
 CREATE TABLE IF NOT EXISTS workspace_settings (workspace_id text PRIMARY KEY, data jsonb NOT NULL);
+-- Onboarding telemetry milestones (PMF v1.5) — at most one row per
+-- (workspace, milestone kind); see Store.recordTelemetryMilestone.
+CREATE TABLE IF NOT EXISTS telemetry_milestones (workspace_id text NOT NULL, kind text NOT NULL, at bigint NOT NULL, PRIMARY KEY (workspace_id, kind));
 CREATE TABLE IF NOT EXISTS command_policy_versions (id text PRIMARY KEY, workspace_id text NOT NULL, version int NOT NULL, active boolean NOT NULL DEFAULT false, data jsonb NOT NULL);
 CREATE INDEX IF NOT EXISTS command_policy_versions_ws ON command_policy_versions(workspace_id);
 CREATE TABLE IF NOT EXISTS github_tokens      (workspace_id text PRIMARY KEY, ciphertext text NOT NULL);
@@ -255,9 +264,42 @@ export class PostgresStore implements Store {
   async putProject(p: Project) { await this.put("projects", p.id, p.workspaceId, p); return p; }
   deleteProject(id: string) { return this.del("projects", id); }
 
-  listTasks(ws: string) { return this.list<Task>("tasks", ws); }
-  getTask(id: string) { return this.get<Task>("tasks", id); }
-  async putTask(t: Task) { await this.put("tasks", t.id, t.workspaceId, t); return t; }
+  async listTasks(ws: string): Promise<Task[]> {
+    const { rows } = await this.pool.query<{ data: Task; version: number }>(
+      "SELECT data, version FROM tasks WHERE workspace_id=$1",
+      [ws],
+    );
+    return rows.map((r) => ({ ...r.data, version: r.version }));
+  }
+  async getTask(id: string): Promise<Task | undefined> {
+    const { rows } = await this.pool.query<{ data: Task; version: number }>("SELECT data, version FROM tasks WHERE id=$1", [id]);
+    const r = rows[0];
+    return r ? { ...r.data, version: r.version } : undefined;
+  }
+  // `expectedVersion` undefined → plain upsert, version still monotonically
+  // bumped on conflict (never reset) so a later CAS caller isn't misled.
+  // `expectedVersion` given → the UPDATE's WHERE clause makes the read-check
+  // and the write atomic in Postgres itself; 0 rows affected means someone
+  // else wrote this task first (or it no longer exists) — either way the
+  // caller's assumed baseline is wrong, so it's reported the same way.
+  async putTask(t: Task, expectedVersion?: number): Promise<Task> {
+    if (expectedVersion === undefined) {
+      const { rows } = await this.pool.query<{ version: number }>(
+        `INSERT INTO tasks(id,workspace_id,data,version) VALUES($1,$2,$3::jsonb,1)
+         ON CONFLICT(id) DO UPDATE SET workspace_id=$2, data=$3::jsonb, version=tasks.version+1
+         RETURNING version`,
+        [t.id, t.workspaceId, J(t)],
+      );
+      return { ...t, version: rows[0]!.version };
+    }
+    const { rows } = await this.pool.query<{ version: number }>(
+      `UPDATE tasks SET workspace_id=$2, data=$3::jsonb, version=version+1
+       WHERE id=$1 AND version=$4 RETURNING version`,
+      [t.id, t.workspaceId, J(t), expectedVersion],
+    );
+    if (rows.length === 0) throw new VersionConflictError("task", t.id);
+    return { ...t, version: rows[0]!.version };
+  }
   deleteTask(id: string) { return this.del("tasks", id); }
 
   listFeatures(ws: string) { return this.list<Feature>("features", ws); }
@@ -474,6 +516,18 @@ export class PostgresStore implements Store {
       "INSERT INTO workspace_settings(workspace_id,data) VALUES($1,$2::jsonb) ON CONFLICT(workspace_id) DO UPDATE SET data=$2::jsonb",
       [settings.workspaceId, J(settings)],
     );
+  }
+
+  async recordTelemetryMilestone(ws: string, kind: string, at: number): Promise<boolean> {
+    // ON CONFLICT DO NOTHING (never UPSERT) — rowCount tells us whether this
+    // insert actually happened, i.e. whether this is the FIRST time this
+    // workspace reached this milestone. The unique constraint makes this safe
+    // under concurrent requests, unlike a separate SELECT-then-INSERT check.
+    const { rowCount } = await this.pool.query(
+      "INSERT INTO telemetry_milestones(workspace_id,kind,at) VALUES($1,$2,$3) ON CONFLICT(workspace_id,kind) DO NOTHING",
+      [ws, kind, at],
+    );
+    return (rowCount ?? 0) > 0;
   }
 
   async getAutonomyBreaker(projectId: string): Promise<AutonomyBreaker | undefined> {

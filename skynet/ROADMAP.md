@@ -60,14 +60,14 @@ Items are ranked PMF > Platform > Product within each batch:
 | Batch | # | Item | Track |
 |-------|---|------|-------|
 | **N (now)** | 1 | 🔒 Security hardening — Aug 2026 audit remediation (7 findings, see v1 section) | Security |
-| | 2 | 🐛 Task-write atomicity — confirmed live data loss, needs a design decision (see v1 section) | Reliability |
+| | 2 | ✅ 🐛 Task-write atomicity — fixed, PR #649 (see v1 section) | Reliability |
 | | 3 | Memory v0 — operator-authored facts, injected per project | Platform |
 | | 4 | deep-review / breaker-review settings UI toggle (both already built, PATCH-API-only today) | PMF |
 | | 5 | Mass inform — Fleet/Project UI (multi-select + whole-project) | Product |
 | | 6 | First-run onboarding telemetry (anonymous install events) | PMF |
 | **N+1** | 1 | Cross-vendor consensus runs (same task, 2+ agents, auto-diff) — unblocked now that provider breadth has landed | Platform |
 | | 2 | Memory v0 — decision-derived fact capture from `hitl_audit` | Platform |
-| | 3 | Desktop code-signing (macOS + Windows) | GTM |
+| | 3 | Desktop code-signing (macOS + Windows) — engineering done, blocked on certs | GTM |
 | | 4 | Preview Phase 2 — service-container runtime + auto-rebuild on merge | Product |
 | **N+2** | 1 | Memory v0 — workspace-scoped MCP read/write server | Platform |
 | | 2 | Autonomy telemetry dashboard (ZTMR, HITL volume, resolution time) | PMF |
@@ -151,19 +151,24 @@ Crystallize). What's still open or partially landed:
 
 Ordered by priority (urgent bug → launch-wedge remainder → product debt → GTM/infra → hosted-deferred):
 
-- [ ] **🐛 Task-write atomicity — no optimistic concurrency, confirmed real data loss.** Reported live
-  (2026-08): a batch task-update lost `description` on 7 tasks (a genuine PATCH-semantics footgun,
-  mitigated with tighter MCP tool guidance). A deeper issue surfaced during recovery: every one of the
-  25+ `upsertTask` call sites across `orchestrator.ts`/`operations.ts` does a non-atomic
-  read-modify-write (fetch → spread → write the whole record back, no version/etag check) — safe when a
-  task had one writer at a time, not safe now that autonomous writers (triage, auto-review, the
-  self-replenishing backlog) run concurrently with human/scripted edits on the same record. **Needs a
-  real design decision before implementing** — options include a monotonic `version`/`updatedAt` field
-  checked-and-incremented at the Store layer, narrowing the highest-risk autonomous paths to
-  single-field atomic patches, or a compare-and-swap primitive every caller routes through. The race is
-  systemic (likely beyond just `Task`), not local to one call site — scope deliberately rather than
-  bolting a fix onto one path. **Highest-priority open item in this section** — it's a confirmed,
-  live bug, not a feature gap.
+- [x] **🐛 Task-write atomicity — no optimistic concurrency, confirmed real data loss.** Fixed
+  (PR #649, `reliability/task-write-optimistic-concurrency`). Reported live (2026-08): a batch
+  task-update lost `description` on 7 tasks (a genuine PATCH-semantics footgun, mitigated separately
+  with tighter MCP tool guidance). The deeper issue found during recovery — every one of the 25+
+  `upsertTask` call sites across `orchestrator.ts`/`operations.ts` did a non-atomic read-modify-write
+  (fetch → spread → write the whole record back, no version/etag check), unsafe once autonomous writers
+  (triage, auto-review, the self-replenishing backlog) run concurrently with human/scripted edits on the
+  same record — is closed: `Task.version` (shared contracts) is now checked-and-incremented atomically
+  at the Store layer (`Store.putTask(task, expectedVersion?)`, a real CAS in both `MemoryStore` and
+  `PostgresStore`, throwing `VersionConflictError` on a stale write; mapped to HTTP 409 at the API
+  layer), and every update call site now routes through one shared retry helper,
+  `Hub.patchTask(id, patch, opts?)`, which re-reads and re-applies (function-form patches/guards
+  re-evaluate against the fresh value, not blindly reapply) on a version conflict, up to `maxRetries`.
+  `tests/task-write-concurrency.test.ts` reproduces the actual incident deterministically (a delayed-
+  store harness controlling write interleaving) and proves the final record carries both concurrent
+  writers' fields — the old pattern would have silently dropped one. Scoped to `Task` only (confirmed
+  the only two `Store` implementations were migrated); generalizing the same pattern to other entities
+  was deliberately left for a second confirmed incident rather than fixed pre-emptively.
 - [~] **⭐ Governance to SOTA (the launch wedge — already the white space; make it best-in-class).**
   Nearly all landed: policy-as-code command policy, budget ceiling + cost-aware allocation/pacing,
   context-aware (blast-radius) risk classification, the prompt-injection/tool-poisoning firewall,
@@ -209,12 +214,16 @@ Ordered by priority (urgent bug → launch-wedge remainder → product debt → 
   Phase 2 (done): repo checklist files (`- [ ]` items import as tasks; completing one checks the box,
   committed via the GitHub Contents API). **Remaining:** Phase 3, external/webhook sources
   (Linear/Jira) + optional two-way sync. Full design: [docs/task-source-sync.md](docs/task-source-sync.md).
-- [ ] **Desktop code-signing & notarization** *(split out of v0 #9, which ships beta unsigned)* — sign
+- [~] **Desktop code-signing & notarization** *(split out of v0 #9, which ships beta unsigned)* — sign
   the macOS build (Apple Developer ID + hardened runtime + entitlements + notarization) so Gatekeeper
   opens it cleanly and **mac auto-update works** (it silently no-ops on an unsigned build today); sign
-  the Windows build (code-signing cert) to clear SmartScreen. The electron-builder config + CI
-  secret-passthrough are straightforward to wire; the gating input is the **certs** — an Apple
-  Developer ID cert + a Windows code-signing cert added as repo secrets. Last remaining GTM blocker on
+  the Windows build (code-signing cert) to clear SmartScreen. **Engineering done** (PR #488): mac
+  `hardenedRuntime`/entitlements/`notarize` block + win `nsis` target in electron-builder config, CI
+  secret-passthrough (`.github/workflows/desktop-release.yml`) for both cert pairs, docs in
+  [apps/desktop/README.md](apps/desktop/README.md#releases--auto-update). Verified no repo secrets are
+  set yet (`gh secret list`), so builds still ship unsigned. **Blocked on:** an operator obtaining an
+  Apple Developer ID cert (Apple Developer Program enrollment, $99/yr) + a Windows code-signing cert
+  and adding both as repo secrets — a paid/human step, not engineering. Last remaining GTM blocker on
   the committed release.
 - [ ] 🏢 **Scale + containerized runner:** Redis multi-replica fan-out; **GKE Jobs for runners** — one
   container per agent, completing the v0 sandbox item's deferred half: memory/CPU caps (cgroups) and a
@@ -265,12 +274,36 @@ work); the 7 have no ordering dependency and can ship in parallel.
   `command-safety.ts`/`injection-firewall.ts` gates applied elsewhere. Fix: route through the same
   bounded-execution/scrubbed-env discipline, and make the sandbox mandatory for `install`.
   *Severity: High. `apps/server/src/preview/worktree.ts:39-45,71-76`.*
-- [ ] **Close the elevated-viewer permanent-token loophole** — `POST /api/service-tokens`'s
-  `requireHuman()` checks only the live, elevation-inflated scopes, not the caller's *persisted* role
-  the way `requireAdmin()` deliberately does. A viewer temporarily elevated to full authority can mint a
-  standalone bearer token with a high scope set and no forced expiry, which survives past the
-  elevation's lapse. Fix: gate service-token routes with the same persisted-role check, and enforce a
-  mandatory TTL ceiling on tokens minted by a non-persisted-admin caller.
+- [x] **Close the elevated-viewer permanent-token loophole.** `POST /api/service-tokens`'s
+  `requireHuman()` checked only the live, elevation-inflated `scopes` value (`undefined` = full
+  authority) — identical to a real admin's, and identical to the exact loophole `requireAdmin()`'s own
+  doc comment already named for the promote route. A viewer riding an active break-glass elevation could
+  mint a standalone, independently-stored bearer token with a high scope set and no forced expiry,
+  outliving the elevation that authorized minting it. Fix: `requireTokenManager` (replacing
+  `requireHuman`, all 3 routes) looks up the caller's PERSISTED role via `operators.getByIdentity` —
+  never trusts live scopes, mirroring `requireAdmin` exactly — and additionally recognizes an active
+  elevation (`principal.elevatedUntil` still in the future) so break-glass access to token management
+  isn't shut out entirely (a genuinely non-elevated viewer never reaches these routes at all: the
+  workspace mutation-scope gate, `auth-guard.ts`, already requires "author" scope for POST/DELETE before
+  this file runs, which a plain `scopes:["observe"]` session never has — GET carries no such gate, so
+  this check is what protects it too, confirmed by reading `requiredScope()`). A real persisted admin's
+  request is completely unaffected (`ttlMs: null` = no forced expiry still honored verbatim); a caller
+  who reaches the mint route only via elevation gets a MANDATORY, non-optional TTL: their requested
+  `ttlMs` (or `null`, the old exploit's move) is always clamped to whatever remains of THEIR OWN
+  elevation window (`Math.min(requested, elevatedUntil - now())`), so a minted token can never survive
+  the specific grant that authorized minting it — closing exactly the "survives past the elevation's
+  lapse" gap named in the finding, not just narrowing it to a fixed ceiling that could still outlive an
+  elevation minted early in a long window. Regression-guarded end-to-end against a real Fastify app +
+  real stores (`tests/service-token-elevation-loophole.test.ts`, mirrors `admin-promotion.test.ts`'s own
+  pattern for this exact class of bug): a plain non-elevated viewer refused on all 3 routes (baseline,
+  still correct); a real admin's no-forced-expiry mint unaffected; an elevated viewer's mint always
+  returns a real, non-null, correctly-clamped `expiresAt` — including when it deliberately over-asks for
+  more than its remaining window; list/revoke also gated uniformly; the same viewer refused again the
+  instant its elevation is forced into the past; a scoped service token still can never manage other
+  tokens (the pre-existing no-self-escalation guarantee, unaffected). Stashed the fix, confirmed exactly
+  the 2 TTL-ceiling assertions fail against the original code (everything else — including the
+  unrelated self-escalation guarantee — still passed, a precise regression proof rather than a blanket
+  one), restored.
   *Severity: High. `apps/server/src/auth/routes.ts:216-252`.*
 - [ ] **Validate `path` against traversal in the GitHub Contents API calls** — `getFile`/`putFile`
   concatenate the Contents API URL with no `..`-segment rejection, so a crafted `path` can retarget the
@@ -334,15 +367,6 @@ just got unblocked), then remaining ease-of-use work, then the lowest-urgency UI
   (zoom, brush, click-through) — unscoped.
 
 **UX/UI to SOTA (pre-release review — high & polish, lowest urgency of this version's open items):**
-- [~] **Design tokens, a11y, and an Inbox-first mobile/PWA shell.** Mostly landed: a published `--fz-*`
-  type-scale token per distinct font size in use, a single `--input-focus-border` token consolidating 4
-  drifted text-input focus treatments, ambient looping animations now guarded behind
-  `prefers-reduced-motion`, a keyboard walkthrough of assign→decide→merge with two real dead-ends fixed
-  (task-card tool buttons, the read-only task-detail modal), and the semantic palette / Inbox-first PWA
-  shell confirmed already correct. **Deliberately not done:** an 8px spacing rhythm — unlike font-size,
-  `padding`/`margin`/`gap` in `styles.css` aren't a latent consistent ladder; a faithful pass means real
-  design consolidation (choosing canonical steps, remapping ~700+ declarations) with real
-  visual-regression risk, not just token-naming — left as scoped future work.
 - [ ] **Text-contrast ramp** (ink / muted / faint, checked ratios — muted currently sits at the reading
   floor) + a **systematized button/state token set** (primary / ghost / danger, each with explicit
   hover · focus-visible · disabled · loading).

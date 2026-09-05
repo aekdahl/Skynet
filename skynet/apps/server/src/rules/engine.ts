@@ -319,7 +319,11 @@ export class RuleEngine {
       };
       await this.hub.recordTransition(transition);
       await this.bumpRuleMoves(rule.id);
-      if (result.toState && result.toState !== task.state) return this.hub.upsertTask({ ...task, state: result.toState });
+      const toState = result.toState;
+      if (toState && toState !== task.state) {
+        const updated = await this.hub.patchTask(task.id, (t) => (t.state !== toState ? { state: toState } : null));
+        return updated ?? task;
+      }
       return task;
     } catch (err) {
       await this.recordActionFailure(rule, task, evidence, err);
@@ -475,7 +479,10 @@ export class RuleEngine {
         at: now(),
       };
       await this.hub.recordTransition(transition);
-      if (result.toState && result.toState !== task.state) await this.hub.upsertTask({ ...task, state: result.toState });
+      const toState = result.toState;
+      if (toState && toState !== task.state) {
+        await this.hub.patchTask(task.id, (t) => (t.state !== toState ? { state: toState } : null));
+      }
       if (rule) await this.bumpRuleMoves(rule.id);
       await this.store.putPendingRuleAction({ ...pending, status: "finalized", undoableUntil: now() + windowMs, transitionId });
     } catch (err) {
@@ -525,12 +532,14 @@ export class RuleEngine {
     }
 
     if (pending.status === "finalized" && pending.toState != null) {
-      const task = await this.store.getTask(pending.taskId);
       // Only revert if the task is still where this action left it — if
       // something else moved it since, silently reverting would clobber
       // that later change, so we mark undone without touching task state.
-      if (task && task.state === pending.toState) {
-        await this.hub.upsertTask({ ...task, state: pending.fromState });
+      // Re-checked against the truly-current value at write time, not a
+      // separate pre-write read (see Hub.patchTask).
+      const toState = pending.toState;
+      const reverted = await this.hub.patchTask(pending.taskId, (t) => (t.state === toState ? { state: pending.fromState } : null));
+      if (reverted && reverted.state === pending.fromState) {
         await this.hub.recordTransition({
           id: `tr-undo-${pending.id}`,
           workspaceId: pending.workspaceId,
