@@ -4921,22 +4921,32 @@ export class Orchestrator {
   // .inform, optional); this just finds the live handle and logs the attempt.
 
   /**
-   * Queue `note` on `runId`'s next turn. Returns false (never throws) when the
-   * run has no live session or its runner doesn't implement `inform` — a
-   * finished/queued/no-longer-live run has nothing to ride, and we never fake
-   * delivery by falling back to a real chat turn (that would defeat the whole
-   * point: no extra turn, ~free). Always logged, so the audit trail shows
-   * exactly what was (or wasn't) delivered.
+   * Queue `note` on `runId`'s next turn. Never throws — reports WHY delivery
+   * didn't happen so a caller (Operations.informRuns) can be specific rather
+   * than lumping "no live session" and "this provider doesn't implement it"
+   * into one generic skip: `"not-live"` for a finished/queued/no-longer-live
+   * run (nothing to ride), `"unsupported"` when the run IS live but its
+   * runner has no `inform` method (e.g. Copilot — see RunnerHandle.inform's
+   * doc comment). We never fake delivery by falling back to a real chat turn
+   * (that would defeat the whole point: no extra turn, ~free). Always logged,
+   * so the audit trail shows exactly what was (or wasn't) delivered.
    */
-  async inform(runId: string, note: string): Promise<boolean> {
+  async inform(
+    runId: string,
+    note: string,
+  ): Promise<{ ok: true } | { ok: false; reason: "not-live" | "unsupported"; provider?: ProviderId }> {
     const live = this.live.get(runId);
-    if (!live?.handle.inform) {
+    if (!live) {
       await this.hub.runLog(runId, `ℹ note (not delivered — no live session to attach it to): ${note}`);
-      return false;
+      return { ok: false, reason: "not-live" };
+    }
+    if (!live.handle.inform) {
+      await this.hub.runLog(runId, `ℹ note (not delivered — ${live.handle.provider} doesn't support inform yet): ${note}`);
+      return { ok: false, reason: "unsupported", provider: live.handle.provider };
     }
     await this.hub.runLog(runId, `ℹ note queued for the next turn: ${note}`);
     await live.handle.inform(note);
-    return true;
+    return { ok: true };
   }
 
   /** Every currently-live run id belonging to `projectId` — the resolved set

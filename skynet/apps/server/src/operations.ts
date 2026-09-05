@@ -968,8 +968,9 @@ export class Operations {
         skipped.push({ runId, reason: "not found" });
         continue;
       }
-      const ok = await this.orchestrator.inform(runId, note);
-      if (ok) informed.push(runId);
+      const result = await this.orchestrator.inform(runId, note);
+      if (result.ok) informed.push(runId);
+      else if (result.reason === "unsupported") skipped.push({ runId, reason: `${result.provider} doesn't support inform yet` });
       else skipped.push({ runId, reason: "not live — no active session to attach the note to" });
     }
     return { informed, skipped };

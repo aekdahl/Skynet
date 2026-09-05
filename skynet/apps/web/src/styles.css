@@ -2053,6 +2053,7 @@ button.kb-done:hover { opacity: 1; }
    agents show disabled + a note instead of a live-run target. */
 .fleet-inform-pick { display: flex; align-items: center; gap: var(--space-8); padding-bottom: 2px; }
 .fleet-inform-idle { font-size: var(--fz-11); color: var(--faint, var(--muted)); }
+.fleet-inform-unsupported { font-size: var(--fz-11); color: var(--faint, var(--muted)); cursor: not-allowed; }
 /* The `inform` note composer (Fleet multi-select + Project whole-project). */
 .inform-panel { display: flex; flex-direction: column; gap: var(--space-8); margin-bottom: var(--sp); }
 .inform-hint { font-size: var(--fz-12); color: var(--muted); margin: 0; }
