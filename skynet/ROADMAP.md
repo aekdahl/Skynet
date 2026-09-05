@@ -309,12 +309,18 @@ below, plus the elevated-viewer token loophole further down) — **5 remain genu
   unrelated self-escalation guarantee — still passed, a precise regression proof rather than a blanket
   one), restored.
   *Severity: High. `apps/server/src/auth/routes.ts:216-252`.*
-- [ ] **Validate `path` against traversal in the GitHub Contents API calls** — `getFile`/`putFile`
-  concatenate the Contents API URL with no `..`-segment rejection, so a crafted `path` can retarget the
-  request at a different repo; `import_repo_file` (an MCP tool, nominally project-confined) and
-  `resync_source`/`commitRepoFile` both replay it unvalidated, giving a write leg too. Fix: reject any
-  `path` containing a `.`/`..` segment before it reaches `getFile`/`putFile`
-  (and `readRepoFile`/`listRepoRoot`), and percent-encode each segment individually.
+- [x] **Validate `path` against traversal in the GitHub Contents API calls.** Fixed (PR #665,
+  `security/github-contents-path-traversal`). `getFile`/`putFile` concatenated the Contents API URL
+  with no `..`-segment rejection, so a crafted `path` could retarget the request at a different repo
+  entirely (`fetch`'s URL parser normalizes dot-segments); `import_repo_file` (an MCP tool, nominally
+  project-confined) and `resync_source`/`commitRepoFile` both replayed it unvalidated, giving a write
+  leg too. Closed with one choke point, `safeRepoPath()` (`provider.ts`), applied at every real
+  Contents API call site: `getFile`/`putFile`, and `GitHubService.readRepoFile`'s own separate `fetch`
+  call — `listRepoRoot` takes no `path` param so needed no change. Rejects (throws) any `.`/`..`/empty
+  segment and percent-encodes each segment individually, so an encoded slash inside one segment can't
+  smuggle in an extra path level. `tests/github-contents-path-traversal.test.ts` proves `getFile`/
+  `putFile` reject a traversal path BEFORE `fetch` is ever called, not just that the eventual response
+  is safe.
   *Severity: High. `apps/server/src/github/provider.ts:211-231`, `apps/server/src/mcp/tools.ts:514`.*
 
 Two related findings landed just under the confidence bar (≥8 kept; these hit 7) and are tracked as
