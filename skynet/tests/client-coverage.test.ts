@@ -54,6 +54,11 @@ const ALLOW = new Set<string>([
   // a real scaffolded+attributed commit, cross-repo milestone grouping) is
   // covered server-side by tests/roadmap-workspace-rollup.test.ts instead.
   "fetchWorkspaceRoadmapRollup", "scaffoldProjectRoadmap",
+  // Autonomy telemetry dashboard — a read-only, workspace-wide rollup with no
+  // mutation for a journey to click through. Its derivation (ZTMR, gate
+  // volume/resolution time, breaker trips, by-project/by-detent grouping) is
+  // covered directly by tests/autonomy-telemetry-rollup.test.ts.
+  "fetchAutonomyTelemetry",
   // add a second named credential for a provider — needs a real key + the secret
   // store (master key), so no offline journey; the route is guarded server-side
   // and the set/delete-by-id paths it shares ARE journey-covered.

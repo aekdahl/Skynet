@@ -1,0 +1,62 @@
+/* ─── Autonomy telemetry dashboard ──────────────────────────────────────── */
+/* ZTMR / HITL gate volume / resolution time, by project + by detent. Same
+   --ak-* token family as workspace-roadmap.css/board.css. */
+
+.atd { display: flex; flex-direction: column; gap: var(--ak-sp-16); }
+
+.atd-topbar { display: flex; align-items: baseline; gap: var(--ak-sp-12); flex-wrap: wrap; }
+.atd-title { font-size: 19px; font-weight: 600; color: var(--ak-text-primary); margin: 0; }
+.atd-sub { font-size: 12.5px; color: var(--ak-text-faint); }
+
+.atd-window-picker { display: flex; gap: 4px; margin-left: auto; }
+.atd-window-btn { font-family: var(--ak-font-mono); font-size: 11px; font-weight: 600; padding: 4px 10px; border-radius: var(--ak-radius-sm); border: 1px solid var(--ak-border); background: var(--ak-surface-1); color: var(--ak-text-secondary); cursor: pointer; }
+.atd-window-btn-on { background: var(--ak-machine-deep); border-color: var(--ak-machine-deep); color: var(--ak-surface-0); }
+
+.atd-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: var(--ak-sp-12); }
+.atd-tile { background: var(--ak-surface-1); border: 1px solid var(--ak-border); border-radius: var(--ak-radius-card); padding: 12px 14px; display: flex; flex-direction: column; gap: 4px; }
+.atd-tile-label { font-family: var(--ak-font-mono); font-size: 10px; font-weight: 600; letter-spacing: 0.05em; color: var(--ak-text-faint); }
+.atd-tile-value { font-size: 22px; font-weight: 600; color: var(--ak-text-primary); }
+.atd-tile-sub { font-size: 11px; color: var(--ak-text-faint); }
+
+.atd-section { display: flex; flex-direction: column; gap: 8px; }
+.atd-section-title { font-size: 13px; font-weight: 600; color: var(--ak-text-primary); margin: 0; }
+
+/* Daily gate-volume bar chart — same column/track/bar structure as Home's
+   spend-vs-work chart (hm-chart in styles.css), just re-tokened to --ak-*
+   and two overlapping bars (raised/resolved) instead of one bar + marker. */
+.atd-chart { display: flex; align-items: stretch; gap: 4px; height: 120px; }
+.atd-chart-col { flex: 1; display: flex; flex-direction: column; height: 100%; min-width: 0; }
+.atd-chart-track { flex: 1; display: flex; align-items: flex-end; justify-content: center; gap: 2px; overflow: hidden; border-radius: 3px; background: var(--ak-surface-2); padding: 0 1px; }
+.atd-chart-bar { width: 100%; min-height: 1px; border-radius: 2px 2px 0 0; }
+.atd-chart-bar-raised { background: var(--ak-human); }
+.atd-chart-bar-resolved { background: var(--ak-machine); }
+.atd-chart-day { margin-top: 4px; font-family: var(--ak-font-mono); font-size: 9px; color: var(--ak-text-faint); text-align: center; }
+.atd-chart-empty { padding: 24px 0; text-align: center; color: var(--ak-text-faint); font-size: 12.5px; }
+
+.atd-legend { display: flex; gap: 16px; font-size: 11px; color: var(--ak-text-faint); }
+.atd-legend-dot { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 5px; vertical-align: middle; }
+.atd-legend-dot-raised { background: var(--ak-human); }
+.atd-legend-dot-resolved { background: var(--ak-machine); }
+
+/* By-detent cards — fixed 4, Shadow→Unattended. */
+.atd-detents { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: var(--ak-sp-12); }
+.atd-detent-card { background: var(--ak-surface-1); border: 1px solid var(--ak-border); border-radius: var(--ak-radius-card); padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; }
+.atd-detent-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.atd-detent-name { font-size: 13.5px; font-weight: 600; color: var(--ak-text-primary); }
+.atd-detent-count { font-family: var(--ak-font-mono); font-size: 10.5px; color: var(--ak-text-faint); }
+.atd-detent-body { display: flex; flex-direction: column; gap: 6px; }
+.atd-detent-stat { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--ak-text-secondary); }
+.atd-detent-stat-label { color: var(--ak-text-faint); }
+
+/* Per-project table. */
+.atd-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.atd-table th { text-align: left; font-family: var(--ak-font-mono); font-size: 10px; font-weight: 600; letter-spacing: 0.05em; color: var(--ak-text-faint); padding: 8px 10px; border-bottom: 1px solid var(--ak-border); }
+.atd-table td { padding: 10px; border-bottom: 1px solid var(--ak-border-subtle); vertical-align: middle; color: var(--ak-text-primary); }
+.atd-repo-name { font-weight: 600; }
+.atd-muted { color: var(--ak-text-faint); }
+
+.atd-badge { font-family: var(--ak-font-mono); font-size: 9.5px; font-weight: 600; letter-spacing: 0.05em; padding: 2px 7px; border-radius: 5px; white-space: nowrap; }
+.atd-badge-lime { color: var(--ak-machine-deep); background: color-mix(in oklch, var(--ak-machine-deep), transparent 88%); }
+.atd-badge-amber { color: var(--ak-warn); background: color-mix(in oklch, var(--ak-warn), transparent 88%); }
+.atd-badge-warn { color: var(--ak-warn); background: color-mix(in oklch, var(--ak-warn), transparent 88%); }
+.atd-badge-neutral { color: var(--ak-text-secondary); background: var(--ak-surface-2); }
