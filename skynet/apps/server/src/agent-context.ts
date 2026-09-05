@@ -27,6 +27,13 @@ export interface AgentContextOptions {
    *  a handoff is orientation, not a transcript. */
   handoff?: string;
   project: ContextProject | null | undefined;
+  // Memory v0, phase 1: operator-authored facts (workspace/project/agent-
+  // family scoped — see memory-digest.ts's factsDigest), pre-formatted by the
+  // caller. Treated as durable, operator-set guidance — placed right after
+  // PROJECT INSTRUCTIONS, before the more dynamic sections below. Undefined/
+  // null/empty all mean "no memory to inject" (no facts recorded yet, or the
+  // project has no bound repo to read `.skynet/memory/` from).
+  memory?: string | null;
   // The Feature a task belongs to, when it belongs to one. Undefined/null both
   // mean "no feature" — callers that haven't resolved one yet can pass either.
   feature?: Feature | null;
@@ -66,6 +73,7 @@ const SOLUTION_BRIEF_CHAR_CAP = 1_500;
 // intact rather than getting clipped to a fifth of its own budget.
 const SIBLING_CHAR_CAP = 1_200;
 const MAX_SIBLINGS = 10;
+const MEMORY_CHAR_CAP = 1_500;
 
 function truncateTail(text: string, cap: number): string {
   if (text.length <= cap) return text;
@@ -93,15 +101,16 @@ export function withInstructions(instructions: string | null | undefined, body: 
 /**
  * Assemble a full agent-facing prompt from every grounding source Skynet
  * currently threads through: project name/goal, project instructions,
- * (later) a primer doc, the task's Feature, (later) a Solution Brief,
- * (later) in-flight sibling summaries, and finally the task body itself.
+ * operator-authored memory facts (Memory v0), (later) a primer doc, the
+ * task's Feature, (later) a Solution Brief, (later) in-flight sibling
+ * summaries, and finally the task body itself.
  *
- * Sections are emitted in a FIXED order (project → instructions → primer →
- * feature → solution brief → in-flight → task) so any section can be added or
- * removed without reshuffling the ones around it, and omitted entirely when
- * there's nothing to say. When every optional section is empty, the output is
- * exactly `=== TASK ===\n<body>` — never a bare, unfenced body — so a caller
- * checking for the task text with `.toContain(...)` still finds it.
+ * Sections are emitted in a FIXED order (project → instructions → memory →
+ * primer → feature → solution brief → in-flight → task) so any section can be
+ * added or removed without reshuffling the ones around it, and omitted
+ * entirely when there's nothing to say. When every optional section is empty,
+ * the output is exactly `=== TASK ===\n<body>` — never a bare, unfenced body —
+ * so a caller checking for the task text with `.toContain(...)` still finds it.
  *
  * Bounded to a total character budget so an unbounded primer or a long
  * in-flight list can never balloon a prompt without limit. If the assembled
@@ -121,6 +130,12 @@ export function buildAgentContext(opts: AgentContextOptions): string {
     .map((s) => s.trim())
     .filter(Boolean)
     .slice(0, MAX_SIBLINGS);
+  // Memory v0, phase 1 — operator-authored facts (memory-digest.ts's
+  // factsDigest already formats+caps per-section). Deliberately NOT dropped
+  // by the overflow cascade below (unlike siblings/primer) — this is
+  // operator-curated content, closer in weight to project instructions than
+  // to dynamically-generated grounding; MEMORY_CHAR_CAP is its only bound.
+  const memory = opts.memory?.trim() || null;
 
   const goal = project?.goal?.trim();
   const projectSection = goal ? `=== PROJECT ===\n${project!.name}\n${goal}` : null;
@@ -148,6 +163,7 @@ export function buildAgentContext(opts: AgentContextOptions): string {
     [
       projectSection,
       instructionsSection,
+      memory ? `=== MEMORY (operator-authored facts) ===\n${truncateTail(memory, MEMORY_CHAR_CAP)}` : null,
       primer ? `=== PRIMER ===\n${truncateTail(primer, PRIMER_CHAR_CAP)}` : null,
       featureSection,
       briefSection,

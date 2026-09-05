@@ -60,6 +60,9 @@ import type {
   RoadmapEditResolveRequest,
   RoadmapConflictResolveRequest,
   RoadmapWorkspaceRollup,
+  MemoryFactSummary,
+  MemoryScope,
+  CreateMemoryFactRequest,
   SourceRef,
   Rule,
   SavePolicyVersionRequest,
@@ -130,6 +133,9 @@ import {
   proposalsConflict,
 } from "./roadmap/proposals.js";
 import { agentCoAuthor, AUTONOMOUS_APPLY_IDENTITY, operatorGitIdentity } from "./roadmap/attribution.js";
+import { parseMemoryFile, readWorkspaceMemory, currentFacts, type MemoryFact } from "./memory-format-reader.js";
+import { appendFact, newMemoryFileHeader } from "./memory-format-writer.js";
+import { memoryFilePath, memorySlug } from "./memory-paths.js";
 import { draftBriefFromConversation, summarizeConversation } from "./steward/crystallize.js";
 import { scanRepo } from "./quality/scan.js";
 import { condenseProjectContext } from "./steward/context.js";
@@ -3900,6 +3906,125 @@ export class Operations {
     };
     const resolved = await this.hub.resolveHitl(item.id, resolution);
     return resolved ?? item;
+  }
+
+  // ── memory v0, phase 1 (operator-authored facts) ──────────────────────────
+  // docs/memory-format.md is the file format; memory-format-reader.ts parses
+  // it; this is the write path (append + commit through the SAME TASK 28
+  // attribution mechanism roadmap edits use — a repo write is a repo write)
+  // plus the read path the Inbox/project UI lists facts from. Phase 1 is
+  // operator-authored only: source is always "operator", confidence always
+  // "stated" — the server sets both, never the caller (a hand-edited file can
+  // already contain "decision"/"distilled" facts; this phase reads and lists
+  // them like any other fact, it just never writes them itself).
+
+  /** Turn a parsed reader-level fact into the flat wire summary, normalizing
+   *  an unrecognized (hand-edited) source/confidence value to a safe default
+   *  rather than erroring — matching the format's own "never error on an
+   *  unrecognized value" compatibility rule. */
+  private toMemoryFactSummary(f: MemoryFact, scope: MemoryScope, opts: { area?: string | null; agentFamily?: string | null }, superseded: Set<string>): MemoryFactSummary {
+    const source = f.source === "operator" || f.source === "decision" || f.source === "distilled" ? f.source : "operator";
+    const confidence = f.confidence === "stated" || f.confidence === "derived" || f.confidence === "distilled" ? f.confidence : "stated";
+    const createdAt = Date.parse(f.created);
+    return {
+      id: f.id, scope, area: opts.area ?? null, agentFamily: opts.agentFamily ?? null,
+      heading: f.heading, body: f.body, source, confidence, author: f.author,
+      createdAt: Number.isFinite(createdAt) ? createdAt : 0,
+      run: f.run ?? null, hitl: f.hitl ?? null, supersedes: f.supersedes ?? null,
+      superseded: superseded.has(f.id),
+    };
+  }
+
+  /**
+   * Every fact this project's memory currently holds, across every scope —
+   * a flat list (the UI groups by `.scope` itself) including superseded
+   * facts (flagged, not hidden — the format keeps them as history).
+   *
+   * Full fidelity (workspace + every project/area/agent file) for a LOCAL
+   * repoPath-bound project, via the existing readWorkspaceMemory — it already
+   * enumerates the whole `.skynet/memory/` tree. A GitHub-only project has no
+   * local checkout to enumerate directories in, so this reads just the two
+   * fixed, known paths (workspace.md, projects/<slug>.md) via the same
+   * generic readProjectDoc every other repo read in this codebase uses —
+   * real, honest data, just missing area/agent-family facts until a
+   * GitHub-directory-listing path is built. Never throws: an unbound project,
+   * or one with no memory files yet, is just an empty list.
+   */
+  async listProjectMemory(ws: string, projectId: string): Promise<MemoryFactSummary[]> {
+    const project = await this.store.getProject(projectId);
+    if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
+    if (!project.repoPath && !project.repo) return [];
+
+    const out: MemoryFactSummary[] = [];
+    const addFile = (raw: { facts: MemoryFact[]; frontmatter: { scope?: string; area?: string; agent_family?: string } }) => {
+      const scope = (raw.frontmatter.scope === "workspace" || raw.frontmatter.scope === "project" || raw.frontmatter.scope === "area" || raw.frontmatter.scope === "agent"
+        ? raw.frontmatter.scope
+        : "project") as MemoryScope;
+      const superseded = new Set(raw.facts.map((f) => f.supersedes).filter((id): id is string => Boolean(id)));
+      for (const f of raw.facts) out.push(this.toMemoryFactSummary(f, scope, { area: raw.frontmatter.area ?? null, agentFamily: raw.frontmatter.agent_family ?? null }, superseded));
+    };
+
+    if (project.repoPath) {
+      for (const file of await readWorkspaceMemory(project.repoPath)) addFile(file);
+      return out;
+    }
+    // GitHub-only: the two fixed paths only (see doc comment above).
+    const slug = memorySlug(project.name);
+    for (const relPath of [memoryFilePath("workspace", slug), memoryFilePath("project", slug)]) {
+      const doc = await readProjectDoc(ws, project, relPath).catch(() => null);
+      if (doc) addFile(parseMemoryFile(doc.content, relPath));
+    }
+    return out;
+  }
+
+  /**
+   * Append a new operator-authored fact and commit it — through the SAME
+   * commitLocalRepoFile/githubService.commitRepoFile + operatorGitIdentity
+   * path TASK 28's roadmap-proposal apply and TASK 32's scaffold already use.
+   * No agent Co-authored-by trailer: nobody proposed this, the operator typed
+   * it directly (mirrors scaffoldProjectRoadmap's own reasoning).
+   */
+  async addMemoryFact(ws: string, projectId: string, input: CreateMemoryFactRequest, operatorId: string): Promise<MemoryFactSummary> {
+    const project = await this.store.getProject(projectId);
+    if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
+    if (!project.repoPath && !project.repo) throw new Error("This project has no bound repo to record memory in.");
+    if (input.scope === "area" && !input.area) throw new Error("An area-scoped fact needs an area.");
+    if (input.scope === "agent" && !input.agentFamily) throw new Error("An agent-scoped fact needs an agentFamily.");
+
+    const slug = memorySlug(project.name);
+    const areaSlug = input.area ? memorySlug(input.area) : null;
+    const relPath = memoryFilePath(input.scope, slug, { areaSlug, agentFamily: input.agentFamily ?? null });
+
+    const current = await readProjectDoc(ws, project, relPath).catch(() => null);
+    const fact = {
+      id: this.uid("fact"),
+      heading: input.heading.trim(),
+      body: input.body.trim(),
+      source: "operator" as const,
+      author: operatorId,
+      created: new Date(now()).toISOString(),
+      confidence: "stated" as const,
+      supersedes: input.supersedes ?? undefined,
+    };
+    const header = current
+      ? undefined
+      : newMemoryFileHeader(input.scope, { project: input.scope === "project" || input.scope === "area" ? slug : undefined, area: input.area ?? undefined, agentFamily: input.agentFamily ?? undefined });
+    const newContent = appendFact(current?.content ?? "", fact, header);
+    const identity = operatorGitIdentity(operatorId);
+    const message = `Skynet: record a memory fact (${input.scope}${input.area ? `/${input.area}` : input.agentFamily ? `/${input.agentFamily}` : ""})`;
+
+    if (project.repoPath) {
+      await commitLocalRepoFile(project.repoPath, relPath, newContent, current?.content ?? null, message, identity);
+    } else {
+      await githubService.commitRepoFile(ws, project.repo!, relPath, newContent, current?.sha, message, project.githubCredentialId, identity);
+    }
+
+    return this.toMemoryFactSummary(
+      { heading: fact.heading, body: fact.body, id: fact.id, source: fact.source, author: fact.author, created: fact.created, confidence: fact.confidence, supersedes: fact.supersedes, extra: {} },
+      input.scope,
+      { area: input.area ?? null, agentFamily: input.agentFamily ?? null },
+      new Set(),
+    );
   }
 
   // ── fleet ──────────────────────────────────────────────────────────────

@@ -34,6 +34,7 @@ import {
   ProposeRoadmapChangeRequest,
   CommitRoadmapLineEditRequest,
   RoadmapConflictResolveRequest,
+  CreateMemoryFactRequest,
   UpdateWorkspaceSettingsRequest,
   UpdateRunnerRequest,
   UpdateRuleRequest,
@@ -1537,6 +1538,24 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
     try {
       return await ops.resolveRoadmapConflict(ws(req), req.params.id, body.data, req.principal!.operatorId);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
+  // ── memory v0, phase 1 (operator-authored facts) ──────────────────────────
+  app.get<{ Params: { id: string } }>("/api/projects/:id/memory", async (req, reply) => {
+    try {
+      return await ops.listProjectMemory(ws(req), req.params.id);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+  app.post<{ Params: { id: string } }>("/api/projects/:id/memory", async (req, reply) => {
+    const body = CreateMemoryFactRequest.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+    try {
+      return await ops.addMemoryFact(ws(req), req.params.id, body.data, req.principal!.operatorId);
     } catch (err) {
       return fail(reply, err);
     }
