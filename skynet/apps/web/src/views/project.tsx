@@ -2396,8 +2396,13 @@ export function ProjectView({
 // gate: pinned to that ONE run's own branch (no source switcher, no
 // refresh-on-merge — reload/restart pick up new commits the run makes),
 // letting an operator see a change before approving its merge.
-// Polls status while open; the app runs on its own localhost origin so its
-// code can't reach the console.
+// Polls status while open. Desktop iframes the dev server's own loopback
+// port directly (a different origin from the console already); a hosted/
+// remote-reachable install instead proxies it at `/p/<token>/` on the
+// console's OWN origin (see public-origin.ts) so it's reachable from a
+// phone — that path needs the iframe sandbox to withhold allow-same-origin
+// regardless, so previewed (agent-built, possibly prompt-injected) code
+// can never read this origin's storage no matter which URL it's served at.
 const DEVICES: Record<string, number | null> = { Desktop: null, Tablet: 768, Mobile: 390 };
 
 export function LivePreviewModal({
@@ -2557,7 +2562,7 @@ export function LivePreviewModal({
                 style={width ? { width, margin: "0 auto" } : undefined}
                 src={st!.url!}
                 title="app preview"
-                sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+                sandbox="allow-scripts allow-forms allow-popups"
               />
             </div>
           ) : (
