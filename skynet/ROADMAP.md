@@ -275,12 +275,36 @@ work); the 7 have no ordering dependency and can ship in parallel.
   `command-safety.ts`/`injection-firewall.ts` gates applied elsewhere. Fix: route through the same
   bounded-execution/scrubbed-env discipline, and make the sandbox mandatory for `install`.
   *Severity: High. `apps/server/src/preview/worktree.ts:39-45,71-76`.*
-- [ ] **Close the elevated-viewer permanent-token loophole** — `POST /api/service-tokens`'s
-  `requireHuman()` checks only the live, elevation-inflated scopes, not the caller's *persisted* role
-  the way `requireAdmin()` deliberately does. A viewer temporarily elevated to full authority can mint a
-  standalone bearer token with a high scope set and no forced expiry, which survives past the
-  elevation's lapse. Fix: gate service-token routes with the same persisted-role check, and enforce a
-  mandatory TTL ceiling on tokens minted by a non-persisted-admin caller.
+- [x] **Close the elevated-viewer permanent-token loophole.** `POST /api/service-tokens`'s
+  `requireHuman()` checked only the live, elevation-inflated `scopes` value (`undefined` = full
+  authority) — identical to a real admin's, and identical to the exact loophole `requireAdmin()`'s own
+  doc comment already named for the promote route. A viewer riding an active break-glass elevation could
+  mint a standalone, independently-stored bearer token with a high scope set and no forced expiry,
+  outliving the elevation that authorized minting it. Fix: `requireTokenManager` (replacing
+  `requireHuman`, all 3 routes) looks up the caller's PERSISTED role via `operators.getByIdentity` —
+  never trusts live scopes, mirroring `requireAdmin` exactly — and additionally recognizes an active
+  elevation (`principal.elevatedUntil` still in the future) so break-glass access to token management
+  isn't shut out entirely (a genuinely non-elevated viewer never reaches these routes at all: the
+  workspace mutation-scope gate, `auth-guard.ts`, already requires "author" scope for POST/DELETE before
+  this file runs, which a plain `scopes:["observe"]` session never has — GET carries no such gate, so
+  this check is what protects it too, confirmed by reading `requiredScope()`). A real persisted admin's
+  request is completely unaffected (`ttlMs: null` = no forced expiry still honored verbatim); a caller
+  who reaches the mint route only via elevation gets a MANDATORY, non-optional TTL: their requested
+  `ttlMs` (or `null`, the old exploit's move) is always clamped to whatever remains of THEIR OWN
+  elevation window (`Math.min(requested, elevatedUntil - now())`), so a minted token can never survive
+  the specific grant that authorized minting it — closing exactly the "survives past the elevation's
+  lapse" gap named in the finding, not just narrowing it to a fixed ceiling that could still outlive an
+  elevation minted early in a long window. Regression-guarded end-to-end against a real Fastify app +
+  real stores (`tests/service-token-elevation-loophole.test.ts`, mirrors `admin-promotion.test.ts`'s own
+  pattern for this exact class of bug): a plain non-elevated viewer refused on all 3 routes (baseline,
+  still correct); a real admin's no-forced-expiry mint unaffected; an elevated viewer's mint always
+  returns a real, non-null, correctly-clamped `expiresAt` — including when it deliberately over-asks for
+  more than its remaining window; list/revoke also gated uniformly; the same viewer refused again the
+  instant its elevation is forced into the past; a scoped service token still can never manage other
+  tokens (the pre-existing no-self-escalation guarantee, unaffected). Stashed the fix, confirmed exactly
+  the 2 TTL-ceiling assertions fail against the original code (everything else — including the
+  unrelated self-escalation guarantee — still passed, a precise regression proof rather than a blanket
+  one), restored.
   *Severity: High. `apps/server/src/auth/routes.ts:216-252`.*
 - [ ] **Validate `path` against traversal in the GitHub Contents API calls** — `getFile`/`putFile`
   concatenate the Contents API URL with no `..`-segment rejection, so a crafted `path` can retarget the
