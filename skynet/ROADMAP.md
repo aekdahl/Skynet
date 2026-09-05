@@ -41,17 +41,16 @@ found these rare-to-absent), and where they live:
 6. **Org-wide knowledge diffusion** (v1 mass-inform + v4): one teammate's decision instantly informs
    every teammate's agents.
 
-**Recommended near-term order (re-prioritized now that provider breadth + the governance wedge are both
-largely shipped)** — ship in this order:
-**(1) Security + reliability debt** — the 7 Aug-2026 security findings and the task-write-atomicity race
-are both *confirmed, pre-existing* issues (one already caused real data loss) with broad blast radius;
-close these before anything else compounds on top of them. **(2) Memory v0** (nothing has shipped here
-yet, and it's the wedge that keeps us from being "just another orchestrator") **+ Cross-vendor consensus
-runs** (provider breadth landed — Codex/Gemini/Cursor/Copilot/Hermes/OpenCode/Kimi Code — so this
-signature bet is now unblocked, no longer gated on it). **(3) v1.5 ease-of-use** (the remaining
-operator-ergonomics/design-token tail) **+ desktop code-signing** (the last GTM
-blocker on the committed release — mac auto-update silently no-ops without it). Provider breadth and the
-Governance-to-SOTA launch wedge — the prior #1/#2 here — are both essentially done; see
+**Recommended near-term order (re-prioritized as fixes land)** — ship in this order:
+**(1) Security + the manager/worker UI gap** — 5 of the 7 Aug-2026 security findings are still
+genuinely open (2 are fixed — verified against the live code, not just the checklist) with broad blast
+radius; close these first. The v2 hierarchy's core mechanism (`spawn_worker`) just shipped with **no UI
+at all** — cheap, high-leverage to close that gap before it's forgotten. **(2) Memory v0 phase 2**
+(decision-derived facts — phase 1 shipped) **+ Cross-vendor consensus runs** (provider breadth landed —
+Codex/Gemini/Cursor/Copilot/Hermes/OpenCode/Kimi Code — so this signature bet is unblocked, no longer
+gated on it). **(3) v1.5 ease-of-use** (the remaining operator-ergonomics/design-token tail). Desktop
+code-signing's engineering is done (PR #488) — it's now blocked on an operator buying certs, not on
+development. Provider breadth and the Governance-to-SOTA launch wedge are both essentially done; see
 [the archive](ROADMAP-ARCHIVE.md). Everything below stays directional.
 
 **Current batch priority order** — see [docs/operating-memo.md](docs/operating-memo.md) §8 for full rationale.
@@ -59,17 +58,18 @@ Items are ranked PMF > Platform > Product within each batch:
 
 | Batch | # | Item | Track |
 |-------|---|------|-------|
-| **N (now)** | 1 | 🔒 Security hardening — Aug 2026 audit remediation (7 findings, see v1 section) | Security |
+| **N (now)** | 1 | 🔒 Security hardening — Aug 2026 audit remediation (5 open findings, see v1 section) | Security |
 | | 2 | ✅ 🐛 Task-write atomicity — fixed, PR #649 (see v1 section) | Reliability |
-| | 3 | Memory v0 — operator-authored facts, injected per project | Platform |
-| | 4 | deep-review / breaker-review settings UI toggle (both already built, PATCH-API-only today) | PMF |
-| | 5 | Mass inform — Fleet/Project UI (multi-select + whole-project) | Product |
-| | 6 | First-run onboarding telemetry (anonymous install events) | PMF |
+| | 3 | ✅ Memory v0 phase 1 — shipped, PR #656 (see v1.5 section) | Platform |
+| | 4 | Memory v0 phase 2 — decision-derived fact capture from `hitl_audit` | Platform |
+| | 5 | Manager/worker UI — Subway/Roster lines + an Inbox filter for the shipped `spawn_worker` hierarchy (see v2 section) | Platform |
+| | 6 | deep-review / breaker-review settings UI toggle (both already built, PATCH-API-only today) | PMF |
+| | 7 | Mass inform — Fleet/Project UI (multi-select + whole-project) | Product |
+| | 8 | ✅ First-run onboarding telemetry — shipped, PR #653 | PMF |
 | **N+1** | 1 | Cross-vendor consensus runs (same task, 2+ agents, auto-diff) — unblocked now that provider breadth has landed | Platform |
-| | 2 | Memory v0 — decision-derived fact capture from `hitl_audit` | Platform |
-| | 3 | Desktop code-signing (macOS + Windows) — engineering done, blocked on certs | GTM |
-| | 4 | Preview Phase 2 — service-container runtime + auto-rebuild on merge | Product |
-| **N+2** | 1 | Memory v0 — workspace-scoped MCP read/write server | Platform |
+| | 2 | ✅ Desktop code-signing (macOS + Windows) — engineering done (PR #488), blocked on certs | GTM |
+| | 3 | Preview Phase 2 — service-container runtime + auto-rebuild on merge | Product |
+| **N+2** | 1 | Memory v0 phase 3 — workspace-scoped MCP read/write server | Platform |
 | | 2 | Autonomy telemetry dashboard (ZTMR, HITL volume, resolution time) | PMF |
 | | 3 | Plan entity + project view panel (Product Steward foundation) | Platform |
 
@@ -240,14 +240,15 @@ Full-codebase security audit of `main` (8 finder agents by area + a skeptical fi
 candidate finding, confidence ≥ 8/10 kept) surfaced 7 real, independently-confirmed vulnerabilities —
 none introduced by any in-flight PR, all pre-existing on `main`. Grouped as one epic because they share
 urgency (credential exposure, path traversal, auth escalation — governance-track trust, not feature
-work); the 7 have no ordering dependency and can ship in parallel.
+work); the 7 have no ordering dependency and can ship in parallel. **2 of the 7 are now fixed** (one
+below, plus the elevated-viewer token loophole further down) — **5 remain genuinely open.**
 
-- [ ] **Redact GitHub token from push/sync error logs** — `pushBranch`/`syncBase`
-  (`apps/server/src/github/provider.ts`) embed the token in the git remote URL with no try/catch,
-  unlike the sibling `cloneRepo` which already redacts; a push/fetch failure's raw error message (which
-  embeds the token) reaches `hub.runLog()` and broadcasts live to the operator's UI. Fix: apply
-  `cloneRepo`'s `redactToken()` pattern to both; consider generic scrubbing at the `runLog` layer too.
-  *Severity: High. `apps/server/src/github/provider.ts:258-264,348-352`.*
+- [x] **Redact GitHub token from push/sync error logs.** Already fixed (PR #598,
+  `apps/server/src/github/provider.ts`'s `pushBranch`/`syncBase` both wrap their git-remote call in a
+  `catch` that runs the raw error message through `redactToken()` before it can reach `hub.runLog()`)
+  — this landed *before* the Aug-2026 audit ran, so the audit's own finding was stale the moment it was
+  written; caught only now by re-checking the finding against the live code instead of trusting the
+  checklist. No action needed.
 - [ ] **Contain `roadmapPath`/`repoPath` reads to the project's own repo** — an "author"-scoped
   `PATCH /api/projects/:id` can set `roadmapPath`/`repoPath` to an arbitrary filesystem path with zero
   containment check, and `GET /api/projects/:id/roadmap` then returns that file's raw content. Fix:
@@ -327,15 +328,21 @@ parallel with v1 hardening. (Rivals make you pre-auth each CLI and learn worktre
 features below are white space.) 10 items from the original UX/ease list have shipped — see
 [the archive](ROADMAP-ARCHIVE.md#v15--ship-the-wedge-onboarding-fluency--memory-v0).
 
-Ordered by priority — the two signature bets first (nothing shipped on Memory v0 yet; consensus runs
-just got unblocked), then remaining ease-of-use work, then the lowest-urgency UI polish tail:
+Ordered by priority — the two signature bets first (Memory v0 phase 1 just shipped, phase 2 is next;
+consensus runs just got unblocked), then remaining ease-of-use work, then the lowest-urgency UI polish tail:
 
 **Memory v0 (thin moat, pulled forward from v4):**
-- [ ] Operator-authored + **decision-derived** facts (every `hitl_audit` "decided X because Y" becomes a memory
-  fact), scoped (workspace / project / area / agent), injected into any vendor via the `runner-sdk` seam, and
-  **exportable/owned** (git-committable). No LLM distillation yet (that's v4) — but it makes launch
-  not-just-another-orchestrator and starts the corpus compounding on day one. **Nothing here has shipped
-  yet — highest-priority open item in this version.**
+- [x] **Phase 1 — operator-authored facts, injected per project (shipped).** Scoped (workspace / project /
+  area / agent) facts, injected into any vendor's run through the `runner-sdk` seam, exportable and
+  operator-owned (git-committed to `.skynet/memory/*.md`, not locked in a database). Reuses TASK 28's
+  commit-attribution mechanism for writes. No LLM distillation (that's v4).
+- [ ] **Phase 2 — decision-derived facts from `hitl_audit`.** Every "decided X because Y" resolution
+  already recorded in the audit trail becomes a memory fact automatically, no operator authoring
+  required — same scoping and export path as phase 1. **Now the highest-priority open item in this
+  version**, since phase 1 is done.
+- [ ] **Phase 3 — workspace-scoped MCP read/write server.** Expose the full memory surface over MCP so
+  any agent or tool can read/write it, scoped at the workspace level — beyond the project-scoped thin
+  v0 MCP tools that already ship under v4 (`list_memory`/`add_memory`/`delete_memory`/`refresh_memory`).
 
 **⭐ Cross-vendor consensus runs (signature bet):**
 - [ ] Fire the same task at Claude + Codex + Gemini in parallel, auto-diff the results, keep/merge the winner, or
@@ -375,11 +382,20 @@ just got unblocked), then remaining ease-of-use work, then the lowest-urgency UI
 Per-project LLM **area managers** decompose an area's goal and spawn first-class **worker subagents**
 via a `spawn_worker` tool; risk-based escalation; worker→manager→project merge.
 [docs/agent-hierarchy.md](docs/agent-hierarchy.md)
-- [ ] 🔬 The decomposition is **LLM planning** — Skynet supplies the area goal + module map + the
-  `spawn_worker` tool, surfaces a `plan` HITL, and spawns workers on approval. The model does the "how."
-- [ ] **Managers organize by area *or* role** — same mechanism, different scope: a "Billing manager"
-  (module area) or a "Review / QA / Security manager" (function). Role-managers are how specialized
-  agents are arranged; workers under them inherit the role's prompt + tool scope.
+- [x] **The core mechanism — LLM-planned decomposition, "role" and "area" managers alike (shipped).**
+  A run provisioned with `role:"manager"` gets a real, in-process `spawn_worker` MCP tool that provisions
+  a first-class worker `TaskRun` under it (own runner/worktree/branch/HITL/merge, never an in-process
+  subagent); a worker's low-risk question/plan HITL gates auto-resolve against its manager instead of
+  paging a human; an approved worker diff integrates into the manager's own branch first. "Role" vs
+  "area" needed no schema split — both are just a manager run with a task brief and an optional module
+  scope. **Deliberately not built yet:** any web UI (Subway/Roster manager lines, an Inbox
+  "auto-resolved by manager" filter) or a polished "start a manager" flow — only a minimal server
+  entrypoint exists today (`Operations.assignManager`). That UI gap is the natural next item here.
+- [ ] **Manager/worker UI — make the shipped hierarchy visible and operable.** The backend above is real
+  and merging; there's no way to see or start it from the app. Needs: manager/worker lines on the
+  Subway and Roster views, an Inbox filter for gates a manager auto-resolved (so a human can audit them
+  without them cluttering the main queue), and a real "start a manager" flow in place of the raw
+  `assignManager` API call.
 - [ ] **Agent-to-agent handoff on feature completion** — when a Feature reaches `shipped`, or a
   milestone flips to `shipped`, the orchestrator fans out to configured **role-agents**: a
   **change-manager** commits the CHANGELOG.md entry (HITL-gated diff), a **docs-writer** updates
