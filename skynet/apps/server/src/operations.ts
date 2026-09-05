@@ -1146,6 +1146,14 @@ export class Operations {
     // created — the operator sees the GitHub error, not an orphaned project. A new
     // repo supersedes any local folder; the fresh repo is auto-cloned below.
     let repo = input.repo;
+    // Binding straight to a local folder is the same server-filesystem exposure
+    // /api/fs/list gates behind config.allowLocalFs (local/desktop only, MUST
+    // stay off for a hosted/multi-user deployment) — without this, any caller
+    // who can create a project could point repoPath at an arbitrary path the
+    // server process can read (e.g. "/etc"), with nothing to contain it.
+    if (input.repoPath && !config.allowLocalFs) {
+      throw new Error("Binding a project to a local folder is disabled on this server.");
+    }
     let repoPath = input.repoPath ? resolvePath(input.repoPath) : null;
     // Cloning an EXISTING repo: the operator pastes its git URL (HTTPS/SSH) — we
     // normalize it to the "owner/repo" slug and bind to it, so the existing
@@ -1269,6 +1277,11 @@ export class Operations {
     const existing = await this.store.getProject(id);
     if (!existing || existing.workspaceId !== ws) throw new NotFoundError("Project");
     // Rebinding the local folder recomputes git-backing (null clears it).
+    // Setting a NEW path (clearing to null is always fine) needs the same
+    // config.allowLocalFs gate createProject applies — see its comment.
+    if (patch.repoPath && !config.allowLocalFs) {
+      throw new Error("Binding a project to a local folder is disabled on this server.");
+    }
     const rebind =
       patch.repoPath !== undefined
         ? (() => {
