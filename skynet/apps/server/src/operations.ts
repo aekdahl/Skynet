@@ -1490,6 +1490,7 @@ export class Operations {
       // Triage asks for what it needs; nothing to ask before it has run.
       clarification: null,
       reviewVerdict: null,
+      bakeoffVerdict: null,
       assignment: { mode: "unassigned", agentIds: [] },
       order: inProject.length,
       archived: false,
@@ -2503,6 +2504,17 @@ export class Operations {
   }
 
   /**
+   * Manual "Judge now" — the bake-off sibling of `requestReview` above: force
+   * the N-way comparison pass on an in-flight cross-vendor bake-off now.
+   * Throws NoOpenBakeoffReviewError / BakeoffAlreadyJudgedError /
+   * NoReviewerAvailableError (orchestrator.ts) for the honest failure modes.
+   */
+  async requestBakeoffJudgment(ws: string, tid: string): Promise<void> {
+    const task = await this.getTask(ws, tid);
+    await this.orchestrator.requestBakeoffJudgment(ws, task.id);
+  }
+
+  /**
    * Manual "Request re-triage" — force a fresh triage pass on a task already
    * parked in `triage` now, instead of waiting for it to cycle back through
    * `backlog` on its own. Throws NoTriageTargetError / NoCapacityError
@@ -3195,6 +3207,7 @@ export class Operations {
         assessmentRisks: [],
         clarification: null,
         reviewVerdict: null,
+        bakeoffVerdict: null,
         assignment: { mode: "unassigned", agentIds: [] },
         order: inProject.length + i,
         archived: false,

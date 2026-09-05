@@ -1062,6 +1062,14 @@ export function assignTask(projectId: string, taskId: string) {
 export function startBakeoff(projectId: string, taskId: string, providerIds: ProviderId[]) {
   return req<TaskRun[]>("POST", `/api/projects/${projectId}/tasks/${taskId}/bakeoff`, { providerIds });
 }
+/** The bake-off sibling of `requestReview`: force the N-way comparison pass
+ *  now instead of waiting for a periodic tick to find every sibling finished
+ *  and an eligible judge idle at the same moment. Throws (ApiError 409) with
+ *  an honest, specific reason — not every sibling finished yet / already
+ *  judged / no judge free right now — for the caller to surface. */
+export function requestBakeoffJudgment(projectId: string, taskId: string) {
+  return req<unknown>("POST", `/api/projects/${projectId}/tasks/${taskId}/request-bakeoff-review`);
+}
 /** Answer triage's clarifying questions — appends the operator's own words to
  *  the task description and returns it to backlog for re-triage. */
 export function answerClarification(projectId: string, taskId: string, answer: string) {
