@@ -2052,6 +2052,20 @@ export class Operations {
   }
 
   /**
+   * Assign a task as a MANAGER agent instead of a plain worker
+   * (agent-hierarchy.md §2) — it decomposes `area` and delegates via
+   * `spawn_worker` rather than editing code itself. `area` is the manager's
+   * declared module scope going in (empty = unrestricted — the "role manager"
+   * shape, e.g. a cross-cutting Review/QA/Security manager, per the roadmap's
+   * "same mechanism, different scope"). See Orchestrator.assignTask.
+   */
+  async assignManager(ws: string, projectId: string, tid: string, area: string[]): Promise<TaskRun> {
+    const project = await this.store.getProject(projectId);
+    if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
+    return this.orchestrator.assignTask(projectId, tid, { role: "manager", area });
+  }
+
+  /**
    * Human-driven kanban move, validated against HUMAN_TRANSITIONS. Handles the
    * gated edges: review→done approves an open diff HITL (merges → done) when one
    * exists; abandoning `ongoing`/`review` or demoting a `done` task stops+archives
