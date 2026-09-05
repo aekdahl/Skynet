@@ -1669,6 +1669,13 @@ export const ProviderInfo = z.object({
   // Live detection: is the required CLI binary on the server's PATH? null = not
   // applicable (in-process SDK provider); undefined = not probed.
   binOnPath: z.boolean().nullable().optional(),
+  // Does this provider's runner implement RunnerHandle.inform() — the "mass
+  // inform" note that rides a run's next prompt at no extra turn? Undefined =
+  // supported (only Copilot lacks it today). Lets the client gray out an
+  // unsupported agent up front instead of learning about it from a skipped
+  // count after sending — see RunnerHandle.inform's doc comment for exactly
+  // which runners implement it.
+  supportsInform: z.boolean().optional(),
 });
 export type ProviderInfo = z.infer<typeof ProviderInfo>;
 
