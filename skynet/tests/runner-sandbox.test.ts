@@ -45,6 +45,47 @@ describe("wrapForSandbox", () => {
       expect(w.note.toLowerCase()).toContain("unsandboxed");
     }
   });
+
+  // `force` — the live-preview/Fly-deploy install-build step (preview/worktree.ts's
+  // runToCompletion) opts out of the SKYNET_RUNNER_SANDBOX gate entirely: it must
+  // not be able to run attacker-controlled shell unsandboxed just because the
+  // fleet-wide flag happens to be off.
+  describe("force", () => {
+    it("is a pure passthrough with the flag OFF and force NOT set — unchanged from today", () => {
+      delete process.env[KEY];
+      const w = wrapForSandbox("/bin/sh", ["-c", "npm install"], { cwd: "/work/wt" });
+      expect(w.bin).toBe("/bin/sh");
+      expect(w.sandboxed).toBe(false);
+      expect(w.note).toBe("");
+    });
+
+    it("with the flag OFF, force:true still attempts sandboxing (or explains why it can't)", () => {
+      delete process.env[KEY];
+      const cwd = "/work/wt";
+      const w = wrapForSandbox("/bin/sh", ["-c", "npm install"], { cwd, force: true });
+      // Same behavior as the flag being on — force bypasses only the opt-in gate,
+      // the confinement logic itself (or the honest unsandboxed fallback) is identical.
+      expect(w.note).not.toBe("");
+      if (w.sandboxed) {
+        expect(w.bin).not.toBe("/bin/sh");
+        expect(w.args).toContain("/bin/sh");
+        expect(w.args).toContain("-c");
+        expect(w.args).toContain("npm install");
+        expect(w.args.some((a) => a.includes(cwd))).toBe(true);
+      } else {
+        expect(w.bin).toBe("/bin/sh");
+        expect(w.note.toLowerCase()).toContain("unsandboxed");
+      }
+    });
+
+    it("force:true and the flag both on behaves exactly like the flag alone", () => {
+      process.env[KEY] = "1";
+      const cwd = "/work/wt";
+      const withFlagOnly = wrapForSandbox("/bin/sh", ["-c", "npm install"], { cwd });
+      const withBoth = wrapForSandbox("/bin/sh", ["-c", "npm install"], { cwd, force: true });
+      expect(withBoth).toEqual(withFlagOnly);
+    });
+  });
 });
 
 describe("hermes provider registration", () => {

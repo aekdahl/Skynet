@@ -82,6 +82,17 @@ It must not reach the Skynet control-plane or the host broadly:
 - The iframe stays `sandbox`ed with a strict `frame-ancestors`/CSP (extends the
   posture the current `/preview` route already enforces).
 - Egress/network confinement rides the containerized runner (hosted, 🏢).
+- The **install/build step** (`.skynet/preview.json`'s `install`/`buildCmd`, or
+  the inferred lockfile command) runs BEFORE a human has approved anything, so
+  it gets stricter treatment than the dev/start process above: it's classified
+  by the same command-safety denylist an agent's own command gate is judged
+  against (a hard-denied command never spawns), its env defaults to an
+  ALLOWLIST rather than the server's own env minus a few known secrets, and
+  its OS write-sandbox is **mandatory**, not opt-in — see
+  `preview/worktree.ts`'s `runToCompletion`. The dev/start process itself
+  keeps the opt-in sandbox described above (it legitimately needs broader
+  write access than a one-shot install) but is classified the same way before
+  it spawns.
 
 ## The overwatch UX
 

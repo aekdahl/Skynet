@@ -29,6 +29,7 @@ import { dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { wrapForSandbox } from "@skynet/runner-sdk/sandbox";
 import { ASSISTANT_MODEL, oneShotRepoAssistant } from "@skynet/runner-sdk/claude";
+import { assertApprovable, scrubbedEnv } from "../command-safety.js";
 import { secretService } from "../secrets/index.js";
 import { publicOrigin } from "./public-origin.js";
 import {
@@ -69,6 +70,23 @@ export function previewEnv(extra: Record<string, string> = {}): NodeJS.ProcessEn
   delete env.npm_config_omit; // "--omit=dev"
   for (const key of PREVIEW_ENV_DENYLIST) delete env[key];
   return env;
+}
+
+/**
+ * Environment for an INSTALL or BUILD step specifically — command-safety.ts's
+ * `scrubbedEnv()` (an ALLOWLIST) plus NODE_ENV=development, rather than
+ * `previewEnv()`'s denylist over the full server env. Both commands come
+ * straight from `.skynet/preview.json` on the unreviewed branch being
+ * previewed/deployed (see `runToCompletion`'s hardening in preview/worktree.ts)
+ * and have no legitimate need for operator-set custom vars the way the
+ * long-lived dev/start process might — so they get the strictest baseline
+ * available instead of "whatever the server process happens to hold, minus a
+ * known list of secrets." Exported so the Fly deploy engine (fly/deploy.ts),
+ * which runs the SAME class of commands for a static-site deploy, shares this
+ * exact baseline instead of re-deriving its own.
+ */
+export function previewInstallEnv(): NodeJS.ProcessEnv {
+  return { ...scrubbedEnv(), NODE_ENV: "development" };
 }
 
 /** `"npm run <script>"` → `<script>`, else null. Used to look up the actual
@@ -757,10 +775,10 @@ export class ProjectPreviewManager {
    *  clones with none anywhere fall back to a real install. No-op once present
    *  (a warm reused worktree, or a prior symlink). */
   private async ensureDeps(p: Live, gitRepo: string): Promise<void> {
-    // A live preview is a DEV run — force NODE_ENV=development for the install
-    // too (see previewEnv's header comment: otherwise devDependencies the dev
-    // script needs get skipped).
-    return sharedEnsureDeps(p.dir, gitRepo, (line) => this.log(p, line), previewEnv());
+    // previewInstallEnv(), not previewEnv() — the install command comes
+    // straight from the unreviewed branch (see its own doc comment); it
+    // still needs NODE_ENV=development so devDependencies aren't skipped.
+    return sharedEnsureDeps(p.dir, gitRepo, (line) => this.log(p, line), previewInstallEnv());
   }
 
   /** A fresh detached worktree has no `.env`, yet many dev scripts assume one —
@@ -857,11 +875,14 @@ export class ProjectPreviewManager {
     );
   }
 
-  /** Run a setup command (e.g. install) to completion, streaming to the logs.
-   *  Not sandboxed — install needs the registry; the untrusted app runtime (the
-   *  dev server) is the wrapped one. Rejects on non-zero exit or timeout. */
+  /** Run an install-class command (re-install, an embedded sub-package
+   *  install) to completion, streaming to the logs. previewInstallEnv(), not
+   *  previewEnv() — see that function's own doc comment. The mandatory
+   *  sandbox + command-safety deny-check live in the shared
+   *  runToCompletion (preview/worktree.ts), not here. Rejects on non-zero
+   *  exit or timeout. */
   private runToCompletion(cmd: string, cwd: string, p: Live, timeoutMs: number): Promise<void> {
-    return sharedRunToCompletion(cmd, cwd, (line) => this.log(p, line), timeoutMs, previewEnv());
+    return sharedRunToCompletion(cmd, cwd, (line) => this.log(p, line), timeoutMs, previewInstallEnv());
   }
 
   /** Kill a preview's dev-server child + idle/rebuild timers, WITHOUT removing
@@ -1014,7 +1035,10 @@ export class ProjectPreviewManager {
       if (p.buildCmd) {
         this.log(p, `▸ building — ${p.buildCmd}`);
         try {
-          await sharedRunToCompletion(p.buildCmd, p.dir, (l) => this.log(p, l), BUILD_TIMEOUT_MS, previewEnv());
+          // previewInstallEnv(), not previewEnv() — this build command comes
+          // from the same unreviewed `.skynet/preview.json` as the install
+          // step (see that function's own doc comment); same untrusted class.
+          await sharedRunToCompletion(p.buildCmd, p.dir, (l) => this.log(p, l), BUILD_TIMEOUT_MS, previewInstallEnv());
         } catch (err) {
           if (this.previews.get(spec.key) !== p) return this.state(spec.key); // superseded during build
           p.status = "failed";
@@ -1096,9 +1120,23 @@ export class ProjectPreviewManager {
     }
     this.log(p, `▸ ${cmd}  (PORT=${recipe.port}, source: ${recipe.source})`);
 
+    // The dev/start command is agent-branch content too (.skynet/preview.json's
+    // `dev`, or a package.json script on the same unreviewed branch) — the same
+    // hard-DENY classification an agent's own command gate is judged against
+    // applies here before it ever spawns (initial start AND a service's
+    // rebuild-restart, since both call runRecipe). Only `deny` throws; an
+    // ordinary `npm run dev` classifies `gate`/`allow` and passes straight
+    // through — this catches a genuinely malicious override, not routine dev
+    // commands.
+    assertApprovable(cmd);
+
     // Spawn via a shell so "npm run dev" etc. work; wrap for the opt-in OS
-    // sandbox (no-op unless SKYNET_RUNNER_SANDBOX). PORT is injected two ways
-    // (env + common Vite/CRA/Next var) so most dev servers pick it up.
+    // sandbox (no-op unless SKYNET_RUNNER_SANDBOX — unlike the install/build
+    // step above, sandboxing here stays opt-in: a live dev server legitimately
+    // needs broader write access — build caches, generated files — than a
+    // one-shot install, so forcing it on risks breaking real dev setups).
+    // PORT is injected two ways (env + common Vite/CRA/Next var) so most dev
+    // servers pick it up.
     const wrapped = wrapForSandbox("/bin/sh", ["-c", cmd], { cwd: p.dir });
     if (wrapped.note) this.log(p, wrapped.note);
     const child = spawn(wrapped.bin, wrapped.args, {
@@ -1269,7 +1307,11 @@ export class ProjectPreviewManager {
       p.status = "starting";
       if (p.buildCmd) {
         try {
-          await sharedRunToCompletion(p.buildCmd, p.dir, (l) => this.log(p, l), BUILD_TIMEOUT_MS, previewEnv());
+          // previewInstallEnv(), not previewEnv() — same untrusted class as
+          // the initial build step in startSpec (see previewInstallEnv's doc
+          // comment): this re-runs the SAME `.skynet/preview.json` build
+          // command on every merge, still unreviewed content each time.
+          await sharedRunToCompletion(p.buildCmd, p.dir, (l) => this.log(p, l), BUILD_TIMEOUT_MS, previewInstallEnv());
         } catch (err) {
           if (this.previews.get(p.key) !== p) return; // superseded during build
           p.status = "failed";
