@@ -1317,6 +1317,9 @@ export function refreshProjectContext(projectId: string) {
 
 // ─── Live preview (Phase-1: web/sites) ──────────────────────────────────────
 export type PreviewSource = "main" | "merged" | "latest";
+// "service" (Phase 2) rebuilds/restarts automatically when the fleet merges,
+// instead of relying on the dev server's own HMR — see docs/live-preview.md.
+export type PreviewKind = "web" | "service";
 export interface PreviewState {
   status: "idle" | "starting" | "live" | "failed" | "stopped";
   url: string | null;
@@ -1327,6 +1330,7 @@ export interface PreviewState {
   startedAt: number | null;
   source: PreviewSource;
   combined: { total: number; included: number; skipped: number } | null;
+  kind: PreviewKind;
 }
 export function previewStatus(projectId: string) {
   return req<PreviewState>("GET", `/api/projects/${projectId}/preview`);
