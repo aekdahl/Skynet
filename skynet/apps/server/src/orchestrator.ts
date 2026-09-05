@@ -2869,6 +2869,7 @@ export class Orchestrator {
       model: runner.model,
       branch,
       modules,
+      bakeoffId: null,
       progress: 0,
       plan: [],
       usage: null,
