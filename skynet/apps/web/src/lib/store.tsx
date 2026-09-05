@@ -134,6 +134,14 @@ export interface Store extends StoreState {
     action: ResolveAction,
     extra?: { optionIndex?: number; guidance?: string; remember?: boolean; targetBranch?: string; memoryNote?: string; resetWork?: boolean },
   ) => Promise<void>;
+  // Gate batching — resolve several open decisions in one call. Returns what
+  // actually happened (never throws for a partial batch) so the Inbox can
+  // tell the operator if some of the N didn't go through.
+  resolveHitlBatch: (
+    ids: string[],
+    action: ResolveAction,
+    extra?: { optionIndex?: number; guidance?: string; remember?: boolean; targetBranch?: string; memoryNote?: string; resetWork?: boolean },
+  ) => Promise<{ resolved: HitlItem[]; skipped: Array<{ id: string; reason: string }> }>;
   sendAgentMessage: (id: string, text: string) => Promise<string>;
   streamAgentMessage: (id: string, text: string, onDelta: (chunk: string) => void) => Promise<string>;
   // `inform` — mass-select runs (explicit ids and/or a whole project's live
@@ -692,6 +700,18 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           await api.resolveHitl(id, { action, ...extra });
         } catch (e) {
           toast(serverMessage(e, "Couldn't resolve that decision."));
+        }
+      },
+      resolveHitlBatch: async (ids, action, extra) => {
+        try {
+          const result = await api.resolveHitlBatch(ids, { action, ...extra });
+          if (result.skipped.length > 0) {
+            toast(`${result.resolved.length} of ${ids.length} resolved — ${result.skipped.length} couldn't be (already handled?).`);
+          }
+          return result;
+        } catch (e) {
+          toast(serverMessage(e, "Couldn't resolve that batch."));
+          return { resolved: [], skipped: ids.map((id) => ({ id, reason: "request failed" })) };
         }
       },
       sendAgentMessage: async (id, text) => {

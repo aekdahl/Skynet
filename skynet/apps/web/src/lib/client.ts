@@ -315,6 +315,22 @@ export function resolveHitl(
   return req<unknown>("POST", `/api/hitl/${id}/resolve`, body);
 }
 
+/** Gate batching — resolve several open decisions (same repeatable
+ *  command-approval gate raised across N runs, see kanban/gate-batching.ts)
+ *  in one call. `skipped` reports anything that didn't go through (already
+ *  resolved by someone else, etc.) so the Inbox can be honest about partial
+ *  batches rather than a blanket "done". */
+export function resolveHitlBatch(
+  ids: string[],
+  body: { action: ResolveAction; optionIndex?: number; guidance?: string; remember?: boolean; targetBranch?: string; memoryNote?: string; resetWork?: boolean },
+) {
+  return req<{ resolved: HitlItem[]; skipped: Array<{ id: string; reason: string }> }>(
+    "POST",
+    "/api/hitl/resolve-batch",
+    { ids, ...body },
+  );
+}
+
 // TaskRun chat / fork
 export function sendAgentMessage(id: string, text: string) {
   return req<{ reply: string }>("POST", `/api/runs/${id}/messages`, { text });

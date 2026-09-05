@@ -910,6 +910,35 @@ export class Operations {
     return resolved ?? item;
   }
 
+  /**
+   * Gate batching — resolve N HitlItems (typically several runs raising the
+   * SAME command-approval gate) as one decision instead of clicking through
+   * each individually. Reuses `resolveHitl`'s full per-item logic/side-effects
+   * unchanged (deliver, approve-and-remember, the command denylist re-check,
+   * first-writer-wins) — this is purely a loop over it, not a parallel
+   * implementation. Best-effort per id: one already-resolved/gone/denied item
+   * doesn't block the rest of the batch (same "report what actually happened"
+   * shape as `informRuns`), so the caller can tell the operator exactly which
+   * ones went through.
+   */
+  async resolveHitlBatch(
+    ws: string,
+    ids: string[],
+    input: ResolveRequest,
+    operatorId: string,
+  ): Promise<{ resolved: HitlItem[]; skipped: Array<{ id: string; reason: string }> }> {
+    const resolved: HitlItem[] = [];
+    const skipped: Array<{ id: string; reason: string }> = [];
+    for (const id of ids) {
+      try {
+        resolved.push(await this.resolveHitl(ws, id, input, operatorId));
+      } catch (err) {
+        skipped.push({ id, reason: (err as Error).message });
+      }
+    }
+    return { resolved, skipped };
+  }
+
   /** Add a standing "approve always" rule for `command` to the run's project, if
    *  the command is rememberable (low/medium, non-deny) and not already stored.
    *  Best-effort — a non-rememberable command or a missing project is a silent

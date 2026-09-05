@@ -373,6 +373,15 @@ const ALLOW = new Set<string>([
   // winner) is exercised against a real Orchestrator + throwaway git repo in
   // tests/bakeoff.test.ts.
   "startBakeoff",
+  // Governance-to-SOTA — policy-driven gate batching. Needs 2+ open
+  // approval gates sharing an identical command to mean anything; no
+  // offline journey/acceptance fixture raises two real HITL gates at once.
+  // The full round trip (Operations.resolveHitlBatch, the resolve-batch
+  // route, the "approver"-scope classification, a bad id not blocking the
+  // rest) is covered end to end against a real Fastify app + Orchestrator
+  // in tests/gate-batching-server.test.ts; the pure grouping logic that
+  // decides WHICH gates batch together is covered by tests/gate-batching.test.ts.
+  "resolveHitlBatch",
 ]);
 
 describe("client API coverage", () => {
