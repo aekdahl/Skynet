@@ -1097,7 +1097,7 @@ button.ct-seg { cursor: pointer; }
 .tl-axis { position: relative; height: 20px; margin-left: 190px; } /* matches .tl-lanes' axis-label column, not the spacing scale */
 .tl-tick { position: absolute; transform: translateX(-50%); font-family: var(--font-mono); font-size: var(--fz-10); color: var(--faint); }
 .tl-now-label { position: absolute; transform: translateX(-50%); font-family: var(--font-mono); font-size: var(--fz-10); font-weight: 600; color: var(--accent); }
-.tl-lanes { position: relative; margin-left: 190px; border-left: 1px solid var(--line); } /* matches .tl-axis' offset, not the spacing scale */
+.tl-lanes { position: relative; margin-left: 190px; border-left: 1px solid var(--line); touch-action: pan-y; } /* matches .tl-axis' offset, not the spacing scale */
 .tl-grid { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--line-soft); }
 .tl-now { position: absolute; top: -4px; bottom: -4px; width: 1px; background: var(--accent); opacity: 0.8; z-index: 2; }
 .tl-lane { position: relative; padding: var(--space-8) 0; border-bottom: 1px solid var(--line-soft); }
@@ -1115,6 +1115,14 @@ button.ct-seg { cursor: pointer; }
 .tl-mark { position: absolute; top: 50%; transform: translate(-50%, -50%); font-size: var(--fz-12); color: var(--warn); }
 .tl-legend { display: flex; gap: var(--space-24); font-size: var(--fz-11); color: var(--muted); }
 .tl-legend span { display: inline-flex; align-items: center; gap: var(--space-8); }
+.tl-toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; flex-wrap: wrap; }
+.tl-zoom { display: inline-flex; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
+.tl-zoom-btn { font-size: var(--fz-11); padding: 3px 9px; background: var(--bg); color: var(--muted); border: none; border-right: 1px solid var(--line); cursor: pointer; font-family: inherit; }
+.tl-zoom-btn:last-child { border-right: none; }
+.tl-zoom-btn:hover { color: var(--text); }
+.tl-zoom-btn.on { color: #0B0D11; background: var(--accent); font-weight: 600; }
+.tl-zoomed { display: inline-flex; align-items: center; gap: 8px; font-size: var(--fz-11); color: var(--muted); font-family: var(--font-mono); }
+.tl-brush { position: absolute; top: 0; bottom: 0; background: color-mix(in oklch, var(--accent), transparent 85%); border-left: 1px solid var(--accent); border-right: 1px solid var(--accent); z-index: 3; pointer-events: none; }
 
 /* ===== inbox modify/chat ===== */
 .btn-lit { border-color: var(--accent); color: var(--accent); }

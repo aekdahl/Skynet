@@ -1,5 +1,5 @@
-import { Fragment, useEffect, useMemo, useState } from "react";
-import type { AuditRecordWithActor, Decision, TaskRun, Transition } from "@skynet/shared";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import type { AuditRecordWithActor, Decision, Transition } from "@skynet/shared";
 import * as api from "../lib/client";
 import { cardVariant } from "../kanban/inbox";
 import { useStore } from "../lib/store";
@@ -446,6 +446,29 @@ export function HomeView({
 
 // ─── Timeline lens ───────────────────────────────────────────────────────────
 
+const TL_ZOOM_PRESETS: { m: number; l: string }[] = [
+  { m: 60, l: "1h" },
+  { m: 180, l: "3h" },
+  { m: 360, l: "6h" },
+  { m: 720, l: "12h" },
+  { m: 1440, l: "24h" },
+];
+// "now" sits ~78% across the window (matches the old fixed 144/185 layout),
+// leaving room on the right for a running task's projected-completion overrun.
+const TL_NOW_FRAC = 0.78;
+
+function tlTickStepMin(windowMin: number) {
+  if (windowMin <= 90) return 15;
+  if (windowMin <= 240) return 30;
+  if (windowMin <= 480) return 60;
+  if (windowMin <= 900) return 120;
+  return 240;
+}
+
+function tlFmtClock(ms: number) {
+  return new Date(ms).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hour12: false });
+}
+
 // Exported so the project page can reuse it in single-lane mode via `projectId`:
 // the same layout, deps, and legend the workspace view uses — just filtered to
 // one project's lane and one project's cross-run deps. Kept in-file to avoid
@@ -480,17 +503,78 @@ export function TimelineView({
     : store.deps;
   const fleet = store.fleet;
   const oq = openQueue(queue);
-  const W = 185;
-  const NOW = 144;
-  const pct = (m: number) => Math.max(0, Math.min(100, (m / W) * 100));
-  const ticks = [
-    { m: 54, l: "13:00" },
-    { m: 84, l: "13:30" },
-    { m: 114, l: "14:00" },
-    { m: 174, l: "15:00" },
-  ];
 
-  const startedMin = (a: TaskRun) => Math.floor((now - a.startedAt) / 60000);
+  // Zoom level persists per lane scope (workspace-wide vs a single project),
+  // same sessionStorage convention as the project page's lens/kview toggles.
+  const zoomKey = `skynet.tl.zoom.${projectId ?? "all"}`;
+  const [presetMin, setPresetMin] = useState<number>(() => {
+    if (typeof sessionStorage === "undefined") return 180;
+    const v = Number(sessionStorage.getItem(zoomKey));
+    return TL_ZOOM_PRESETS.some((p) => p.m === v) ? v : 180;
+  });
+  useEffect(() => {
+    if (typeof sessionStorage !== "undefined") sessionStorage.setItem(zoomKey, String(presetMin));
+  }, [zoomKey, presetMin]);
+
+  // A completed drag-brush pins the view to a fixed historical range (stops
+  // tracking `now`) until Reset or a preset click returns it to live. Not
+  // persisted — a brush is a one-off "let me look at that" action.
+  const [pinnedRange, setPinnedRange] = useState<{ start: number; end: number } | null>(null);
+  // Live drag-in-progress selection, as fractions [0,1] of the lanes width.
+  const [brush, setBrush] = useState<{ x0: number; x1: number } | null>(null);
+  const lanesRef = useRef<HTMLDivElement>(null);
+  const draggingRef = useRef(false);
+
+  const range = pinnedRange ?? {
+    start: now - presetMin * TL_NOW_FRAC * 60_000,
+    end: now + presetMin * (1 - TL_NOW_FRAC) * 60_000,
+  };
+  const W = (range.end - range.start) / 60_000;
+  const pct = (m: number) => Math.max(0, Math.min(100, (m / W) * 100));
+  const toX = (ms: number) => pct((ms - range.start) / 60_000);
+
+  const tickStep = tlTickStepMin(W);
+  const ticks: { x: number; l: string }[] = [];
+  for (
+    let t = Math.ceil(range.start / (tickStep * 60_000)) * tickStep * 60_000;
+    t < range.end;
+    t += tickStep * 60_000
+  ) {
+    ticks.push({ x: toX(t), l: tlFmtClock(t) });
+  }
+  const nowInView = now >= range.start && now <= range.end;
+  const nowX = toX(now);
+
+  const fracFromClientX = (clientX: number) => {
+    const el = lanesRef.current;
+    if (!el) return 0;
+    const rect = el.getBoundingClientRect();
+    return Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+  };
+  const onLanesPointerDown = (e: React.PointerEvent) => {
+    if ((e.target as Element).closest(".tl-bar")) return; // let bar clicks through untouched
+    draggingRef.current = true;
+    (e.target as Element).setPointerCapture(e.pointerId);
+    const frac = fracFromClientX(e.clientX);
+    setBrush({ x0: frac, x1: frac });
+  };
+  const onLanesPointerMove = (e: React.PointerEvent) => {
+    if (!draggingRef.current) return;
+    setBrush((b) => (b ? { ...b, x1: fracFromClientX(e.clientX) } : b));
+  };
+  const onLanesPointerUp = () => {
+    if (!draggingRef.current) return;
+    draggingRef.current = false;
+    const b = brush;
+    setBrush(null);
+    if (!b) return;
+    const lo = Math.min(b.x0, b.x1);
+    const hi = Math.max(b.x0, b.x1);
+    if (hi - lo < 0.02) return; // accidental click/micro-drag, not a real brush
+    const start = range.start + lo * W * 60_000;
+    const end = Math.max(range.start + hi * W * 60_000, start + 5 * 60_000);
+    setPinnedRange({ start, end });
+  };
 
   const laneAgents = projects.map((p) =>
     agentsForProject(runs, p.id),
@@ -510,7 +594,7 @@ export function TimelineView({
   };
   const barStartX = (id: string) => {
     const a = runs.find((x) => x.id === id);
-    return pct(Math.max(0, NOW - (a ? startedMin(a) : 0)));
+    return a ? toX(a.startedAt) : 0;
   };
 
   return (
@@ -521,22 +605,64 @@ export function TimelineView({
           sub="What each agent has been doing, where it stalled, and where it's headed"
         />
       )}
+      <div className="tl-toolbar">
+        <div className="tl-zoom" role="group" aria-label="Timeline zoom">
+          {TL_ZOOM_PRESETS.map((p) => (
+            <button
+              key={p.m}
+              className={"tl-zoom-btn" + (!pinnedRange && presetMin === p.m ? " on" : "")}
+              onClick={() => {
+                setPinnedRange(null);
+                setPresetMin(p.m);
+              }}
+            >
+              {p.l}
+            </button>
+          ))}
+        </div>
+        {pinnedRange && (
+          <span className="tl-zoomed">
+            Zoomed to {tlFmtClock(pinnedRange.start)}–{tlFmtClock(pinnedRange.end)}
+            <button className="btn btn-ghost btn-sm" onClick={() => setPinnedRange(null)}>
+              Reset
+            </button>
+          </span>
+        )}
+      </div>
       <div className="tl-wrap">
         <div className="tl-axis">
           {ticks.map((t) => (
-            <span key={t.l} className="tl-tick" style={{ left: pct(t.m) + "%" }}>
+            <span key={t.x} className="tl-tick" style={{ left: t.x + "%" }}>
               {t.l}
             </span>
           ))}
-          <span className="tl-now-label" style={{ left: pct(NOW) + "%" }}>
-            now
-          </span>
+          {nowInView && (
+            <span className="tl-now-label" style={{ left: nowX + "%" }}>
+              now
+            </span>
+          )}
         </div>
-        <div className="tl-lanes">
-          <div className="tl-now" style={{ left: pct(NOW) + "%" }} />
+        <div
+          className="tl-lanes"
+          ref={lanesRef}
+          onPointerDown={onLanesPointerDown}
+          onPointerMove={onLanesPointerMove}
+          onPointerUp={onLanesPointerUp}
+          onPointerCancel={onLanesPointerUp}
+        >
+          {nowInView && <div className="tl-now" style={{ left: nowX + "%" }} />}
           {ticks.map((t) => (
-            <div key={t.l} className="tl-grid" style={{ left: pct(t.m) + "%" }} />
+            <div key={t.x} className="tl-grid" style={{ left: t.x + "%" }} />
           ))}
+          {brush && (
+            <div
+              className="tl-brush"
+              style={{
+                left: Math.min(brush.x0, brush.x1) * 100 + "%",
+                width: Math.abs(brush.x1 - brush.x0) * 100 + "%",
+              }}
+            />
+          )}
           {deps.map((d) => {
             const fa = runs.find((a) => a.id === d.fromAgentId);
             const ta = runs.find((a) => a.id === d.toAgentId);
@@ -572,14 +698,12 @@ export function TimelineView({
                 <span className="tl-proj">{p.name}</span>
                 <div className="tl-bars">
                   {pa.map((a) => {
-                    const sm = startedMin(a);
-                    const start = Math.max(0, NOW - sm);
-                    const total =
+                    const endMs =
                       a.status === "done"
-                        ? NOW - 102 - start
-                        : sm / Math.max(a.progress, 0.08);
-                    const x = pct(start);
-                    const w = Math.max(7, pct(Math.min(start + total, W)) - x);
+                        ? a.mergedAt ?? now
+                        : a.startedAt + (now - a.startedAt) / Math.max(a.progress, 0.08);
+                    const x = toX(a.startedAt);
+                    const w = Math.max(7, toX(Math.min(endMs, range.end)) - x);
                     const q = oq.find((it) => it.runId === a.id);
                     return (
                       <div key={a.id} className="tl-canvas">
