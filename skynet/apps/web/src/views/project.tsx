@@ -30,6 +30,7 @@ import { SwDiagram } from "../components/subway-diagram";
 import { QueueCard } from "./queue";
 import { TimelineView } from "./home";
 import { RoadmapDocView } from "./project-roadmap";
+import { ProjectMemoryView } from "./project-memory";
 import { ProjectQualityView } from "./project-quality";
 import { ProjectContextView } from "./project-context";
 import { InformComposer, toastInformResult } from "./fleet";
@@ -1739,10 +1740,10 @@ export function ProjectView({
   // Per-project lens (Kanban is the default; Archived shows soft-hidden tasks +
   // restore; Roadmap renders ROADMAP.md from the repo). Persisted per-project in
   // sessionStorage so switching back restores the last chosen lens.
-  const [lens, setLens] = useState<"kanban" | "roadmap" | "context" | "coverage" | "rules" | "keys" | "feed" | "archived" | "health">(() => {
+  const [lens, setLens] = useState<"kanban" | "roadmap" | "memory" | "context" | "coverage" | "rules" | "keys" | "feed" | "archived" | "health">(() => {
     if (typeof sessionStorage === "undefined") return "kanban";
     const v = sessionStorage.getItem(`skynet.proj.lens.${project.id}`);
-    return v === "roadmap" || v === "context" || v === "coverage" || v === "rules" || v === "keys" || v === "feed" || v === "archived" || v === "health" ? v : "kanban";
+    return v === "roadmap" || v === "memory" || v === "context" || v === "coverage" || v === "rules" || v === "keys" || v === "feed" || v === "archived" || v === "health" ? v : "kanban";
   });
   useEffect(() => {
     if (typeof sessionStorage !== "undefined")
@@ -2222,6 +2223,7 @@ export function ProjectView({
               // uses, so unlike Rules this is never gated on newBoardEnabled.
               "keys",
               "roadmap",
+              "memory",
               "context",
               "coverage",
               "feed",
@@ -2234,7 +2236,7 @@ export function ProjectView({
               className={"lens-btn" + (lens === id ? " on" : "")}
               onClick={() => setLens(id)}
             >
-              {id === "kanban" ? "Kanban" : id === "rules" ? "Rules" : id === "keys" ? "Keys" : id === "roadmap" ? "Roadmap" : id === "context" ? "Context" : id === "coverage" ? "Coverage" : id === "feed" ? "Feed" : id === "health" ? "Health" : "Archived"}
+              {id === "kanban" ? "Kanban" : id === "rules" ? "Rules" : id === "keys" ? "Keys" : id === "roadmap" ? "Roadmap" : id === "memory" ? "Memory" : id === "context" ? "Context" : id === "coverage" ? "Coverage" : id === "feed" ? "Feed" : id === "health" ? "Health" : "Archived"}
               {id === "archived" && archivedTasks.length > 0 && (
                 <span className="lens-btn-count">{archivedTasks.length}</span>
               )}
@@ -2262,6 +2264,8 @@ export function ProjectView({
         <KeysBudgetPanel project={project} runs={runs} />
       ) : lens === "roadmap" ? (
         <RoadmapDocView project={project} tasks={tasks} />
+      ) : lens === "memory" ? (
+        <ProjectMemoryView project={project} />
       ) : lens === "coverage" ? (
         <ProjectQualityView project={project} />
       ) : lens === "context" ? (

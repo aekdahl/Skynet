@@ -60,6 +60,9 @@ import type {
   RoadmapEditResolveRequest,
   RoadmapConflictResolveRequest,
   RoadmapWorkspaceRollup,
+  MemoryFactSummary,
+  MemoryScope,
+  CreateMemoryFactRequest,
   SourceRef,
   Rule,
   SavePolicyVersionRequest,
@@ -130,6 +133,9 @@ import {
   proposalsConflict,
 } from "./roadmap/proposals.js";
 import { agentCoAuthor, AUTONOMOUS_APPLY_IDENTITY, operatorGitIdentity } from "./roadmap/attribution.js";
+import { parseMemoryFile, readWorkspaceMemory, currentFacts, type MemoryFact } from "./memory-format-reader.js";
+import { appendFact, newMemoryFileHeader } from "./memory-format-writer.js";
+import { memoryFilePath, memorySlug } from "./memory-paths.js";
 import { draftBriefFromConversation, summarizeConversation } from "./steward/crystallize.js";
 import { scanRepo } from "./quality/scan.js";
 import { condenseProjectContext } from "./steward/context.js";
@@ -147,10 +153,11 @@ import type { CapturedDiff, Hub } from "./hub.js";
 import { CLARIFICATION_ANSWERED_MARKER, NoCapacityError, NothingToReviewError, RunnerNotConfiguredError, TaskAlreadyAssignedError, type Orchestrator } from "./orchestrator.js";
 import { resolveExecutable } from "./steward/execution.js";
 import { secretService, withSecretAvailability } from "./secrets/index.js";
-import type { Store } from "./store/store.js";
+import { VersionConflictError, type Store } from "./store/store.js";
 import type { RuleEngine } from "./rules/engine.js";
 import { matchCondition, type EvalContext } from "./rules/engine.js";
 import type { PendingRuleAction, PendingRuleActionStatus } from "@skynet/shared";
+import { fireOnboardingMilestone, type TelemetryMilestone } from "./telemetry.js";
 
 /** A referenced entity does not exist (or isn't in the caller's workspace). 404. */
 export class NotFoundError extends Error {
@@ -303,6 +310,13 @@ export interface OperationsDeps {
   lintConsult?: (text: string, description: string | null, siblingTitles: string[]) => ReturnType<typeof lintTask>;
 }
 
+/** "Has this project got a real repo bound?" — GitHub-bound OR a local
+ *  checkout that's actually a git repo. Onboarding telemetry's (PMF v1.5)
+ *  before/after check for the "repo connected" milestone. */
+function hasRepoConnected(p: Pick<Project, "repo" | "repoPath" | "gitBacked">): boolean {
+  return !!(p.repo || (p.repoPath && p.gitBacked));
+}
+
 export class Operations {
   private seq = 0;
   private readonly store: Store;
@@ -431,9 +445,22 @@ export class Operations {
 
   /** Patch the workspace fleet policy (auto-scale + cap). */
   async updateWorkspaceSettings(ws: string, patch: UpdateWorkspaceSettingsRequest): Promise<WorkspaceSettings> {
-    const next = WorkspaceSettings.parse({ ...(await this.getWorkspaceSettings(ws)), ...patch, workspaceId: ws });
+    const existing = await this.getWorkspaceSettings(ws);
+    const next = WorkspaceSettings.parse({ ...existing, ...patch, workspaceId: ws });
     await this.store.putWorkspaceSettings(next);
+    // Onboarding telemetry (PMF v1.5) — the workspace just got its first real
+    // name (onboarding's `finish()` step). Fire-and-forget: never block the
+    // save this response actually depends on.
+    if (!existing.name.trim() && next.name.trim()) void fireOnboardingMilestone(this.store, ws, "workspace_created");
     return next;
+  }
+
+  /** Onboarding telemetry (PMF v1.5) — public so callers outside this class
+   *  that don't hold a Store reference (e.g. the secrets routes, which own
+   *  their own specialized secrets store) can still fire a milestone through
+   *  the normal Operations layering instead of reaching into `this.store`. */
+  async recordTelemetryMilestone(ws: string, kind: TelemetryMilestone): Promise<void> {
+    await fireOnboardingMilestone(this.store, ws, kind);
   }
 
   // ── command policy (versioned, per-workspace command-safety classifier) ────
@@ -941,8 +968,9 @@ export class Operations {
         skipped.push({ runId, reason: "not found" });
         continue;
       }
-      const ok = await this.orchestrator.inform(runId, note);
-      if (ok) informed.push(runId);
+      const result = await this.orchestrator.inform(runId, note);
+      if (result.ok) informed.push(runId);
+      else if (result.reason === "unsupported") skipped.push({ runId, reason: `${result.provider} doesn't support inform yet` });
       else skipped.push({ runId, reason: "not live — no active session to attach the note to" });
     }
     return { informed, skipped };
@@ -1232,6 +1260,9 @@ export class Operations {
     this.ruleEngine?.ensureSubscribed(ws);
     this.maybeAutoClone(ws, created);
     this.maybeAutoImportIssues(ws, created, input.importGithubIssues);
+    // Onboarding telemetry (PMF v1.5) — bound to a repo right at creation
+    // (GitHub-bound, an existing local git checkout, or a freshly created repo).
+    if (hasRepoConnected(created)) void fireOnboardingMilestone(this.store, ws, "repo_connected");
     return created;
   }
   async updateProject(ws: string, id: string, patch: UpdateProjectRequest, operatorId: string): Promise<Project> {
@@ -1273,6 +1304,10 @@ export class Operations {
     // pending override (see Orchestrator.clearAutonomyBreaker) — a fresh
     // manual "on" decision supersedes an earlier bypass either way.
     if (patch.autonomy === true) await this.orchestrator.resetAutonomyStreak(updated, operatorId);
+    // Onboarding telemetry (PMF v1.5) — the project just gained a repo it
+    // didn't have before (binding an existing local folder, or pointing at a
+    // GitHub repo after creation).
+    if (!hasRepoConnected(existing) && hasRepoConnected(updated)) void fireOnboardingMilestone(this.store, ws, "repo_connected");
     return updated;
   }
   /** TASK 19 — the composite autonomy dial: notch + underlying fields +
@@ -1436,11 +1471,13 @@ export class Operations {
     if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
     // New tasks append to the bottom of the backlog (highest order = lowest
     // priority) so existing manual ordering is preserved.
-    const inProject = (await this.store.listTasks(ws)).filter((t) => t.projectId === projectId);
+    const allWsTasks = await this.store.listTasks(ws);
+    const inProject = allWsTasks.filter((t) => t.projectId === projectId);
     const task: Task = {
       id: this.uid(`t-${this.slug(project.name)}`),
       workspaceId: ws,
       projectId,
+      version: 1,
       text: input.text,
       description: input.description?.trim() || null,
       state: "backlog",
@@ -1499,6 +1536,11 @@ export class Operations {
     if (created.source?.kind !== "github_issue" && created.source?.kind !== "repo_file") {
       this.maybeLintTask(ws, created);
     }
+    // Onboarding telemetry (PMF v1.5) — `allWsTasks` was read before this task
+    // was appended, so length 0 means this is the workspace's first-ever task
+    // (whether typed by hand or the first row of a bulk import — either way
+    // it's genuinely the first thing this workspace ever had to work on).
+    if (allWsTasks.length === 0) void fireOnboardingMilestone(this.store, ws, "first_task_created");
     return created;
   }
 
@@ -1538,13 +1580,16 @@ export class Operations {
       .filter((t) => t.projectId === task.projectId && t.id !== task.id && !t.archived && (t.state === "backlog" || t.state === "todo"))
       .map((t) => t.text);
     const concerns = await this.withLintSlot(() => this.lintConsult(task.text, task.description, siblingTitles));
-    const current = await this.store.getTask(task.id);
-    if (!current || current.workspaceId !== ws) return; // deleted meanwhile
-    // The task may have been edited again while the consult was in flight —
-    // only apply the result if it still matches what was linted, else a
-    // stale verdict would clobber a fresher edit's own (pending) lint.
-    if (current.text !== task.text || current.description !== task.description) return;
-    await this.hub.upsertTask({ ...current, lint: { concerns, at: now(), dismissed: false } });
+    // The task may have been edited again (or deleted) while the consult was
+    // in flight — only apply the result if it still matches what was linted,
+    // else a stale verdict would clobber a fresher edit's own (pending) lint.
+    // Re-checked against the truly-current value at write time, not a
+    // separate pre-write read (see Hub.patchTask).
+    await this.hub.patchTask(task.id, (t) =>
+      t.workspaceId === ws && t.text === task.text && t.description === task.description
+        ? { lint: { concerns, at: now(), dismissed: false } }
+        : null,
+    );
   }
   /** Dismiss the current lint hint on a task — the operator has seen it and
    *  is setting it aside. A no-op if the task has no active lint result. */
@@ -1552,7 +1597,8 @@ export class Operations {
     const task = await this.store.getTask(tid);
     if (!task || task.workspaceId !== ws) throw new NotFoundError("Task");
     if (!task.lint) return task;
-    return this.hub.upsertTask({ ...task, lint: { ...task.lint, dismissed: true } });
+    const updated = await this.hub.patchTask(tid, (t) => (t.lint ? { lint: { ...t.lint, dismissed: true } } : null));
+    return updated ?? task;
   }
 
   /**
@@ -1586,12 +1632,15 @@ export class Operations {
       "",
       answer.trim(),
     ].join("\n");
-    return this.hub.upsertTask({
-      ...task,
-      description: `${task.description?.trim() ?? ""}${block}`.trim(),
-      clarification: null,
-      state: "backlog",
-    });
+    // Guard re-checked against the truly-current value at write time: if a
+    // concurrent write already cleared `clarification` (e.g. a re-triage
+    // landed first), silently overwriting it here would be exactly the
+    // lost-update race this task exists to close — surface it instead.
+    const updated = await this.hub.patchTask(tid, (t) =>
+      t.clarification ? { description: `${t.description?.trim() ?? ""}${block}`.trim(), clarification: null, state: "backlog" } : null,
+    );
+    if (!updated) throw new VersionConflictError("task", tid);
+    return updated;
   }
 
   /** Import a GitHub-connected project's OPEN issues as backlog tasks, each linked
@@ -1855,25 +1904,30 @@ export class Operations {
     // to also tick the Auto-pick box is a redundant step. Toggling between
     // `any` ↔ `agents` doesn't re-flip (operator already made an autoPick
     // choice), and an explicit `autoPick` in the same patch wins (user override).
-    const settingEligibility =
-      patch.assignment &&
-      patch.assignment.mode !== "unassigned" &&
-      task.assignment.mode === "unassigned";
-    const autoPickPatch: Pick<Task, "autoPick"> | Record<string, never> =
-      settingEligibility && patch.autoPick === undefined ? { autoPick: true } : {};
-    // Editing the text or description invalidates any existing lint result —
-    // clear it immediately (so a stale hint doesn't linger against new text)
-    // and kick a fresh background check.
-    const relint =
-      (patch.text !== undefined && patch.text !== task.text) ||
-      (patch.description !== undefined && patch.description !== task.description);
-    const updated = await this.hub.upsertTask({
-      ...task,
-      ...patch,
-      ...autoPickPatch,
-      ...(relint ? { lint: null } : {}),
+    //
+    // Both derivations below read off `current`, not the `task` fetched at
+    // the top of this function — deliberately, so a version-conflict retry
+    // (see Hub.patchTask) re-derives them against whatever's ACTUALLY current
+    // rather than reapplying a decision made against a snapshot that's since
+    // gone stale. `relintApplied` is a closure var precisely so the final
+    // (successful) attempt's answer is what drives the background lint kick
+    // below, not whichever attempt happened to run first.
+    let relintApplied = false;
+    const updated = await this.hub.patchTask(tid, (current) => {
+      const settingEligibility =
+        patch.assignment && patch.assignment.mode !== "unassigned" && current.assignment.mode === "unassigned";
+      const autoPickPatch: Pick<Task, "autoPick"> | Record<string, never> =
+        settingEligibility && patch.autoPick === undefined ? { autoPick: true } : {};
+      // Editing the text or description invalidates any existing lint result —
+      // clear it immediately (so a stale hint doesn't linger against new text)
+      // and kick a fresh background check.
+      relintApplied =
+        (patch.text !== undefined && patch.text !== current.text) ||
+        (patch.description !== undefined && patch.description !== current.description);
+      return { ...patch, ...autoPickPatch, ...(relintApplied ? { lint: null } : {}) };
     });
-    if (relint && !opts?.skipRelint) this.maybeLintTask(ws, updated);
+    if (!updated) throw new NotFoundError("Task");
+    if (relintApplied && !opts?.skipRelint) this.maybeLintTask(ws, updated);
     return updated;
   }
   /**
@@ -1917,7 +1971,7 @@ export class Operations {
     backlog.splice(idx, 1);
     backlog.splice(target, 0, task);
     for (let i = 0; i < backlog.length; i++) {
-      if (rank(backlog[i]!) !== i) await this.hub.upsertTask({ ...backlog[i]!, order: i });
+      if (rank(backlog[i]!) !== i) await this.hub.patchTask(backlog[i]!.id, { order: i });
     }
     return (await this.store.getTask(tid))!;
   }
@@ -1938,7 +1992,7 @@ export class Operations {
     if (to < 0) to = list.length; // unknown/self/none → append
     list.splice(to, 0, task);
     for (let i = 0; i < list.length; i++) {
-      if (rank(list[i]!) !== i) await this.hub.upsertTask({ ...list[i]!, order: i });
+      if (rank(list[i]!) !== i) await this.hub.patchTask(list[i]!.id, { order: i });
     }
     return (await this.store.getTask(tid))!;
   }
@@ -1983,7 +2037,7 @@ export class Operations {
         for (let i = 0; i < order.length; i++) {
           const task = column.find((t) => t.id === order[i]);
           if (task && rank(task) !== i) {
-            await this.hub.upsertTask({ ...task, order: i });
+            await this.hub.patchTask(task.id, { order: i });
             reordered++;
           }
         }
@@ -2005,7 +2059,7 @@ export class Operations {
         for (const id of eligibleIds) {
           const task = unassigned.find((t) => t.id === id);
           if (task) {
-            await this.hub.upsertTask({ ...task, assignment: { mode: "any", agentIds: [] } });
+            await this.hub.patchTask(task.id, { assignment: { mode: "any", agentIds: [] } });
             assigned++;
           }
         }
@@ -2014,7 +2068,7 @@ export class Operations {
 
     let archived = 0;
     for (const task of all.filter((t) => t.state === "done")) {
-      await this.hub.upsertTask({ ...task, archived: true });
+      await this.hub.patchTask(task.id, { archived: true });
       archived++;
     }
     return { reordered, archived, assigned };
@@ -2043,7 +2097,9 @@ export class Operations {
         throw new Error("stop the run first (/stop) or handle it in the app");
       }
     }
-    return this.hub.upsertTask({ ...task, archived });
+    const updated = await this.hub.patchTask(tid, { archived });
+    if (!updated) throw new NotFoundError("Task");
+    return updated;
   }
   /** Assign a task to a fresh agent (idempotent — see Orchestrator.assignTask). */
   async assignTask(ws: string, projectId: string, tid: string): Promise<TaskRun> {
@@ -2057,6 +2113,20 @@ export class Operations {
     const project = await this.store.getProject(projectId);
     if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
     return this.orchestrator.startBakeoff(projectId, tid, providerIds);
+  }
+
+  /**
+   * Assign a task as a MANAGER agent instead of a plain worker
+   * (agent-hierarchy.md §2) — it decomposes `area` and delegates via
+   * `spawn_worker` rather than editing code itself. `area` is the manager's
+   * declared module scope going in (empty = unrestricted — the "role manager"
+   * shape, e.g. a cross-cutting Review/QA/Security manager, per the roadmap's
+   * "same mechanism, different scope"). See Orchestrator.assignTask.
+   */
+  async assignManager(ws: string, projectId: string, tid: string, area: string[]): Promise<TaskRun> {
+    const project = await this.store.getProject(projectId);
+    if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
+    return this.orchestrator.assignTask(projectId, tid, { role: "manager", area });
   }
 
   /**
@@ -2132,14 +2202,18 @@ export class Operations {
         .catch(() => undefined);
     }
 
-    const updated = await this.hub.upsertTask({
-      ...task,
+    // Plain object patch (not the guard-function form): `abandonsRun`/
+    // `preserveWork` already drove real side effects above (pauseRun/
+    // retireRun) — this write has to reflect that decision as made, not
+    // re-derive it against whatever's current when the CAS actually lands.
+    const updated = await this.hub.patchTask(tid, {
       state: to,
       // A preserved run stays linked (its runId is how a later Start finds and
       // resumes it) — only a truly abandoned run gets detached.
       ...(abandonsRun && !preserveWork ? { runId: null } : {}),
       reviewVerdict: null,
     });
+    if (!updated) throw new NotFoundError("Task");
 
     // Sync the linked TaskRun's status to match — the "review → done" path with
     // NO open HITL falls through here without going via resolveHitl → merge
@@ -2233,18 +2307,21 @@ export class Operations {
     // fix an `unassigned` eligibility to `any` (queue_task spec). Bypasses
     // Operations.transitionTask/HUMAN_TRANSITIONS deliberately: this is a
     // SYSTEM-initiated queue, the exact same kind of write the autonomy
-    // tick's own triage step already makes directly via hub.upsertTask
+    // tick's own triage step already makes directly via hub.patchTask
     // (orchestrator.ts) — not a human kanban drag, which is what
     // HUMAN_TRANSITIONS' stricter gate (no direct backlog→todo) exists for.
     const queue = async (tasks: Task[]): Promise<void> => {
       if (dryRun) return;
       for (const t of tasks) {
-        await this.hub.upsertTask({
-          ...t,
+        // `assignment` reads off `current` (the fresh read inside patchTask),
+        // not the possibly-stale `t` this batch was resolved against earlier
+        // in the call — several tasks queue here in sequence, so by the time
+        // a later one's write lands its own snapshot may already be stale.
+        await this.hub.patchTask(t.id, (current) => ({
           state: "todo",
           autoPick: true,
-          assignment: t.assignment.mode === "unassigned" ? { mode: "any", agentIds: [] } : t.assignment,
-        });
+          assignment: current.assignment.mode === "unassigned" ? { mode: "any", agentIds: [] } : current.assignment,
+        }));
       }
     };
     const enableAutonomyIfNeeded = async (willQueueAny: boolean): Promise<boolean> => {
@@ -2404,11 +2481,8 @@ export class Operations {
 
     // Nothing to integrate (no run, or no git backend at all) — cosmetic-only,
     // same as this escape hatch's original behavior.
-    const updated = await this.hub.upsertTask({
-      ...task,
-      state: "done",
-      reviewVerdict: null,
-    });
+    const updated = await this.hub.patchTask(tid, { state: "done", reviewVerdict: null });
+    if (!updated) throw new NotFoundError("Task");
     if (updated.runId) {
       await this.hub.runStatus(updated.runId, "done").catch(() => undefined);
     }
@@ -2800,7 +2874,7 @@ export class Operations {
     // Clear the featureId on any tasks that referenced it — leaving dangling
     // pointers would render a "phantom feature" chip on the board.
     const tasks = (await this.store.listTasks(ws)).filter((t) => t.featureId === fid);
-    for (const t of tasks) await this.hub.upsertTask({ ...t, featureId: null });
+    for (const t of tasks) await this.hub.patchTask(t.id, { featureId: null });
     await this.hub.deleteFeature(fid);
   }
 
@@ -2835,7 +2909,7 @@ export class Operations {
     const features = (await this.store.listFeatures(ws)).filter((f) => f.milestoneId === mid);
     for (const f of features) await this.hub.upsertFeature({ ...f, milestoneId: null });
     const tasks = (await this.store.listTasks(ws)).filter((t) => t.milestoneId === mid);
-    for (const t of tasks) await this.hub.upsertTask({ ...t, milestoneId: null });
+    for (const t of tasks) await this.hub.patchTask(t.id, { milestoneId: null });
     await this.hub.deleteMilestone(mid);
   }
 
@@ -3107,6 +3181,7 @@ export class Operations {
         id: ids[i]!,
         workspaceId: ws,
         projectId,
+        version: 1,
         text: t.text,
         description: description || null,
         // Lands in backlog, not todo — triage + the task linter run on it
@@ -3912,6 +3987,125 @@ export class Operations {
     return resolved ?? item;
   }
 
+  // ── memory v0, phase 1 (operator-authored facts) ──────────────────────────
+  // docs/memory-format.md is the file format; memory-format-reader.ts parses
+  // it; this is the write path (append + commit through the SAME TASK 28
+  // attribution mechanism roadmap edits use — a repo write is a repo write)
+  // plus the read path the Inbox/project UI lists facts from. Phase 1 is
+  // operator-authored only: source is always "operator", confidence always
+  // "stated" — the server sets both, never the caller (a hand-edited file can
+  // already contain "decision"/"distilled" facts; this phase reads and lists
+  // them like any other fact, it just never writes them itself).
+
+  /** Turn a parsed reader-level fact into the flat wire summary, normalizing
+   *  an unrecognized (hand-edited) source/confidence value to a safe default
+   *  rather than erroring — matching the format's own "never error on an
+   *  unrecognized value" compatibility rule. */
+  private toMemoryFactSummary(f: MemoryFact, scope: MemoryScope, opts: { area?: string | null; agentFamily?: string | null }, superseded: Set<string>): MemoryFactSummary {
+    const source = f.source === "operator" || f.source === "decision" || f.source === "distilled" ? f.source : "operator";
+    const confidence = f.confidence === "stated" || f.confidence === "derived" || f.confidence === "distilled" ? f.confidence : "stated";
+    const createdAt = Date.parse(f.created);
+    return {
+      id: f.id, scope, area: opts.area ?? null, agentFamily: opts.agentFamily ?? null,
+      heading: f.heading, body: f.body, source, confidence, author: f.author,
+      createdAt: Number.isFinite(createdAt) ? createdAt : 0,
+      run: f.run ?? null, hitl: f.hitl ?? null, supersedes: f.supersedes ?? null,
+      superseded: superseded.has(f.id),
+    };
+  }
+
+  /**
+   * Every fact this project's memory currently holds, across every scope —
+   * a flat list (the UI groups by `.scope` itself) including superseded
+   * facts (flagged, not hidden — the format keeps them as history).
+   *
+   * Full fidelity (workspace + every project/area/agent file) for a LOCAL
+   * repoPath-bound project, via the existing readWorkspaceMemory — it already
+   * enumerates the whole `.skynet/memory/` tree. A GitHub-only project has no
+   * local checkout to enumerate directories in, so this reads just the two
+   * fixed, known paths (workspace.md, projects/<slug>.md) via the same
+   * generic readProjectDoc every other repo read in this codebase uses —
+   * real, honest data, just missing area/agent-family facts until a
+   * GitHub-directory-listing path is built. Never throws: an unbound project,
+   * or one with no memory files yet, is just an empty list.
+   */
+  async listProjectMemory(ws: string, projectId: string): Promise<MemoryFactSummary[]> {
+    const project = await this.store.getProject(projectId);
+    if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
+    if (!project.repoPath && !project.repo) return [];
+
+    const out: MemoryFactSummary[] = [];
+    const addFile = (raw: { facts: MemoryFact[]; frontmatter: { scope?: string; area?: string; agent_family?: string } }) => {
+      const scope = (raw.frontmatter.scope === "workspace" || raw.frontmatter.scope === "project" || raw.frontmatter.scope === "area" || raw.frontmatter.scope === "agent"
+        ? raw.frontmatter.scope
+        : "project") as MemoryScope;
+      const superseded = new Set(raw.facts.map((f) => f.supersedes).filter((id): id is string => Boolean(id)));
+      for (const f of raw.facts) out.push(this.toMemoryFactSummary(f, scope, { area: raw.frontmatter.area ?? null, agentFamily: raw.frontmatter.agent_family ?? null }, superseded));
+    };
+
+    if (project.repoPath) {
+      for (const file of await readWorkspaceMemory(project.repoPath)) addFile(file);
+      return out;
+    }
+    // GitHub-only: the two fixed paths only (see doc comment above).
+    const slug = memorySlug(project.name);
+    for (const relPath of [memoryFilePath("workspace", slug), memoryFilePath("project", slug)]) {
+      const doc = await readProjectDoc(ws, project, relPath).catch(() => null);
+      if (doc) addFile(parseMemoryFile(doc.content, relPath));
+    }
+    return out;
+  }
+
+  /**
+   * Append a new operator-authored fact and commit it — through the SAME
+   * commitLocalRepoFile/githubService.commitRepoFile + operatorGitIdentity
+   * path TASK 28's roadmap-proposal apply and TASK 32's scaffold already use.
+   * No agent Co-authored-by trailer: nobody proposed this, the operator typed
+   * it directly (mirrors scaffoldProjectRoadmap's own reasoning).
+   */
+  async addMemoryFact(ws: string, projectId: string, input: CreateMemoryFactRequest, operatorId: string): Promise<MemoryFactSummary> {
+    const project = await this.store.getProject(projectId);
+    if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
+    if (!project.repoPath && !project.repo) throw new Error("This project has no bound repo to record memory in.");
+    if (input.scope === "area" && !input.area) throw new Error("An area-scoped fact needs an area.");
+    if (input.scope === "agent" && !input.agentFamily) throw new Error("An agent-scoped fact needs an agentFamily.");
+
+    const slug = memorySlug(project.name);
+    const areaSlug = input.area ? memorySlug(input.area) : null;
+    const relPath = memoryFilePath(input.scope, slug, { areaSlug, agentFamily: input.agentFamily ?? null });
+
+    const current = await readProjectDoc(ws, project, relPath).catch(() => null);
+    const fact = {
+      id: this.uid("fact"),
+      heading: input.heading.trim(),
+      body: input.body.trim(),
+      source: "operator" as const,
+      author: operatorId,
+      created: new Date(now()).toISOString(),
+      confidence: "stated" as const,
+      supersedes: input.supersedes ?? undefined,
+    };
+    const header = current
+      ? undefined
+      : newMemoryFileHeader(input.scope, { project: input.scope === "project" || input.scope === "area" ? slug : undefined, area: input.area ?? undefined, agentFamily: input.agentFamily ?? undefined });
+    const newContent = appendFact(current?.content ?? "", fact, header);
+    const identity = operatorGitIdentity(operatorId);
+    const message = `Skynet: record a memory fact (${input.scope}${input.area ? `/${input.area}` : input.agentFamily ? `/${input.agentFamily}` : ""})`;
+
+    if (project.repoPath) {
+      await commitLocalRepoFile(project.repoPath, relPath, newContent, current?.content ?? null, message, identity);
+    } else {
+      await githubService.commitRepoFile(ws, project.repo!, relPath, newContent, current?.sha, message, project.githubCredentialId, identity);
+    }
+
+    return this.toMemoryFactSummary(
+      { heading: fact.heading, body: fact.body, id: fact.id, source: fact.source, author: fact.author, created: fact.created, confidence: fact.confidence, supersedes: fact.supersedes, extra: {} },
+      input.scope,
+      { area: input.area ?? null, agentFamily: input.agentFamily ?? null },
+      new Set(),
+    );
+  }
+
   // ── fleet ──────────────────────────────────────────────────────────────
   async configureRunner(ws: string, input: ConfigureRunnerRequest): Promise<Agent> {
     // Validate the provider+model pairing. ADVISORY on the model: the catalog is
@@ -3947,7 +4141,11 @@ export class Operations {
       label: input.label?.trim() || null, // optional grouping bucket (empty → ungrouped)
       role: "worker", // no manager provisioning exists yet — every runner is a worker
     };
-    return this.hub.upsertAgent(runner);
+    const created = await this.hub.upsertAgent(runner);
+    // Onboarding telemetry (PMF v1.5) — `fleet` was read before this runner
+    // was added, so length 0 means this is the workspace's first-ever agent.
+    if (fleet.length === 0) void fireOnboardingMilestone(this.store, ws, "runner_added");
+    return created;
   }
   async updateAgent(ws: string, id: string, patch: UpdateRunnerRequest): Promise<Agent> {
     const existing = await this.store.getAgent(id);

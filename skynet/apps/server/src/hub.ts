@@ -31,7 +31,7 @@ import type { Bus } from "./bus.js";
 import { resolveActivePolicy } from "./command-policy.js";
 import { computeConflicts, computeFileCollisions } from "./derive/conflicts.js";
 import { stepRequiresApproval } from "./derive/plan-approval.js";
-import type { Store } from "./store/store.js";
+import { VersionConflictError, type Store } from "./store/store.js";
 
 /** The real change reviewed at a diff/merge gate, captured into the audit record
  *  at resolve time (the worktree is gone once merged, so it can't be re-fetched).
@@ -418,6 +418,42 @@ export class Hub {
     await this.store.putTask(task);
     this.bus.publish(task.workspaceId, { type: "task.upserted", task });
     return task;
+  }
+  // The one place the codebase's read-modify-write pattern for Task updates
+  // is allowed to live — every other call site should reach for this instead
+  // of its own `getTask` → spread → `upsertTask`, since that pattern has no
+  // protection against a concurrent writer's change being silently clobbered
+  // (confirmed in production, 2026-08 — see ROADMAP.md).
+  //
+  // `patch` is either a plain partial (merged over a fresh read) or a
+  // function of the fresh read (for a patch that depends on the current
+  // value, e.g. preserving sibling fields on a nested object, or a guard
+  // like "only if not already done" — returning null/undefined from the
+  // function skips the write entirely, current value returned unchanged).
+  // On a version race, the whole read-decide-write is retried against the
+  // NEW current value (so a guard or a value-dependent patch is correctly
+  // re-evaluated, not blindly reapplied) up to `maxRetries` times.
+  async patchTask(
+    id: string,
+    patch: Partial<Task> | ((current: Task) => Partial<Task> | null | undefined),
+    opts?: { maxRetries?: number },
+  ): Promise<Task | undefined> {
+    const maxRetries = opts?.maxRetries ?? 5;
+    for (let attempt = 0; ; attempt++) {
+      const current = await this.store.getTask(id);
+      if (!current) return undefined;
+      const delta = typeof patch === "function" ? patch(current) : patch;
+      if (!delta) return current;
+      const next = { ...current, ...delta };
+      try {
+        const saved = await this.store.putTask(next, current.version);
+        this.bus.publish(saved.workspaceId, { type: "task.upserted", task: saved });
+        return saved;
+      } catch (err) {
+        if (err instanceof VersionConflictError && attempt < maxRetries) continue;
+        throw err;
+      }
+    }
   }
   async deleteTask(id: string): Promise<void> {
     const existing = await this.store.getTask(id);

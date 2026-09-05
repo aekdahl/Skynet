@@ -58,7 +58,8 @@
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.240",
-    "@skynet/shared": "workspace:*"
+    "@skynet/shared": "workspace:*",
+    "zod": "^3.24.1"
   },
   "devDependencies": {
     "@types/node": "^22.10.7",
