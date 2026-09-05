@@ -307,7 +307,9 @@ work); the 7 have no ordering dependency and can ship in parallel.
   unrelated self-escalation guarantee — still passed, a precise regression proof rather than a blanket
   one), restored.
   *Severity: High. `apps/server/src/auth/routes.ts:216-252`.*
-- [ ] **Validate `path` against traversal in the GitHub Contents API calls** — `getFile`/`putFile`
+- [~] **Validate `path` against traversal in the GitHub Contents API calls** — 🚧 **In progress**,
+  branch `security/github-contents-path-traversal`; claiming this so other agents don't pick it up
+  concurrently. `getFile`/`putFile`
   concatenate the Contents API URL with no `..`-segment rejection, so a crafted `path` can retarget the
   request at a different repo; `import_repo_file` (an MCP tool, nominally project-confined) and
   `resync_source`/`commitRepoFile` both replay it unvalidated, giving a write leg too. Fix: reject any
