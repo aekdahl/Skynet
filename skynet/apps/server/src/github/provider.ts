@@ -22,6 +22,31 @@ export function redactToken(msg: string, token: string): string {
   return token ? msg.split(token).join("***") : msg;
 }
 
+/** Validate + encode a Contents API `path` so it can only ever address a file
+ *  inside the target repo. `fetch`'s URL parser normalizes `.`/`..` segments
+ *  in a path per the URL spec — so naively interpolating a caller-supplied
+ *  `path` into `/repos/{repo}/contents/{path}` lets a crafted
+ *  `../../otherOwner/otherRepo/contents/x` walk back OUT of `{repo}`
+ *  entirely and retarget the request at a different repo the same
+ *  installation/token can reach. Every Contents API caller (getFile/putFile
+ *  here, GitHubService.readRepoFile's own separate fetch) must route through
+ *  this before building its URL — never interpolate a raw `path`. Throws
+ *  rather than silently sanitizing, since a caller passing `..` is either a
+ *  bug or an attack; there's no legitimate reason to swallow it quietly. */
+export function safeRepoPath(path: string): string {
+  const segments = path.replace(/^\/+|\/+$/g, "").split("/");
+  for (const seg of segments) {
+    if (seg === "" || seg === "." || seg === "..") {
+      throw new Error(`Unsafe repo path: ${JSON.stringify(path)}`);
+    }
+  }
+  // Percent-encode each segment on its own (not the joined string) so a
+  // segment containing a literal "/" — which would otherwise smuggle in an
+  // extra path level after this check has already run — can never re-merge
+  // into more segments than were actually validated above.
+  return segments.map(encodeURIComponent).join("/");
+}
+
 const b64url = (input: string | Buffer): string => Buffer.from(input).toString("base64url");
 
 /** The `rel="next"` URL from a GitHub `Link` header (`<url>; rel="next", …`),
@@ -209,11 +234,12 @@ export class GitHubProvider implements GitProvider {
   }
 
   async getFile(token: string, repo: string, path: string): Promise<{ content: string; sha: string } | null> {
+    const safePath = safeRepoPath(path); // throws — never folded into the "absent" catch below
     try {
       const r = await this.api<{ content?: string; encoding?: string; sha: string }>(
         token,
         "GET",
-        `/repos/${repo}/contents/${path.replace(/^\/+/, "")}`,
+        `/repos/${repo}/contents/${safePath}`,
       );
       const content = r.encoding === "base64" && r.content ? Buffer.from(r.content, "base64").toString("utf8") : r.content ?? "";
       return { content, sha: r.sha };
@@ -224,7 +250,7 @@ export class GitHubProvider implements GitProvider {
 
   async putFile(token: string, repo: string, path: string, content: string, sha: string | undefined, message: string, attribution?: GitCommitAttribution): Promise<void> {
     const trailer = attribution?.coAuthor ? `\n\nCo-authored-by: ${attribution.coAuthor.name} <${attribution.coAuthor.email}>` : "";
-    await this.api(token, "PUT", `/repos/${repo}/contents/${path.replace(/^\/+/, "")}`, {
+    await this.api(token, "PUT", `/repos/${repo}/contents/${safeRepoPath(path)}`, {
       message: `${message}${trailer}`,
       content: Buffer.from(content, "utf8").toString("base64"),
       // `sha: undefined` is dropped by JSON.stringify — the Contents API
