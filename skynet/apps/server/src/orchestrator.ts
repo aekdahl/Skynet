@@ -37,6 +37,10 @@ import { decisionResumePrompt } from "./decision-resume.js";
 import { buildAgentContext, withInstructions } from "./agent-context.js";
 import { syncRepoNativeMemory } from "./repo-memory-sync.js";
 import { buildSiblingDigest } from "./sibling-digest.js";
+import { readProjectDoc } from "./steward/docs.js";
+import { parseMemoryFile, currentFacts } from "./memory-format-reader.js";
+import { memoryFilePath, memorySlug } from "./memory-paths.js";
+import { factsDigest } from "./memory-digest.js";
 import { config, now } from "./config.js";
 import { githubService } from "./github/index.js";
 import { lockedSectionIds, taskBlockedByRoadmapLock } from "./roadmap/proposals.js";
@@ -2278,6 +2282,38 @@ export class Orchestrator {
     }
   }
 
+  /**
+   * Memory v0, phase 1: operator-authored facts for `project`, formatted for
+   * agent-context.ts's `memory` section. Reads two fixed, known paths —
+   * `workspace.md` (repo-wide) and `agents/<agentFamily>.md` (the specific
+   * provider about to run) — via the SAME generic readProjectDoc every other
+   * repo read in this codebase uses, so this works identically for a local
+   * repoPath-bound project and a GitHub-only one. Deliberately does NOT read
+   * `projects/<slug>.md` or `areas/**` here: `projects/<slug>.md` duplicates
+   * workspace.md's own "repo-wide" reach for a single-project repo (nothing
+   * distinguishes them at injection time in this phase), and area-scoped
+   * facts have no task→area mapping to select the right one yet — both are
+   * exactly the gaps Operations.listProjectMemory's own doc comment already
+   * calls out; nothing here is fabricated to paper over them. Wired only at
+   * the same genuine "an agent is starting FRESH" moments siblingDigestFor
+   * is (assign, fork, reassign/escalation-relaunch). Never throws — a
+   * store/repo read failure here shouldn't stop the run from starting.
+   */
+  private async memoryDigestFor(ws: string, project: Project, agentFamily: string): Promise<string | undefined> {
+    try {
+      if (!project.repoPath && !project.repo) return undefined;
+      const slug = memorySlug(project.name);
+      const sections: Array<{ label: string; facts: ReturnType<typeof currentFacts> }> = [];
+      const workspaceDoc = await readProjectDoc(ws, project, memoryFilePath("workspace", slug)).catch(() => null);
+      if (workspaceDoc) sections.push({ label: "workspace", facts: currentFacts(parseMemoryFile(workspaceDoc.content).facts) });
+      const agentDoc = await readProjectDoc(ws, project, memoryFilePath("agent", slug, { agentFamily })).catch(() => null);
+      if (agentDoc) sections.push({ label: agentFamily, facts: currentFacts(parseMemoryFile(agentDoc.content).facts) });
+      return factsDigest(sections);
+    } catch {
+      return undefined;
+    }
+  }
+
   // ── assignTask ────────────────────────────────────────────────────────────
   async assignTask(projectId: string, taskId: string): Promise<TaskRun> {
     const task = await this.store.getTask(taskId);
@@ -2426,11 +2462,13 @@ export class Orchestrator {
       const feature = task.featureId ? await this.store.getFeature(task.featureId).catch(() => undefined) : undefined;
       const solutionBrief = await this.findTaskBrief(task, project.workspaceId);
       const siblings = await this.siblingDigestFor(project, taskId);
+      const memory = await this.memoryDigestFor(project.workspaceId, project, runner.provider);
       const brief = buildAgentContext({
         project,
         feature,
         brief: solutionBrief ? this.briefContextText(solutionBrief) : undefined,
         siblings,
+        memory,
         body: taskBody,
       });
       // Opt-in browser tooling is a per-workspace setting, off by default; the
@@ -2515,11 +2553,12 @@ export class Orchestrator {
       const feature = parentTask?.featureId ? await this.store.getFeature(parentTask.featureId).catch(() => undefined) : undefined;
       const solutionBrief = parentTask ? await this.findTaskBrief(parentTask, parent.workspaceId) : undefined;
       const siblings = project && parentTask ? await this.siblingDigestFor(project, parentTask.id) : undefined;
+      const memory = project ? await this.memoryDigestFor(parent.workspaceId, project, runner.provider) : undefined;
       const handle = await provider.start(
         {
           runId,
           projectId: parent.projectId,
-          task: buildAgentContext({ project, feature, brief: solutionBrief ? this.briefContextText(solutionBrief) : undefined, siblings, body: parent.name }),
+          task: buildAgentContext({ project, feature, brief: solutionBrief ? this.briefContextText(solutionBrief) : undefined, siblings, memory, body: parent.name }),
           model: runner.model,
           branch: agent.branch,
           cwd,
@@ -3630,6 +3669,7 @@ export class Orchestrator {
     const feature = task?.featureId ? await this.store.getFeature(task.featureId).catch(() => undefined) : undefined;
     const solutionBrief = task ? await this.findTaskBrief(task, run.workspaceId) : undefined;
     const siblings = project && task ? await this.siblingDigestFor(project, task.id) : undefined;
+    const memory = project ? await this.memoryDigestFor(run.workspaceId, project, acq.provider) : undefined;
     const gitStateNote =
       cleanedGitState.length > 0
         ? `\n\nNote: the previous agent was interrupted mid-\`git ${cleanedGitState.join("/")}\` — it's been aborted for you (no file changes were touched), so the working directory reflects only real committed/uncommitted work, not a half-finished merge. No need to investigate this further.`
@@ -3644,6 +3684,7 @@ export class Orchestrator {
       feature,
       brief: solutionBrief ? this.briefContextText(solutionBrief) : undefined,
       siblings,
+      memory,
       // Carried into every relaunch prompt. When the SDK session survived, this
       // is mildly redundant with the agent's own memory and costs a few hundred
       // characters; when it didn't (a server restart, or a takeover by a

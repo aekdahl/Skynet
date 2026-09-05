@@ -11,8 +11,8 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { existsSync } from "node:fs";
-import { readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { gitBin } from "./git-bin.js";
 
 const exec = promisify(execFile);
@@ -20,6 +20,18 @@ const exec = promisify(execFile);
 /** The only paths this helper will ever write — a fixed allowlist, never
  *  arbitrary caller input, mirroring the read side's ROADMAP_PATHS. */
 export const WRITABLE_REPO_PATHS = new Set(["ROADMAP.md", "docs/ROADMAP.md"]);
+
+/** Memory v0's own writable prefix — `.skynet/memory/workspace.md` plus every
+ *  scope-specific file under `projects/`/`areas/`/`agents/` (see
+ *  memory-paths.ts's memoryFilePath). A prefix, not a fixed set, since the
+ *  agent/area/project slug segment is caller-derived — but always via
+ *  memoryFilePath, never raw input, so the prefix carries the same "server
+ *  constructs it, not the caller" trust WRITABLE_REPO_PATHS itself relies on. */
+const MEMORY_WRITE_PREFIX = ".skynet/memory/";
+
+function isWritablePath(relPath: string): boolean {
+  return WRITABLE_REPO_PATHS.has(relPath) || relPath.startsWith(MEMORY_WRITE_PREFIX);
+}
 
 export class LocalRepoWriteError extends Error {
   constructor(message: string) {
@@ -83,7 +95,7 @@ export async function commitLocalRepoFile(
   message: string,
   attribution?: CommitAttribution,
 ): Promise<{ committed: boolean; sha?: string }> {
-  if (!WRITABLE_REPO_PATHS.has(relPath)) {
+  if (!isWritablePath(relPath)) {
     throw new LocalRepoWriteError(`Refusing to write an unlisted path: ${relPath}`);
   }
   if (!existsSync(join(repoPath, ".git"))) {
@@ -97,6 +109,11 @@ export async function commitLocalRepoFile(
   }
   if (current === content) return { committed: false };
 
+  // ROADMAP.md's own parent directories always already exist (repo root,
+  // docs/); Memory v0's nested paths (areas/<project>/<area>.md, etc.) do
+  // not — a brand-new scope's first fact needs its directory created, same
+  // as `git` itself would on the next `add`.
+  await mkdir(dirname(join(repoPath, relPath)), { recursive: true });
   await writeFile(join(repoPath, relPath), content, "utf8");
   await git(repoPath, "add", "--", relPath);
   // Inline identity so this never depends on the operator's global git config.
