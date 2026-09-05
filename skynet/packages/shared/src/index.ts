@@ -11,3 +11,4 @@ export * from "./autonomy.js";
 export * from "./autonomy-telemetry.js";
 export * from "./roadmap-doc.js";
 export * from "./roadmap-proposals.js";
+export * from "./memory.js";

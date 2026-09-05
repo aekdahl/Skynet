@@ -376,6 +376,12 @@ export const TaskRun = z.object({
   // Set when forked — shares context with its parent (same conflict "family"):
   parentId: z.string().nullable().default(null),
   branchFromStep: z.number().int().nullable().default(null),
+  // Set on every sibling of a cross-vendor bake-off (same task, same base
+  // commit, different provider) — never alongside parentId (a bake-off
+  // sibling is not a fork). Groups the siblings for conflict-family exemption
+  // (derive/conflicts.ts) and lets deliver() collapse the losers once one
+  // sibling's diff is approved. Null for an ordinary run/fork.
+  bakeoffId: z.string().nullable().default(null),
   // Archived runs are hidden from the project board but kept in the store and
   // reachable via the project's Archive section.
   archived: z.boolean().default(false),
@@ -925,12 +931,23 @@ export const Task = z.object({
   id: z.string(),
   workspaceId: z.string(),
   projectId: z.string(),
+  // Optimistic-concurrency counter — the Store bumps this by 1 on every
+  // write; a caller updating a stale copy (its read's `version` no longer
+  // matches what's stored) gets rejected instead of silently clobbering a
+  // concurrent write (see Hub.patchTask / Store.putTask's `expectedVersion`).
+  // Never set by callers directly — always carried forward from a real read.
+  version: z.number().int().default(1),
   text: z.string(), // the short task NAME (kept concise for the board/subway)
   // Optional longer detail — the full brief the agent gets, but not shown as the
   // name. Keeps names scannable while allowing a rich description when needed.
   description: z.string().nullable().default(null),
   state: TaskState,
   runId: z.string().nullable().default(null),
+  // Set while a cross-vendor bake-off is in flight for this task (see
+  // TaskRun.bakeoffId); cleared the moment a winner is picked. runId itself
+  // stays pointed at the "anchor" sibling for the duration, then gets
+  // repointed to the winner on collapse.
+  bakeoffId: z.string().nullable().default(null),
   // Marked for autonomous pickup: when true and an agent is idle, the autonomy
   // loop starts this task (todo → ongoing) without a human. Off = waits for a
   // human "Start now".
@@ -1001,6 +1018,23 @@ export const Task = z.object({
       // the pipeline — treated as clean-with-note, `decision` above is
       // untouched); null on a normal clean/broken outcome.
       breaker: BreakerVerdict.nullable().optional(),
+    })
+    .nullable()
+    .default(null),
+  // Comparative verdict left by an agent JUDGING a cross-vendor bake-off
+  // (see TaskRun.bakeoffId) — the N-way sibling of `reviewVerdict` above,
+  // same always-recorded invariant: set once a judge has compared the
+  // siblings, whether or not it could confidently pick one. Persists after
+  // `bakeoffId` is cleared on collapse, so the audit trail survives the
+  // group's resolution. `winnerRunId: null` means the judge flagged it for a
+  // human instead of guessing — the bake-off's diff HITLs stay open either way
+  // unless a human (or an autonomous project's auto-resolve) later approves one.
+  bakeoffVerdict: z
+    .object({
+      winnerRunId: z.string().nullable(),
+      reason: z.string(),
+      by: z.string(), // judge agent name (or id, as a fallback)
+      at: Timestamp,
     })
     .nullable()
     .default(null),
@@ -1358,6 +1392,9 @@ export const HitlItem = z.object({
   id: z.string(),
   workspaceId: z.string(),
   runId: z.string(),
+  // Denormalized from the run at raise time (see TaskRun.bakeoffId) so the
+  // web store can group sibling diff cards by filter alone, no join needed.
+  bakeoffId: z.string().nullable().default(null),
   kind: HitlKind,
   title: z.string(),
   why: z.string(),
@@ -1669,6 +1706,13 @@ export const ProviderInfo = z.object({
   // Live detection: is the required CLI binary on the server's PATH? null = not
   // applicable (in-process SDK provider); undefined = not probed.
   binOnPath: z.boolean().nullable().optional(),
+  // Does this provider's runner implement RunnerHandle.inform() — the "mass
+  // inform" note that rides a run's next prompt at no extra turn? Undefined =
+  // supported (only Copilot lacks it today). Lets the client gray out an
+  // unsupported agent up front instead of learning about it from a skipped
+  // count after sending — see RunnerHandle.inform's doc comment for exactly
+  // which runners implement it.
+  supportsInform: z.boolean().optional(),
 });
 export type ProviderInfo = z.infer<typeof ProviderInfo>;
 
@@ -1691,6 +1735,19 @@ export const ResolveRequest = z.object({
   resetWork: z.boolean().optional(),
 });
 export type ResolveRequest = z.infer<typeof ResolveRequest>;
+
+// Gate batching — resolve several open decisions that are the SAME
+// repeatable policy call (today: identical command-approval gates raised
+// across N runs — see apps/web/src/kanban/gate-batching.ts's grouping key)
+// in one request instead of clicking through each individually. Reuses
+// ResolveRequest's shape exactly — Operations.resolveHitlBatch calls the
+// existing single-item resolveHitl once per id, so every action/side-effect
+// (deliver, approve-and-remember, the command denylist re-check) stays
+// correct with no duplicated logic.
+export const ResolveBatchRequest = ResolveRequest.extend({
+  ids: z.array(z.string()).min(1),
+});
+export type ResolveBatchRequest = z.infer<typeof ResolveBatchRequest>;
 
 // A plain (non-conflict) roadmap_edit HITL's two actions — deliberately its
 // OWN request type rather than reusing ResolveRequest's full action set
@@ -2311,6 +2368,16 @@ export const WorkspaceSettings = z.object({
   // over both. This toggle is the day-to-day operator control — flip it live,
   // no restart, no env var edit.
   requireLoginVerification: z.boolean().default(false),
+  // Opt OUT of anonymous install-event telemetry (PMF v1.5 — see
+  // apps/server/src/telemetry.ts): five one-time onboarding milestones
+  // (workspace named, repo connected, key added, runner added, first task
+  // created), each firing at most once per workspace. The outbound ping
+  // carries only {event, at} — no workspace id, no operator id, no project/
+  // task content, nothing joinable back to this install or a person. Off
+  // (telemetry ON) by default, same as every other workspace setting here;
+  // flip it any time, no restart. A server-wide SKYNET_TELEMETRY_DISABLE=true
+  // env flag overrides this regardless (an infra-level kill switch).
+  telemetryOptOut: z.boolean().default(false),
 });
 export type WorkspaceSettings = z.infer<typeof WorkspaceSettings>;
 
@@ -2323,6 +2390,7 @@ export const UpdateWorkspaceSettingsRequest = z.object({
   exploreModel: z.string().min(1).optional(),
   browserTools: z.boolean().optional(),
   requireLoginVerification: z.boolean().optional(),
+  telemetryOptOut: z.boolean().optional(),
 });
 export type UpdateWorkspaceSettingsRequest = z.infer<typeof UpdateWorkspaceSettingsRequest>;
 

@@ -80,7 +80,7 @@ describe("Orchestrator.inform", () => {
 
     const delivered = await orchestrator.inform(run.id, "heads up: auth moved");
 
-    expect(delivered).toBe(true);
+    expect(delivered).toEqual({ ok: true });
     expect(provider.informCalls).toEqual([{ runId: run.id, text: "heads up: auth moved" }]);
     // inform is not a turn and not a HITL gate — the run's own status is untouched.
     expect((await store.getRun(run.id))!.status).toBe(before);
@@ -90,12 +90,12 @@ describe("Orchestrator.inform", () => {
 
   it("a run with no live session reports not-delivered (never fakes success)", async () => {
     const delivered = await orchestrator.inform("no-such-run", "hello?");
-    expect(delivered).toBe(false);
+    expect(delivered).toEqual({ ok: false, reason: "not-live" });
     const log = (await store.getRun("no-such-run").catch(() => undefined))?.log ?? [];
     expect(log.length).toBe(0); // nothing to attach a log to — the run doesn't exist
   });
 
-  it("a live run whose provider doesn't implement inform() is honestly skipped, not faked", async () => {
+  it("a live run whose provider doesn't implement inform() is honestly skipped WITH a distinct reason, not lumped in with 'not live'", async () => {
     // `inform` is an OPTIONAL RunnerHandle member — a bare provider (like the
     // mock/quiet ones other suites use) simply never attaches it.
     const bareProvider: RunnerProvider = {
@@ -117,7 +117,7 @@ describe("Orchestrator.inform", () => {
     const run = await bareOrch.assignTask("p1", "t1");
     const delivered = await bareOrch.inform(run.id, "note");
 
-    expect(delivered).toBe(false);
+    expect(delivered).toEqual({ ok: false, reason: "unsupported", provider: "claude" });
     const log = (await bareStore.getRun(run.id))!.log.map((l) => l.line);
     expect(log.some((l) => l.includes("not delivered") && l.includes("note"))).toBe(true);
   });
@@ -181,6 +181,31 @@ describe("Operations.informRuns", () => {
     });
     expect(result.informed).toEqual([runA.id]);
     expect(result.skipped).toEqual([{ runId: "not-a-real-run", reason: "not found" }]);
+  });
+
+  it("a live run whose provider doesn't support inform gets a DIFFERENT skip reason than a not-live run — the operator can tell them apart", async () => {
+    const bareProvider: RunnerProvider = {
+      id: "claude",
+      async start(spec) {
+        return {
+          runId: spec.runId, provider: "claude",
+          async pause() {}, async resume() {}, async message() {}, async stop() {},
+        };
+      },
+    };
+    const bareStore = new MemoryStore();
+    const bareHub = new Hub(bareStore, new NullBus());
+    const bareOrch = new Orchestrator(bareStore, bareHub, bareProvider);
+    const bareOps = new Operations({ store: bareStore, hub: bareHub, orchestrator: bareOrch });
+    await bareStore.putProject(mkProject("p1"));
+    await bareStore.putAgent(mkAgent("r1"));
+    await bareStore.putTask(mkTask("t1", "p1"));
+    const run = await bareOrch.assignTask("p1", "t1");
+
+    const result = await bareOps.informRuns(DEFAULT_WORKSPACE, { note: "note", runIds: [run.id] });
+
+    expect(result.informed).toEqual([]);
+    expect(result.skipped).toEqual([{ runId: run.id, reason: "claude doesn't support inform yet" }]);
   });
 
   it("projectId targets only that project's live runs, not the whole workspace", async () => {

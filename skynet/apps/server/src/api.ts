@@ -24,6 +24,7 @@ import {
   DryRunPolicyRequest,
   ProviderId,
   ResolveRequest,
+  ResolveBatchRequest,
   ChatRequest,
   SavePolicyVersionRequest,
   InformRequest,
@@ -34,6 +35,7 @@ import {
   ProposeRoadmapChangeRequest,
   CommitRoadmapLineEditRequest,
   RoadmapConflictResolveRequest,
+  CreateMemoryFactRequest,
   UpdateWorkspaceSettingsRequest,
   UpdateRunnerRequest,
   UpdateRuleRequest,
@@ -71,6 +73,8 @@ import {
   NoReviewerAvailableError,
   NothingToReviewError,
   NoTriageTargetError,
+  NoOpenBakeoffReviewError,
+  BakeoffAlreadyJudgedError,
   type Orchestrator,
 } from "./orchestrator.js";
 import {
@@ -85,6 +89,7 @@ import {
   RunnerBusyError,
 } from "./operations.js";
 import { CrystallizeParseError } from "./steward/crystallize.js";
+import { VersionConflictError } from "./store/store.js";
 import type { ChatTurn } from "./project-assistant.js";
 import { simulateConversational } from "./telegram/index.js";
 import { simulationGrade } from "./simulation/grade.js";
@@ -130,7 +135,10 @@ function fail(reply: FastifyReply, err: unknown): FastifyReply {
     err instanceof NoReviewerAvailableError ||
     err instanceof NothingToReviewError ||
     err instanceof NoTriageTargetError ||
-    err instanceof ProposalAlreadyResolvedError
+    err instanceof NoOpenBakeoffReviewError ||
+    err instanceof BakeoffAlreadyJudgedError ||
+    err instanceof ProposalAlreadyResolvedError ||
+    err instanceof VersionConflictError
   ) {
     return reply.code(409).send({ error: (err as Error).message });
   }
@@ -384,6 +392,22 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
     try {
       return await ops.resolveHitl(ws(req), req.params.id, body.data, req.principal!.operatorId);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
+  // Gate batching — resolve several open decisions (same repeatable
+  // command-approval gate raised across N runs) in one call. A distinct
+  // static route, not `/api/hitl/:id/resolve` with a list — Fastify's router
+  // matches static segments before parameterized ones regardless of
+  // registration order, so there's no ambiguity between the two.
+  app.post("/api/hitl/resolve-batch", async (req, reply) => {
+    const body = ResolveBatchRequest.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+    try {
+      const { ids, ...rest } = body.data;
+      return await ops.resolveHitlBatch(ws(req), ids, rest, req.principal!.operatorId);
     } catch (err) {
       return fail(reply, err);
     }
@@ -998,13 +1022,39 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     },
   );
 
-  app.post<{ Params: { id: string; tid: string } }>("/api/projects/:id/tasks/:tid/assign", async (req, reply) => {
-    try {
-      return await ops.assignTask(ws(req), req.params.id, req.params.tid);
-    } catch (err) {
-      return fail(reply, err);
-    }
-  });
+  // Body {area?:string[]} — an optional area assigns the task as a MANAGER
+  // agent instead of a plain worker (agent-hierarchy.md §2); omitted (the
+  // default) is today's plain worker assignment, unchanged. See
+  // Operations.assignManager/Orchestrator.assignTask.
+  app.post<{ Params: { id: string; tid: string }; Body: { area?: string[] } }>(
+    "/api/projects/:id/tasks/:tid/assign",
+    async (req, reply) => {
+      try {
+        return req.body?.area
+          ? await ops.assignManager(ws(req), req.params.id, req.params.tid, req.body.area)
+          : await ops.assignTask(ws(req), req.params.id, req.params.tid);
+      } catch (err) {
+        return fail(reply, err);
+      }
+    },
+  );
+
+  // Cross-vendor consensus run: fire the same task at 2+ providers in
+  // parallel, each in its own worktree off the same base commit — see
+  // Orchestrator.startBakeoff. Picking a winner happens through the ordinary
+  // diff-approval flow (POST /api/hitl/:id/resolve), not a dedicated route.
+  app.post<{ Params: { id: string; tid: string }; Body: { providerIds?: unknown } }>(
+    "/api/projects/:id/tasks/:tid/bakeoff",
+    async (req, reply) => {
+      const parsed = ProviderId.array().min(2).safeParse(req.body?.providerIds);
+      if (!parsed.success) return reply.code(400).send({ error: "providerIds must be an array of 2+ provider ids" });
+      try {
+        return await ops.startBakeoff(ws(req), req.params.id, req.params.tid, parsed.data);
+      } catch (err) {
+        return fail(reply, err);
+      }
+    },
+  );
 
   // Execution intents (S10): the ONE endpoint for start_task/queue_tasks/
   // start_feature/process_backlog — see Operations.executeStewardAction.
@@ -1136,6 +1186,19 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
   app.post<{ Params: { id: string; tid: string } }>("/api/projects/:id/tasks/:tid/request-review", async (req, reply) => {
     try {
       await ops.requestReview(ws(req), req.params.tid);
+      return reply.code(204).send();
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
+  // Manual "Judge now" — the bake-off sibling of "Request review" above: force
+  // the N-way comparison pass on an in-flight cross-vendor bake-off now,
+  // rather than waiting for a periodic tick to find every sibling finished
+  // and an eligible judge idle at the same moment. Same honest-409 shape.
+  app.post<{ Params: { id: string; tid: string } }>("/api/projects/:id/tasks/:tid/request-bakeoff-review", async (req, reply) => {
+    try {
+      await ops.requestBakeoffJudgment(ws(req), req.params.tid);
       return reply.code(204).send();
     } catch (err) {
       return fail(reply, err);
@@ -1549,6 +1612,24 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
     try {
       return await ops.resolveRoadmapConflict(ws(req), req.params.id, body.data, req.principal!.operatorId);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
+  // ── memory v0, phase 1 (operator-authored facts) ──────────────────────────
+  app.get<{ Params: { id: string } }>("/api/projects/:id/memory", async (req, reply) => {
+    try {
+      return await ops.listProjectMemory(ws(req), req.params.id);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+  app.post<{ Params: { id: string } }>("/api/projects/:id/memory", async (req, reply) => {
+    const body = CreateMemoryFactRequest.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+    try {
+      return await ops.addMemoryFact(ws(req), req.params.id, body.data, req.principal!.operatorId);
     } catch (err) {
       return fail(reply, err);
     }

@@ -7,8 +7,10 @@
 // Selected via RUNNER=claude. The default RUNNER=mock path is untouched.
 
 import {
+  createSdkMcpServer,
   query,
   resolveSettings,
+  tool,
   type CanUseTool,
   type Options,
   type PermissionResult,
@@ -22,6 +24,7 @@ import { existsSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { z } from "zod";
 import type { EndpointSmokeResult, LogVerb, ModelRates, PlanStep, ProviderId, Resolution, SmokeCheck, SmokeStatus } from "@skynet/shared";
 import { endpointLabel, priceUsage, ratesFor, vendorForBaseUrl } from "@skynet/shared";
 import { fmtDuration, idleCapMs, runtimeCapMs } from "./caps.js";
@@ -109,11 +112,20 @@ function createInputStream() {
 // is kept where it matters: the whole-diff review, decisions the agent raises
 // (AskUserQuestion → a `question` gate), and the genuinely risky/irreversible
 // surface — shell commands (Bash) and anything unrecognized still gate below.
+// A manager-role run's (StartSpec.role === "manager") one delegation tool —
+// see spawnWorkerMcpServers below. Named ahead of AUTO_ALLOW since the SDK
+// surfaces an in-process MCP tool's name as `mcp__<server>__<tool>`.
+const MANAGER_MCP_NAME = "skynet-manager";
+const SPAWN_WORKER_TOOL_NAME = `mcp__${MANAGER_MCP_NAME}__spawn_worker`;
+
 const AUTO_ALLOW = new Set([
   // read-only
   "Read", "LS", "Glob", "Grep", "NotebookRead", "TodoWrite",
   // file edits — reviewed wholesale in the diff-review gate, not per call
   "Edit", "MultiEdit", "Write", "NotebookEdit",
+  // a manager's own delegation tool — this IS the manager's job, not a risky
+  // action to gate on a human.
+  SPAWN_WORKER_TOOL_NAME,
 ]);
 
 // While a plan-mode-gated run (see StartSpec.planModeGate) hasn't had its plan
@@ -156,6 +168,36 @@ export function browserMcpServers(enabled: boolean): NonNullable<Options["mcpSer
     : ["npx", "-y", "@playwright/mcp@latest", "--headless", "--isolated"];
   const command = parts[0] ?? "npx";
   return { [BROWSER_MCP_NAME]: { command, args: parts.slice(1) } };
+}
+
+// A manager-role run's one delegation tool (agent-hierarchy.md §3): calling it
+// asks the orchestrator to provision a real, first-class Skynet worker agent
+// under this manager — own runner, worktree, branch, HITL, merge — not an
+// in-process SDK subagent. In-process (not stdio/subprocess like the browser
+// server above) since the handler just calls back into THIS run's own
+// `RunnerEvents`, no separate process needed. Only ever included when
+// `StartSpec.role === "manager"` (see baseOptions below); a worker-role run
+// never sees this tool.
+export function spawnWorkerMcpServers(events: RunnerEvents, runId: string): NonNullable<Options["mcpServers"]> {
+  return {
+    [MANAGER_MCP_NAME]: createSdkMcpServer({
+      name: MANAGER_MCP_NAME,
+      tools: [
+        tool(
+          "spawn_worker",
+          "Spawn a Skynet worker agent to carry out one subtask of this manager's area. Returns the new worker's agent id.",
+          { task: z.string().describe("The subtask brief the worker agent should carry out."), modules: z.array(z.string()).describe("Module ids this subtask touches, if known — empty array if unrestricted.") },
+          async ({ task, modules }) => {
+            if (!events.onSpawnWorker) {
+              return { content: [{ type: "text", text: "spawn_worker is unavailable in this session." }], isError: true };
+            }
+            const { agentId } = await events.onSpawnWorker(runId, task, modules);
+            return { content: [{ type: "text", text: JSON.stringify({ agentId }) }] };
+          },
+        ),
+      ],
+    }),
+  };
 }
 
 // Map a Fleet model slug to what the Claude Code SDK expects. The friendly
@@ -1402,8 +1444,10 @@ class ClaudeRunnerHandle implements RunnerHandle {
     this.initialPrompt =
       `You are a Skynet coding agent on branch ${spec.branch} in this repository. ` +
       `Task: ${spec.task}. ` +
-      `First decide what the task actually needs: if it's a question, analysis, or research request, just answer it directly — do NOT create or edit files to "record" the answer. ` +
-      `Only if it requires code changes, make them and run any relevant checks. Then stop when done. ` +
+      (spec.role === "manager"
+        ? `You are a MANAGER agent (agent-hierarchy.md): your job is to arrange work, not edit code yourself. Decompose this area's goal into concrete subtasks, then call the spawn_worker tool once per subtask (spawn_worker({task, modules}) → {agentId}) to delegate it to a real, independently-supervised worker agent. Do not Edit/Write/create files yourself — if the work needs a file changed, that belongs in a worker. Once you've spawned your workers you're done for this turn; Skynet supervises them and reports their progress, you don't need to poll or wait. `
+        : `First decide what the task actually needs: if it's a question, analysis, or research request, just answer it directly — do NOT create or edit files to "record" the answer. ` +
+          `Only if it requires code changes, make them and run any relevant checks. Then stop when done. `) +
       `Make code changes ONLY — do NOT run git commit, git push, or gh pr, and do NOT ask the operator whether to commit, push, or open a PR. Skynet owns that: when you finish it auto-commits your worktree, then gates the push and PR behind a separate review/approval step it controls. So never say you "didn't commit" or ask "should I open a PR?" — leave version control entirely to Skynet. Your "done" message should simply summarize what you changed and why, nothing about committing, pushing, or PRs. ` +
       `For anything beyond a one-line answer, use the TodoWrite tool to lay out your plan as concrete steps BEFORE you start, and keep it updated (mark each step in_progress, then completed) as you work — this is how your plan and progress are surfaced to the operator, so maintain it even for research/exploration tasks. ` +
       `Ask before running destructive or irreversible commands. ` +
@@ -1536,9 +1580,12 @@ class ClaudeRunnerHandle implements RunnerHandle {
       // the session (and any repo-defined hooks this also loads) doesn't start
       // until that scan has run.
       settingSources: PROJECT_SETTING_SOURCES,
-      // Opt-in real browser (Playwright/Chrome MCP). Omitted unless the workspace
-      // enabled it; its tools gate through canUseTool like any other non-read tool.
-      ...(spec.browser ? { mcpServers: browserMcpServers(true) } : {}),
+      // Opt-in real browser (Playwright/Chrome MCP) and/or a manager's
+      // spawn_worker delegation tool — merged since either, both, or neither
+      // may be present for a given run.
+      ...(spec.browser || spec.role === "manager"
+        ? { mcpServers: { ...(spec.browser ? browserMcpServers(true) : {}), ...(spec.role === "manager" ? spawnWorkerMcpServers(this.events, this.runId) : {}) } }
+        : {}),
       // Capture the CLI's stderr (see stderrTail) — without this a startup crash
       // is reported blind, as the SDK's generic launch-failure guess.
       stderr: (d: string) => {
@@ -1552,6 +1599,7 @@ class ClaudeRunnerHandle implements RunnerHandle {
     this.baseOptions = baseOptions;
     if (spec.browser) this.events.onLog(this.runId, "browser tools enabled (Playwright MCP) — browser actions gate for approval");
     if (spec.planModeGate) this.events.onLog(this.runId, "plan mode enabled — the agent will propose a plan and pause for approval before making changes");
+    if (spec.role === "manager") this.events.onLog(this.runId, "manager role enabled — spawn_worker tool available to delegate subtasks");
     if (spec.disallowedTools?.length) this.events.onLog(this.runId, `tool restriction enabled — this project's agents may not use: ${spec.disallowedTools.join(", ")}`);
 
     // A fork inherits its parent's context via resume; a fresh run doesn't.

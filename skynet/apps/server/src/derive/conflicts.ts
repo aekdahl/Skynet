@@ -16,8 +16,16 @@ import type { TaskRun, Dependency } from "@skynet/shared";
  * can't walk further than one hop anyway). Guards a broken/cyclic chain (a
  * missing parent, or a parent id that loops back on itself) by stopping at
  * the last resolvable link rather than looping forever.
+ *
+ * A bake-off sibling (TaskRun.bakeoffId set) short-circuits straight to a
+ * `bakeoff:<id>` root instead of walking parentId — siblings deliberately
+ * touch the same code from the same base commit and must never conflict-flag
+ * each other, even though they have no parent/child relationship among
+ * themselves. A fork OF a bake-off sibling inherits its parent's bake-off
+ * root too, so the whole tree stays one family.
  */
 export function familyOf(a: TaskRun, byId?: ReadonlyMap<string, TaskRun>): string {
+  if (a.bakeoffId) return `bakeoff:${a.bakeoffId}`;
   if (!byId) return a.parentId ?? a.id;
   let cur = a;
   const seen = new Set([a.id]);
@@ -25,6 +33,7 @@ export function familyOf(a: TaskRun, byId?: ReadonlyMap<string, TaskRun>): strin
     if (seen.has(cur.parentId)) return cur.parentId; // cycle — stop here
     const parent = byId.get(cur.parentId);
     if (!parent) return cur.parentId; // parent unknown (e.g. deleted) — stop here
+    if (parent.bakeoffId) return `bakeoff:${parent.bakeoffId}`;
     seen.add(parent.id);
     cur = parent;
   }

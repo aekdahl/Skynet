@@ -21,6 +21,7 @@ import { fmtWait, needsReviewConfirm } from "../lib/derive";
 import { isTypingTarget } from "../lib/keys";
 import { useChoice, useConfirm } from "../components/confirm";
 import { useEscapeLayer } from "../lib/escape-stack";
+import { groupBatchableDecisions, type GateBatch } from "./gate-batching";
 
 // Minimal Store slice used by FleetRail — avoids importing the whole Store
 // interface just for a type annotation on one destructured prop.
@@ -499,6 +500,67 @@ function RoadmapEditCard({
   );
 }
 
+// Policy-driven gate batching — several identical command-approval gates
+// (same normalized command, raised across different runs) as ONE decision
+// instead of N. Deliberately a much simpler action set than DecisionCard's
+// (approve/reject only, no option/modify/reassign/remember/guided-merge —
+// none of those make sense applied identically to N different runs at
+// once); a member the operator wants to handle differently is still a
+// normal card once expanded, since batching never removes it from the
+// underlying decision list, only groups its DISPLAY.
+function BatchedDecisionCard({
+  batch,
+  now,
+  onResolve,
+}: {
+  batch: GateBatch;
+  now: number;
+  onResolve: (action: "approve" | "reject") => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const n = batch.items.length;
+  const oldestIdleSec = Math.max(...batch.items.map((it) => Math.max(0, (now - it.raisedAt) / 1000)));
+  const projectNames = [...new Set(batch.items.map((it) => it.projectName))];
+
+  return (
+    <article className="di-card di-batch-card">
+      <div className="di-card-head">
+        <span className="di-kind-label mono">BATCHED APPROVAL</span>
+        <span className="di-batch-count mono">{n} gates</span>
+        <span className="di-meta">{projectNames.length === 1 ? projectNames[0] : `${projectNames.length} projects`}</span>
+        <span className="di-idle">{fmtWait(oldestIdleSec)}</span>
+      </div>
+
+      <p className="di-verdict">The exact same command is waiting on {n} runs.</p>
+
+      <div className="di-evidence">
+        <pre className="di-code mono">$ {batch.command}</pre>
+      </div>
+
+      <button className="di-batch-toggle" onClick={() => setExpanded((e) => !e)} aria-expanded={expanded}>
+        {expanded ? "Hide" : "Show"} the {n} gates {expanded ? "▴" : "▾"}
+      </button>
+      {expanded && (
+        <ul className="di-batch-members">
+          {batch.items.map((it) => (
+            <li key={it.id} className="di-batch-member">
+              <span className="di-batch-member-project">{it.projectName}</span>
+              <span className="di-batch-member-task">{it.taskTitle ?? it.runId}</span>
+              <span className="di-batch-member-wait mono">{fmtWait(Math.max(0, (now - it.raisedAt) / 1000))}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <div className="di-actions">
+        <button className="di-btn di-btn-primary" onClick={() => onResolve("approve")}>APPROVE ALL {n}</button>
+        <button className="di-btn di-btn-ghost" onClick={() => onResolve("reject")}>REJECT ALL {n}</button>
+      </div>
+      <p className="di-footnote">resolves all {n} individually — same effect as approving each one by hand</p>
+    </article>
+  );
+}
+
 function DecisionCard({
   item,
   selected,
@@ -704,7 +766,7 @@ export function DecisionInboxView({
   now: number;
 }) {
   const store = useStore();
-  const { queue, runs, tasks, projects, fleet, resolveHitl } = store;
+  const { queue, runs, tasks, projects, fleet, resolveHitl, resolveHitlBatch } = store;
   const [items, setItems] = useState<Decision[]>([]);
   const [loading, setLoading] = useState(true);
   const [groupByProject, setGroupByProject] = useState(false);
@@ -737,16 +799,23 @@ export function DecisionInboxView({
   // without ever passing through THIS card's own resolve handler).
   const visible = useMemo(() => items.filter((it) => !leavingIds.has(it.id)), [items, leavingIds]);
 
+  // Gate batching — several identical command-approval gates across N runs
+  // collapse into one card (batches) instead of N (see gate-batching.ts).
+  // `singles` (everything NOT folded into a batch) is what the rest of this
+  // view's existing project-grouping/keyboard-nav logic operates on below,
+  // unchanged — a batch is a separate section, never part of displayOrder.
+  const { batches, singles } = useMemo(() => groupBatchableDecisions(visible), [visible]);
+
   const grouped = useMemo(() => {
-    if (!groupByProject) return [{ projectName: null as string | null, rows: visible }];
+    if (!groupByProject) return [{ projectName: null as string | null, rows: singles }];
     const byProject = new Map<string, Decision[]>();
-    for (const it of visible) byProject.set(it.projectId, [...(byProject.get(it.projectId) ?? []), it]);
+    for (const it of singles) byProject.set(it.projectId, [...(byProject.get(it.projectId) ?? []), it]);
     // Preserve the server's cost-of-waiting order for which GROUP comes
     // first — the group containing the current most-urgent item leads.
     return [...byProject.entries()]
       .sort(([, a], [, b]) => b[0]!.costOfWaiting - a[0]!.costOfWaiting)
       .map(([, rows]) => ({ projectName: rows[0]!.projectName, rows }));
-  }, [visible, groupByProject]);
+  }, [singles, groupByProject]);
 
   // The order j/k/y/n/Enter actually walk — MUST match what's on screen, so
   // toggling "Group by project" doesn't leave keyboard nav jumping to a
@@ -773,6 +842,19 @@ export function DecisionInboxView({
     setTimeout(() => {
       setItems((prev) => prev.filter((i) => i.id !== item.id));
       setLeavingIds((s) => { const n = new Set(s); n.delete(item.id); return n; });
+    }, 170);
+  };
+
+  // Same shape as resolveAndCollapse, batched: one API call for every member
+  // id, then every card in the batch collapses together.
+  const resolveBatchAndCollapse = (batch: GateBatch, action: "approve" | "reject") => {
+    const ids = batch.items.map((it) => it.id);
+    setLeavingIds((s) => { const n = new Set(s); for (const id of ids) n.add(id); return n; });
+    void resolveHitlBatch(ids, action);
+    setTimeout(() => {
+      const idSet = new Set(ids);
+      setItems((prev) => prev.filter((i) => !idSet.has(i.id)));
+      setLeavingIds((s) => { const n = new Set(s); for (const id of ids) n.delete(id); return n; });
     }, 170);
   };
 
@@ -893,6 +975,16 @@ export function DecisionInboxView({
               <span><kbd>↵</kbd> open</span>
               <span><kbd>a</kbd> widen trust</span>
               <button className="di-hintbar-dismiss" onClick={dismissHints} aria-label="Dismiss">✕</button>
+            </div>
+          )}
+
+          {batches.length > 0 && (
+            <div className="di-group di-batch-group">
+              <div className="di-cards">
+                {batches.map((b) => (
+                  <BatchedDecisionCard key={b.key} batch={b} now={now} onResolve={(action) => resolveBatchAndCollapse(b, action)} />
+                ))}
+              </div>
             </div>
           )}
 

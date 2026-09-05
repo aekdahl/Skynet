@@ -55,6 +55,8 @@ import {
   type CommitRoadmapLineEditRequest,
   type RoadmapWorkspaceRollup,
   type AutonomyTelemetryRollup,
+  type MemoryFactSummary,
+  type CreateMemoryFactRequest,
 } from "@skynet/shared";
 import { parseStewardStream, type StewardReply } from "./steward-stream";
 import { toast } from "../components/toast";
@@ -312,6 +314,22 @@ export function resolveHitl(
   body: { action: ResolveAction; optionIndex?: number; guidance?: string; remember?: boolean; targetBranch?: string; memoryNote?: string; resetWork?: boolean },
 ) {
   return req<unknown>("POST", `/api/hitl/${id}/resolve`, body);
+}
+
+/** Gate batching — resolve several open decisions (same repeatable
+ *  command-approval gate raised across N runs, see kanban/gate-batching.ts)
+ *  in one call. `skipped` reports anything that didn't go through (already
+ *  resolved by someone else, etc.) so the Inbox can be honest about partial
+ *  batches rather than a blanket "done". */
+export function resolveHitlBatch(
+  ids: string[],
+  body: { action: ResolveAction; optionIndex?: number; guidance?: string; remember?: boolean; targetBranch?: string; memoryNote?: string; resetWork?: boolean },
+) {
+  return req<{ resolved: HitlItem[]; skipped: Array<{ id: string; reason: string }> }>(
+    "POST",
+    "/api/hitl/resolve-batch",
+    { ids, ...body },
+  );
 }
 
 // TaskRun chat / fork
@@ -583,6 +601,14 @@ export function fetchRoadmapHistory(projectId: string, opts?: { limit?: number }
  *  through TASK 28's attributed-commit path with no proposal/HITL detour. */
 export function commitRoadmapLineEdit(projectId: string, body: CommitRoadmapLineEditRequest) {
   return req<{ committed: boolean; sha?: string }>("POST", `/api/projects/${projectId}/roadmap/commit-edit`, body);
+}
+
+// ── Memory v0, phase 1 (operator-authored facts) ──────────────────────────
+export function fetchProjectMemory(projectId: string) {
+  return req<MemoryFactSummary[]>("GET", `/api/projects/${projectId}/memory`);
+}
+export function addMemoryFact(projectId: string, body: CreateMemoryFactRequest) {
+  return req<MemoryFactSummary>("POST", `/api/projects/${projectId}/memory`, body);
 }
 
 /** "Without a file there is no roadmap — create one from the board." */
@@ -1054,6 +1080,20 @@ export function archiveTask(projectId: string, taskId: string, archived = true) 
 export function assignTask(projectId: string, taskId: string) {
   return req<TaskRun>("POST", `/api/projects/${projectId}/tasks/${taskId}/assign`);
 }
+/** Cross-vendor consensus run: fire the task at 2+ providers in parallel,
+ *  each in its own worktree off the same base commit. Picking a winner is
+ *  just approving that sibling's own diff HITL — see resolveHitl. */
+export function startBakeoff(projectId: string, taskId: string, providerIds: ProviderId[]) {
+  return req<TaskRun[]>("POST", `/api/projects/${projectId}/tasks/${taskId}/bakeoff`, { providerIds });
+}
+/** The bake-off sibling of `requestReview`: force the N-way comparison pass
+ *  now instead of waiting for a periodic tick to find every sibling finished
+ *  and an eligible judge idle at the same moment. Throws (ApiError 409) with
+ *  an honest, specific reason — not every sibling finished yet / already
+ *  judged / no judge free right now — for the caller to surface. */
+export function requestBakeoffJudgment(projectId: string, taskId: string) {
+  return req<unknown>("POST", `/api/projects/${projectId}/tasks/${taskId}/request-bakeoff-review`);
+}
 /** Answer triage's clarifying questions — appends the operator's own words to
  *  the task description and returns it to backlog for re-triage. */
 export function answerClarification(projectId: string, taskId: string, answer: string) {
@@ -1309,6 +1349,9 @@ export function refreshProjectContext(projectId: string) {
 
 // ─── Live preview (Phase-1: web/sites) ──────────────────────────────────────
 export type PreviewSource = "main" | "merged" | "latest";
+// "service" (Phase 2) rebuilds/restarts automatically when the fleet merges,
+// instead of relying on the dev server's own HMR — see docs/live-preview.md.
+export type PreviewKind = "web" | "service";
 export interface PreviewState {
   status: "idle" | "starting" | "live" | "failed" | "stopped";
   url: string | null;
@@ -1319,6 +1362,7 @@ export interface PreviewState {
   startedAt: number | null;
   source: PreviewSource;
   combined: { total: number; included: number; skipped: number } | null;
+  kind: PreviewKind;
 }
 export function previewStatus(projectId: string) {
   return req<PreviewState>("GET", `/api/projects/${projectId}/preview`);
