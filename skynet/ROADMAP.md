@@ -45,8 +45,9 @@ found these rare-to-absent), and where they live:
 largely shipped)** — ship in this order:
 **(1) Security + reliability debt** — the 7 Aug-2026 security findings and the task-write-atomicity race
 are both *confirmed, pre-existing* issues (one already caused real data loss) with broad blast radius;
-close these before anything else compounds on top of them. **(2) Memory v0** (nothing has shipped here
-yet, and it's the wedge that keeps us from being "just another orchestrator") — **Cross-vendor consensus
+close these before anything else compounds on top of them. **(2) Memory v0** (phases 1+2 have now
+shipped — operator-authored + decision-derived facts, both injected and exportable; only the
+workspace-scoped MCP server and v4's LLM distillation remain) — **Cross-vendor consensus
 runs**' fan-out+diff+merge has now landed; only the peer-review half remains. **(3) v1.5 ease-of-use** (the remaining
 operator-ergonomics/design-token tail) **+ desktop code-signing** (the last GTM
 blocker on the committed release — mac auto-update silently no-ops without it). Provider breadth and the
@@ -60,12 +61,12 @@ Items are ranked PMF > Platform > Product within each batch:
 |-------|---|------|-------|
 | **N (now)** | 1 | 🔒 Security hardening — Aug 2026 audit remediation (7 findings, see v1 section) | Security |
 | | 2 | ✅ 🐛 Task-write atomicity — fixed, PR #649 (see v1 section) | Reliability |
-| | 3 | Memory v0 — operator-authored facts, injected per project | Platform |
+| | 3 | ✅ Memory v0 — operator-authored facts, injected per project — landed, PR #656 | Platform |
 | | 4 | deep-review / breaker-review settings UI toggle (both already built, PATCH-API-only today) | PMF |
 | | 5 | Mass inform — Fleet/Project UI (multi-select + whole-project) | Product |
 | | 6 | First-run onboarding telemetry (anonymous install events) | PMF |
 | **N+1** | 1 | Cross-vendor consensus runs — peer-review pass (fan-out+diff+merge landed) | Platform |
-| | 2 | Memory v0 — decision-derived fact capture from `hitl_audit` | Platform |
+| | 2 | ✅ Memory v0 — decision-derived fact capture from `hitl_audit` — landed | Platform |
 | | 3 | Desktop code-signing (macOS + Windows) — engineering done, blocked on certs | GTM |
 | | 4 | Preview Phase 2 — service-container runtime + auto-rebuild on merge | Product |
 | **N+2** | 1 | Memory v0 — workspace-scoped MCP read/write server | Platform |
@@ -329,15 +330,19 @@ parallel with v1 hardening. (Rivals make you pre-auth each CLI and learn worktre
 features below are white space.) 10 items from the original UX/ease list have shipped — see
 [the archive](ROADMAP-ARCHIVE.md#v15--ship-the-wedge-onboarding-fluency--memory-v0).
 
-Ordered by priority — the two signature bets first (nothing shipped on Memory v0 yet; consensus runs
+Ordered by priority — the two signature bets first (Memory v0 phases 1+2 have now landed; consensus runs
 just got unblocked), then remaining ease-of-use work, then the lowest-urgency UI polish tail:
 
 **Memory v0 (thin moat, pulled forward from v4):**
-- [ ] Operator-authored + **decision-derived** facts (every `hitl_audit` "decided X because Y" becomes a memory
+- [x] Operator-authored + **decision-derived** facts (every `hitl_audit` "decided X because Y" becomes a memory
   fact), scoped (workspace / project / area / agent), injected into any vendor via the `runner-sdk` seam, and
-  **exportable/owned** (git-committable). No LLM distillation yet (that's v4) — but it makes launch
-  not-just-another-orchestrator and starts the corpus compounding on day one. **Nothing here has shipped
-  yet — highest-priority open item in this version.**
+  **exportable/owned** (git-committable). Landed in two PRs: phase 1 (#656) shipped the format
+  (`docs/memory-format.md`), reader/writer, `runner-sdk` injection (`Orchestrator.memoryDigestFor`), and the
+  operator-facing add/list UI; phase 2 wired `Resolution.memoryNote` ("+ Also remember") straight into a real
+  `source: "decision"` fact the moment an approval carrying one resolves — no operator authoring step, always
+  workspace-scoped (the one scope phase 1's injection actually reads). No LLM distillation yet (that's v4) —
+  **remaining:** the workspace-scoped MCP read/write server (N+2 batch) so tools outside Skynet can read/write
+  the same files.
 
 **⭐ Cross-vendor consensus runs (signature bet):**
 - [~] Fire the same task at 2+ providers in parallel, each in its own worktree off the same base
