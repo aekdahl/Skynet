@@ -5,9 +5,13 @@
 // page, so the reserved preview URL is always live for the SPA to iframe.
 //
 // Sandboxing: content is confined to <artifactRoot>/<runId>, never escapes
-// via `..`, and is served with a `frame-ancestors` CSP. In production, serve
-// previews from a SEPARATE origin (subdomain) so allow-same-origin iframes
-// can't reach the control-plane origin; SKYNET_PREVIEW_BASE_URL points there.
+// via `..`, and is served with a `frame-ancestors` CSP. The iframe embedding
+// it (apps/web/src/components/preview.tsx) omits `allow-same-origin`, so
+// previewed code can't read this origin's storage (the session token lives
+// there) no matter what URL it's served at. Defense in depth: production
+// should still serve previews from a genuinely SEPARATE origin (subdomain) —
+// SKYNET_PREVIEW_BASE_URL points there — rather than relying on the sandbox
+// flag alone.
 
 import { createReadStream, existsSync, statSync } from "node:fs";
 import { normalize, resolve, sep } from "node:path";

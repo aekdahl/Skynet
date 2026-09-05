@@ -11,7 +11,7 @@ import { secretService } from "../secrets/index.js";
 import { mintViaBroker } from "./broker.js";
 import type { Store } from "../store/store.js";
 import { MemoryGithubStore } from "./memory.js";
-import { GitHubProvider } from "./provider.js";
+import { GitHubProvider, safeRepoPath } from "./provider.js";
 import { evaluateSafety } from "./safety.js";
 import type { GitCommitAttribution, GitProvider, GithubConnectionStore, GithubIssue, MergeResult, PrStatus, PushRequest, PushResult } from "./types.js";
 
@@ -256,7 +256,7 @@ export class GithubService {
     const conn = await this.store.get(workspaceId);
     if (!conn) throw new Error("GitHub is not connected for this workspace");
     const token = await this.resolveToken(conn);
-    const url = `https://api.github.com/repos/${repo}/contents/${path.replace(/^\/+/, "")}${ref ? `?ref=${encodeURIComponent(ref)}` : ""}`;
+    const url = `https://api.github.com/repos/${repo}/contents/${safeRepoPath(path)}${ref ? `?ref=${encodeURIComponent(ref)}` : ""}`;
     const res = await fetch(url, {
       headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github.raw+json", "User-Agent": "skynet" },
     });
