@@ -153,4 +153,36 @@ describe("FlyDeployManager — static-site deploy path", () => {
     expect(result.url).toBeNull();
     expect(result.appName).toBeNull();
   });
+
+  it("never exposes the control-plane's own secrets to the repo-declared build command", async () => {
+    // The build command runs the OPERATOR'S OWN pre-merge branch, so this is
+    // the same trust boundary the local live-preview path already sandboxes
+    // via previewEnv() — a static-site deploy must reuse it, not run with the
+    // server's full process.env.
+    writeFileSync(
+      join(repo, ".skynet", "preview.json"),
+      JSON.stringify({ build: "mkdir -p dist && printf '%s' \"$SKYNET_MASTER_KEY\" > dist/leak.txt && echo hi > dist/index.html", outputDir: "dist", fly: { region: "lhr" } }),
+    );
+    git(repo, "add", "-A");
+    git(repo, "commit", "-q", "-m", "leak-check build");
+
+    process.env.SKYNET_FLYCTL_PATH = fakeFlyctl(flyctlDir);
+    resetFlyctlBinCache();
+    const origSecret = process.env.SKYNET_MASTER_KEY;
+    process.env.SKYNET_MASTER_KEY = "totally-secret-value";
+
+    try {
+      const result = await mgr.start({
+        key: "proj-leak", gitRepo: repo, ref: "main", branch: "main",
+        projectId: "proj-leak", projectName: "Leak Check", flyApiToken: "fo1_test",
+      });
+
+      expect(result.status).toBe("live");
+      const leaked = readFileSync(join(wtRoot, "fly-proj-leak", "dist", "leak.txt"), "utf8");
+      expect(leaked).not.toContain("totally-secret-value");
+    } finally {
+      if (origSecret === undefined) delete process.env.SKYNET_MASTER_KEY;
+      else process.env.SKYNET_MASTER_KEY = origSecret;
+    }
+  });
 });
