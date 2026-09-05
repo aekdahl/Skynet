@@ -1073,6 +1073,7 @@ export class Orchestrator {
       id: `q-${runId}-${++this.seq}`,
       workspaceId: agent.workspaceId,
       runId,
+      bakeoffId: agent.bakeoffId,
       projectId: null,
       roadmapProposalId: null,
       kind: raise.kind,
@@ -1572,6 +1573,7 @@ export class Orchestrator {
       id: `q-diff-${runId}-${++this.seq}`,
       workspaceId: agent.workspaceId,
       runId,
+      bakeoffId: agent.bakeoffId,
       projectId: null,
       roadmapProposalId: null,
       kind: "diff",
@@ -2389,6 +2391,13 @@ export class Orchestrator {
       throw new Error("Task is archived — unarchive it before assigning");
     }
 
+    // A cross-vendor bake-off owns this task's assignment until it's resolved
+    // (one sibling's diff approved) — a plain assign would spawn a competing
+    // 9th runner rather than honestly refusing.
+    if (task.bakeoffId) {
+      throw new Error("Task already has an active bake-off — resolve it before assigning normally");
+    }
+
     // DEF-003: re-assigning a task that already owns a live agent must be
     // idempotent — return the existing agent instead of acquiring a second
     // runner and spawning a duplicate (which orphaned the first agent and left
@@ -2423,6 +2432,43 @@ export class Orchestrator {
       { provider: task.preferredProvider, model: task.preferredModel },
       opts?.role ?? "worker",
     );
+
+    // beforeStart fires at the exact point the original inline implementation
+    // wrote task state — right after the run record exists, before the
+    // (possibly slow) worktree provisioning + provider.start — so a startup
+    // failure's existing failStartup/moveTaskToReview behavior is unchanged.
+    const { run } = await this.spawnRunForTask(task, project, runner, {
+      role: opts?.role,
+      area: opts?.area,
+      beforeStart: async (spawned) => {
+        await this.hub.upsertTask({ ...task, state: "ongoing", runId: spawned.id, assignment });
+      },
+    });
+    return run;
+  }
+
+  /**
+   * Provision and start ONE run for a task against ONE acquired runner — the
+   * shared middle section of assignTask (mint runId/branch, reserve a preview
+   * URL, build the TaskRun record, resolve the provider, persist it, provision
+   * the isolated worktree, resolve secrets/context, and call provider.start).
+   * Extracted so startBakeoff can call it N times (once per contesting
+   * provider) against a SHARED baseRef, instead of duplicating this sequence
+   * the way `fork` currently does independently.
+   *
+   * Deliberately does NOT touch `Task` itself (state/runId/bakeoffId) — that's
+   * the caller's call, since assignTask writes it once per single spawn while
+   * startBakeoff writes it once for the whole group, only after every sibling
+   * has started. `opts.beforeStart`, when given, runs after the run record is
+   * persisted but before provisioning begins, so a caller that DOES want the
+   * old "flip state before provisioning" timing (assignTask) can still get it.
+   */
+  private async spawnRunForTask(
+    task: Task,
+    project: Project,
+    runner: { id: string; provider: TaskRun["provider"]; model: string; credentialId: string | null },
+    opts: { baseRef?: string; bakeoffId?: string | null; role?: Agent["role"]; area?: string[]; beforeStart?: (run: TaskRun) => Promise<void> } = {},
+  ): Promise<{ run: TaskRun; baseRef: string | undefined }> {
     const runId = `${this.slug(task.text)}-${++this.seq}`;
     // runId is unique → unique branch & worktree path (two same-named tasks
     // never collide on the same branch).
@@ -2430,7 +2476,7 @@ export class Orchestrator {
     // W5: reserve a sandboxed live-preview URL for visual deliverables.
     const preview = await previewService.resolve({
       workspaceId: project.workspaceId,
-      projectId,
+      projectId: project.id,
       projectName: project.name,
       projectGoal: project.goal,
       runId,
@@ -2449,7 +2495,7 @@ export class Orchestrator {
       merge: null, // set when (and if) this run's diff actually lands — see completeMerged
       handoff: null, // written if this run ever escalates — see composeHandoff
       workspaceId: project.workspaceId,
-      projectId,
+      projectId: project.id,
       name: task.text,
       status: "running",
       agentId: runner.id,
@@ -2473,6 +2519,7 @@ export class Orchestrator {
       dependsOn: [],
       parentId: null,
       branchFromStep: null,
+      bakeoffId: opts.bakeoffId ?? null,
       archived: false,
       pr: null,
       mergedAt: null,
@@ -2484,8 +2531,12 @@ export class Orchestrator {
     const provider = await this.getProvider(runner.provider);
 
     await this.hub.createRun(agent);
-    await this.hub.patchTask(task.id, { state: "ongoing", runId, assignment });
-    await this.hub.upsertProject({ ...project, runIds: [...project.runIds, runId] });
+    // Re-fetch rather than trust the closure's `project` for this write: a
+    // bake-off calls spawnRunForTask N times in a row, and appending onto a
+    // stale in-memory runIds array on every call would drop earlier siblings'
+    // ids instead of accumulating them.
+    const freshProject = (await this.store.getProject(project.id)) ?? project;
+    await this.hub.upsertProject({ ...freshProject, runIds: [...freshProject.runIds, runId] });
 
     // S8 status: the brief this task is scoped under moves approved→building
     // the moment its FIRST child task leaves todo — a plan stops being "just
@@ -2493,6 +2544,8 @@ export class Orchestrator {
     // todo→ongoing transition (not a re-assign of an already-ongoing task, and
     // not from any other originating state) and only from "approved" — a
     // human's manual status edit (or a later completion) is never overridden.
+    // Guarded by brief.status itself, so calling this once per bake-off
+    // sibling is harmless — only the first call ever finds "approved".
     if (task.state === "todo") {
       const brief = await this.findTaskBrief(task, project.workspaceId);
       if (brief && brief.status === "approved") {
@@ -2500,16 +2553,21 @@ export class Orchestrator {
       }
     }
 
+    await opts.beforeStart?.(agent);
+
     // Git backend for this project's repo (local repoPath, else global) — drives
     // the isolated worktree + which merge queue this agent integrates into.
     const git = this.gitContextFor(project);
     let scratchCwd: string | undefined;
     try {
-      // Isolated worktree cut from LATEST main: provisionCwd fetches origin and
-      // branches from origin/<base> (no baseRef passed), so every run starts on
-      // the newest human-merged state — not a stale local integration branch.
-      // With no bound repo (chat-only), this instead mints a private scratch dir.
-      const prov = await this.provisionCwd(git, runId, branch, project);
+      // Isolated worktree cut from LATEST main when no baseRef is given:
+      // provisionCwd fetches origin and branches from origin/<base>, so every
+      // run starts on the newest human-merged state — not a stale local
+      // integration branch. A bake-off passes an explicit baseRef (captured
+      // from its first sibling) so every contesting provider is cut from the
+      // SAME commit and their diffs stay comparable. With no bound repo
+      // (chat-only), this instead mints a private scratch dir.
+      const prov = await this.provisionCwd(git, runId, branch, project, opts.baseRef);
       const { cwd, baseRef } = prov;
       scratchCwd = prov.scratchCwd;
       // Inject this workspace's provider key (env fallback when none is stored).
@@ -2521,7 +2579,7 @@ export class Orchestrator {
       const taskBody = (task.description ? `${task.text}\n\n${task.description}` : task.text) + SCOPE_NOTE;
       const feature = task.featureId ? await this.store.getFeature(task.featureId).catch(() => undefined) : undefined;
       const solutionBrief = await this.findTaskBrief(task, project.workspaceId);
-      const siblings = await this.siblingDigestFor(project, taskId);
+      const siblings = await this.siblingDigestFor(project, task.id);
       const memory = await this.memoryDigestFor(project.workspaceId, project, runner.provider);
       const brief = buildAgentContext({
         project,
@@ -2535,16 +2593,123 @@ export class Orchestrator {
       // runner decides how to expose it (Claude → a Playwright MCP server).
       const { browserTools } = await this.fleetPolicy(project.workspaceId);
       const handle = await provider.start(
-        { runId, projectId, task: brief, model: runner.model, branch, cwd, apiKey, baseUrl, rates, browser: browserTools, planModeGate: project.planModeGate, disallowedTools: project.disallowedTools, role: opts?.role },
+        { runId, projectId: project.id, task: brief, model: runner.model, branch, cwd, apiKey, baseUrl, rates, browser: browserTools, planModeGate: project.planModeGate, disallowedTools: project.disallowedTools, role: opts?.role },
         this.events(),
       );
-      this.live.set(runId, { handle, agentId: runner.id, taskId, branch, baseRef, git, scratchCwd });
+      this.live.set(runId, { handle, agentId: runner.id, taskId: task.id, branch, baseRef, git, scratchCwd });
+      return { run: agent, baseRef };
     } catch (err) {
       await this.releaseScratchCwd(scratchCwd);
       await this.failStartup(runId, runner.id, (err as Error).message);
       throw err;
     }
-    return agent;
+  }
+
+  // ── startBakeoff ──────────────────────────────────────────────────────────
+  /**
+   * Fire the same task at N different providers in parallel, each in its own
+   * worktree cut from the SAME base commit, so their diffs are directly
+   * comparable. All-or-nothing: if any provider can't be acquired or fails to
+   * start, every sibling already spawned is retired and the task is left
+   * untouched — never a partial bake-off. The winner is picked later via the
+   * ordinary `diff` HITL approval flow (see `deliver`'s collapseBakeoff call).
+   */
+  async startBakeoff(projectId: string, taskId: string, providerIds: TaskRun["provider"][]): Promise<TaskRun[]> {
+    const task = await this.store.getTask(taskId);
+    if (!task || task.projectId !== projectId) throw new Error("Task not found");
+    const project = await this.store.getProject(projectId);
+    if (!project) throw new Error("Project not found");
+
+    if (task.state === "done") throw new TaskAlreadyAssignedError("Task is already done");
+    if (task.archived) throw new Error("Task is archived — unarchive it before assigning");
+    if (task.bakeoffId) throw new Error("Task already has an active bake-off");
+    if (task.runId) {
+      const existing = await this.store.getRun(task.runId);
+      if (existing && existing.status !== "done") {
+        throw new TaskAlreadyAssignedError("Task already has a live run — stop or complete it before a bake-off");
+      }
+    }
+
+    const distinct = Array.from(new Set(providerIds));
+    if (distinct.length < 2) throw new Error("A bake-off needs at least 2 distinct providers");
+
+    // Acquire every contesting runner BEFORE provisioning any worktree, so a
+    // capacity/credential failure on provider K never leaves providers 1..K-1
+    // holding a busy runner for nothing.
+    const allowedCredentialIds = project.enabledRunnerCredentialIds;
+    const fleetAgents = await this.store.listAgents(project.workspaceId);
+    const runners: { id: string; provider: TaskRun["provider"]; model: string; credentialId: string | null }[] = [];
+    try {
+      for (const providerId of distinct) {
+        const template = fleetAgents.find((a) => a.provider === providerId && this.keyAllowedForProject(a, allowedCredentialIds));
+        if (!template) {
+          throw new RunnerNotConfiguredError(
+            `No agent configured for provider "${providerId}" — add one in Fleet before starting a bake-off.`,
+          );
+        }
+        const runner = await this.acquireOrProvisionRunner(project.workspaceId, providerId, template.model, template.credentialId, allowedCredentialIds);
+        runners.push(runner);
+      }
+    } catch (err) {
+      for (const r of runners) await this.freeRunner(r.id).catch(() => undefined);
+      throw err;
+    }
+
+    const bakeoffId = `${this.slug(task.text)}-bakeoff-${++this.seq}`;
+    const spawned: TaskRun[] = [];
+    let sharedBaseRef: string | undefined;
+    try {
+      for (const runner of runners) {
+        const { run, baseRef } = await this.spawnRunForTask(task, project, runner, { baseRef: sharedBaseRef, bakeoffId });
+        spawned.push(run);
+        if (sharedBaseRef === undefined) sharedBaseRef = baseRef;
+      }
+    } catch (err) {
+      // Roll back every sibling that DID start (spawnRunForTask's own catch
+      // already tore down the one that just failed via failStartup).
+      for (const r of spawned) {
+        await this.retireRun(r.id, `bake-off setup failed — ${(err as Error).message}`, { unstrand: false }).catch(() => undefined);
+      }
+      for (const r of runners.slice(spawned.length + 1)) {
+        await this.freeRunner(r.id).catch(() => undefined);
+      }
+      throw err;
+    }
+
+    const anchor = spawned[0]!;
+    await this.hub.upsertTask({ ...task, state: "ongoing", runId: anchor.id, bakeoffId });
+    return spawned;
+  }
+
+  /**
+   * Called from `deliver()` the moment one bake-off sibling's diff is
+   * approved: that run is the winner. Every other sibling is retired
+   * (`retireRun` already does the full teardown — stop the live handle, free
+   * the runner, retire its worktree, dismiss its own open `diff` HITL — in one
+   * call, `unstrand: false` so it never touches the shared task itself), then
+   * the task's `bakeoffId` is cleared and its `runId` repointed at the winner
+   * if the winner wasn't already the anchor. Idempotent/best-effort: a
+   * retire failure on one loser must never block the others or the repoint.
+   */
+  private async collapseBakeoff(bakeoffId: string, winningRunId: string, by: string): Promise<void> {
+    const winner = await this.store.getRun(winningRunId);
+    if (!winner) return;
+    const siblings = (await this.store.listRuns(winner.workspaceId)).filter(
+      (r) => r.bakeoffId === bakeoffId && r.id !== winningRunId,
+    );
+    for (const s of siblings) {
+      await this.retireRun(s.id, `lost the bake-off — ${winningRunId} was picked instead`, { by, unstrand: false }).catch(
+        () => undefined,
+      );
+    }
+    const task = (await this.store.listTasks(winner.workspaceId)).find((t) => t.bakeoffId === bakeoffId);
+    if (task) {
+      await this.hub.upsertTask({
+        ...task,
+        bakeoffId: null,
+        ...(task.runId !== winningRunId ? { runId: winningRunId } : {}),
+      });
+    }
   }
 
   // ── fork ──────────────────────────────────────────────────────────────────
@@ -3159,6 +3324,17 @@ export class Orchestrator {
       return;
     }
 
+    // A bake-off sibling's diff being approved picks it as the winner — retire
+    // every other sibling (worktree/branch/runner/HITL) and repoint the task
+    // at this run BEFORE integrating, so the merge queue's task-completion
+    // write lands on a task that already agrees this is "the" run. Only a
+    // fresh `diff` approval collapses the group — a later merge/verifier
+    // retry on the (already-declared) winner must not re-run this.
+    if (resolution.action === "approve" && item.kind === "diff") {
+      const run = await this.store.getRun(item.runId);
+      if (run?.bakeoffId) await this.collapseBakeoff(run.bakeoffId, run.id, resolution.by);
+    }
+
     // diff-approve / merge-retry / verifier-retry → integrate the agent's
     // branch. This is the post-approval half of the `approveBeforePush`
     // guardrail: the diff review gated here, so reaching this point means an
@@ -3473,6 +3649,7 @@ export class Orchestrator {
       id: `q-${run.id}-${++this.seq}`,
       workspaceId: run.workspaceId,
       runId: run.id,
+      bakeoffId: run.bakeoffId,
       projectId: null,
       roadmapProposalId: null,
       kind: "escalation",
@@ -3559,6 +3736,7 @@ export class Orchestrator {
       id: `q-autonomy-${project.id}-${++this.seq}`,
       workspaceId: project.workspaceId,
       runId,
+      bakeoffId: null,
       projectId: null,
       roadmapProposalId: null,
       kind: "escalation",
@@ -4712,6 +4890,7 @@ export class Orchestrator {
       id: `q-merge-${req.runId}-${++this.seq}`,
       workspaceId: agent.workspaceId,
       runId: req.runId,
+      bakeoffId: agent.bakeoffId,
       projectId: null,
       roadmapProposalId: null,
       kind: "merge",
@@ -4767,6 +4946,7 @@ export class Orchestrator {
       id: `q-merge-${req.runId}-${++this.seq}`,
       workspaceId: agent.workspaceId,
       runId: req.runId,
+      bakeoffId: agent.bakeoffId,
       projectId: null,
       roadmapProposalId: null,
       kind: "merge",
@@ -4832,6 +5012,7 @@ export class Orchestrator {
       id: `q-verifier-${req.runId}-${++this.seq}`,
       workspaceId: agent.workspaceId,
       runId: req.runId,
+      bakeoffId: agent.bakeoffId,
       projectId: null,
       roadmapProposalId: null,
       kind: "verifier",
@@ -6949,6 +7130,7 @@ export class Orchestrator {
       description: null,
       state: "backlog",
       runId: null,
+      bakeoffId: null,
       autoPick: false,
       assessment: null,
       assessmentEffort: null,

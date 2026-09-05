@@ -11,6 +11,10 @@ export interface RoutePatch {
   projectId?: string | null;
   runId?: string | null;
   agentId?: string | null;
+  // A cross-vendor bake-off's group id — TaskRun.bakeoffId never clears once
+  // set (even after a winner is picked), so this alone is enough to derive
+  // every sibling from the store; no separate taskId needed on the route.
+  bakeoffId?: string | null;
   // TASK 21 — set only by a `#/project/<id>/autonomy` deep link (a breaker-
   // event source chip): the project view reads this once on mount to
   // pre-open TASK 19's autonomy dial modal, then it's consumed (not part of
@@ -55,6 +59,8 @@ export function parseHash(): RoutePatch | null {
     case "agent":
     case "task":
       return arg ? { view: "task", runId: arg } : { view: "home" };
+    case "bakeoff":
+      return arg ? { view: "bakeoff", bakeoffId: arg } : { view: "home" };
     default:
       return null;
   }
@@ -65,6 +71,7 @@ export function parseHash(): RoutePatch | null {
 // the SAME route strings as the real router, never a hand-rolled duplicate.
 export const runHref = (runId: string): string => `#/agent/${runId}`;
 export const projectHref = (projectId: string): string => `#/project/${projectId}`;
+export const bakeoffHref = (bakeoffId: string): string => `#/bakeoff/${bakeoffId}`;
 /** The project view with its Governance menu's autonomy dial pre-opened —
  *  the breaker-event source chip's target (TASK 19's dial has no route of
  *  its own since it's a modal, not a page; parseHash below recognizes the
@@ -77,6 +84,7 @@ export function toHash(r: {
   projectId: string | null;
   runId: string | null;
   agentId: string | null;
+  bakeoffId?: string | null;
 }): string {
   switch (r.view) {
     case "agentDetail":
@@ -85,6 +93,8 @@ export function toHash(r: {
       return r.projectId ? `#/project/${r.projectId}` : "#/projects";
     case "task":
       return r.runId ? `#/agent/${r.runId}` : "#/home";
+    case "bakeoff":
+      return r.bakeoffId ? `#/bakeoff/${r.bakeoffId}` : "#/home";
     case "designTokens":
       return "#/design-tokens";
     case "workspaceRoadmap":

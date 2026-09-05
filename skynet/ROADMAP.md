@@ -30,8 +30,8 @@ funnel; governance is the launch wedge; portable, open memory is the moat.**
 found these rare-to-absent), and where they live:
 1. **Open portable memory — one second brain across every agent** (v4; thin v0 in v1.5): user-owned,
    cross-vendor, exposed as an **MCP memory server any tool can read/write, even outside Skynet**.
-2. **Cross-vendor consensus runs** (v1.5): same task on Claude + Codex + Gemini, auto-diff, keep/merge
-   the winner — or have them peer-review each other.
+2. **Cross-vendor consensus runs** (v1.5, fan-out+diff+merge landed): same task on 2+ providers, auto-diff,
+   keep/merge the winner. Having them peer-review each other instead of a human picking is still open.
 3. **Prompt-injection / tool-poisoning firewall** (v1, landed): gate tool calls steered by untrusted content the
    agent read (issue / web page / dependency). The category's first agent-security layer.
 4. **Provably-improving fleet** (v5): measure which memory + task phrasings one-shot vs. churn, promote
@@ -46,9 +46,8 @@ largely shipped)** — ship in this order:
 **(1) Security + reliability debt** — the 7 Aug-2026 security findings and the task-write-atomicity race
 are both *confirmed, pre-existing* issues (one already caused real data loss) with broad blast radius;
 close these before anything else compounds on top of them. **(2) Memory v0** (nothing has shipped here
-yet, and it's the wedge that keeps us from being "just another orchestrator") **+ Cross-vendor consensus
-runs** (provider breadth landed — Codex/Gemini/Cursor/Copilot/Hermes/OpenCode/Kimi Code — so this
-signature bet is now unblocked, no longer gated on it). **(3) v1.5 ease-of-use** (the remaining
+yet, and it's the wedge that keeps us from being "just another orchestrator") — **Cross-vendor consensus
+runs**' fan-out+diff+merge has now landed; only the peer-review half remains. **(3) v1.5 ease-of-use** (the remaining
 operator-ergonomics/design-token tail) **+ desktop code-signing** (the last GTM
 blocker on the committed release — mac auto-update silently no-ops without it). Provider breadth and the
 Governance-to-SOTA launch wedge — the prior #1/#2 here — are both essentially done; see
@@ -65,7 +64,7 @@ Items are ranked PMF > Platform > Product within each batch:
 | | 4 | deep-review / breaker-review settings UI toggle (both already built, PATCH-API-only today) | PMF |
 | | 5 | Mass inform — Fleet/Project UI (multi-select + whole-project) | Product |
 | | 6 | First-run onboarding telemetry (anonymous install events) | PMF |
-| **N+1** | 1 | Cross-vendor consensus runs (same task, 2+ agents, auto-diff) — unblocked now that provider breadth has landed | Platform |
+| **N+1** | 1 | Cross-vendor consensus runs — peer-review pass (fan-out+diff+merge landed) | Platform |
 | | 2 | Memory v0 — decision-derived fact capture from `hitl_audit` | Platform |
 | | 3 | Desktop code-signing (macOS + Windows) — engineering done, blocked on certs | GTM |
 | | 4 | Preview Phase 2 — service-container runtime + auto-rebuild on merge | Product |
@@ -338,10 +337,13 @@ just got unblocked), then remaining ease-of-use work, then the lowest-urgency UI
   yet — highest-priority open item in this version.**
 
 **⭐ Cross-vendor consensus runs (signature bet):**
-- [ ] Fire the same task at Claude + Codex + Gemini in parallel, auto-diff the results, keep/merge the winner, or
-  have them peer-review each other. The vendor-neutral seam is what makes true cross-*vendor* bake-offs
-  possible (rivals' "councils" are single-tool). **Now unblocked** — the multi-provider runners this needed
-  (v1: Codex/Gemini/Cursor/Copilot/Hermes/OpenCode/Kimi Code) have all landed.
+- [~] Fire the same task at 2+ providers in parallel, each in its own worktree off the same base
+  commit, auto-diff the results, and keep/merge the winner — landed (`Orchestrator.startBakeoff`,
+  `TaskRun`/`Task`/`HitlItem.bakeoffId`, the "Bake-off ⇉" board action + N-way comparison view). The
+  vendor-neutral seam is what makes true cross-*vendor* bake-offs possible (rivals' "councils" are
+  single-tool). Having them **peer-review each other** instead of a human picking is still open — the
+  schema (a bare `bakeoffId` grouping key, not a rigid one-shot entity) was deliberately left room for
+  it, but the review pipeline itself isn't built.
 
 **Easier to use than anyone else:**
 - [~] **Project assistant → co-operator (actions from chat).** Steward (the shared brain,

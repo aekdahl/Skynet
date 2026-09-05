@@ -108,6 +108,36 @@ describe("computeConflicts", () => {
     expect(c[0]!.runIds.slice().sort()).toEqual(["child", "grandparent", "other", "parent"]);
   });
 
+  it("bake-off siblings are one family — never flag each other", () => {
+    expect(
+      computeConflicts([
+        run("a", ["billing"], { bakeoffId: "bo1" }),
+        run("b", ["billing"], { bakeoffId: "bo1" }),
+      ]),
+    ).toHaveLength(0);
+  });
+
+  it("different bake-offs on the same module still conflict-flag each other", () => {
+    const c = computeConflicts([
+      run("a", ["billing"], { bakeoffId: "bo1" }),
+      run("b", ["billing"], { bakeoffId: "bo2" }),
+    ]);
+    expect(c).toHaveLength(1);
+    expect(c[0]!.runIds.slice().sort()).toEqual(["a", "b"]);
+  });
+
+  it("familyOf gives bake-off siblings a shared bakeoff: root, without needing a byId map", () => {
+    expect(familyOf(run("a", [], { bakeoffId: "bo1" }))).toBe("bakeoff:bo1");
+    expect(familyOf(run("b", [], { bakeoffId: "bo1" }))).toBe("bakeoff:bo1");
+  });
+
+  it("a fork of a bake-off sibling inherits the bake-off family", () => {
+    const sibling = run("sibling", [], { bakeoffId: "bo1" });
+    const fork = run("fork", [], { parentId: "sibling" });
+    const byId = new Map([sibling, fork].map((r) => [r.id, r]));
+    expect(familyOf(fork, byId)).toBe("bakeoff:bo1");
+  });
+
   it("a finished (done) parent is still walked to resolve its active child's family", () => {
     // The done filter only applies to which runs CONTEND for a module — the
     // id lookup for walking parentId is built from every run, active or not.

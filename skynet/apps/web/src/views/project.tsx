@@ -5,6 +5,7 @@ import { useStore } from "../lib/store";
 import * as api from "../lib/client";
 import { useEscapeLayer } from "../lib/escape-stack";
 import { Blocked, PrimaryButton } from "../components/empty";
+import { BakeoffPicker } from "../components/bakeoff-picker";
 import {
   agentsForProject,
   computeUsageRollup,
@@ -359,6 +360,7 @@ function TaskCard({
     reassignTaskAgent,
     archiveTask,
     assignTask,
+    startBakeoff,
     transitionTask,
     moveTask,
     dismissTaskLint,
@@ -420,6 +422,10 @@ function TaskCard({
   // run opens a read-only detail modal (the card itself clamps title/description).
   const openCard = openRun ?? (() => setDetail(true));
   const noFleet = fleet.length === 0;
+  // Providers a bake-off can actually fire at — only ones with a configured
+  // fleet agent (startBakeoff resolves a model/credential template from one).
+  const bakeoffProviders = providers.filter((p) => fleet.some((a) => a.provider === p.id));
+  const [bakeoffOpen, setBakeoffOpen] = useState(false);
   const dnd = useContext(BoardDnd);
   const dragging = dnd?.drag?.taskId === task.id;
   // Once a run exists, the eligibility ("any agent") is moot — surface WHO is
@@ -820,6 +826,34 @@ function TaskCard({
                 Start →
               </button>
             </Blocked>
+          )}
+          {(s === "backlog" || s === "todo") && (
+            <Blocked
+              disabled={bakeoffProviders.length < 2}
+              reason={bakeoffProviders.length < 2 ? "Configure at least 2 providers in Fleet to run a bake-off." : undefined}
+            >
+              <button
+                className="kb-move kb-bakeoff"
+                disabled={bakeoffProviders.length < 2}
+                title={bakeoffProviders.length < 2 ? undefined : "Fire this task at multiple providers in parallel and compare their diffs."}
+                onClick={() => setBakeoffOpen(true)}
+              >
+                Bake-off ⇉
+              </button>
+            </Blocked>
+          )}
+          {bakeoffOpen && (
+            <BakeoffPicker
+              providers={bakeoffProviders}
+              onCancel={() => setBakeoffOpen(false)}
+              onStart={async (providerIds) => {
+                setBakeoffOpen(false);
+                const runs = await startBakeoff(pid, task.id, providerIds);
+                if (runs && runs.length > 0) {
+                  window.dispatchEvent(new CustomEvent("skynet:open-bakeoff", { detail: { bakeoffId: runs[0]!.bakeoffId } }));
+                }
+              }}
+            />
           )}
           {s === "backlog" && (
             <button

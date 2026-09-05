@@ -42,7 +42,7 @@ function runFor(id: string, projectId: string): Parameters<Hub["upsertRun"]>[0] 
 
 function hitlFor(id: string, runId: string, raisedAt: number): HitlItem {
   return {
-    id, workspaceId: WS, runId, kind: "approval",
+    id, workspaceId: WS, runId, bakeoffId: null, kind: "approval",
     title: `Approve ${id}`, why: "needs approval", risk: "medium",
     raisedAt, expiresAt: null, resolvedAt: null, resolution: null,
     rationale: null, command: "do it", options: null, recommended: null,
