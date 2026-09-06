@@ -75,6 +75,15 @@ export interface Action {
     | "set_status"
     | "preview"
     | "status"
+    // Ported from Steward for phone/app parity (see apps/server/src/steward/
+    // assistant.ts's ProjectActionKind — same underlying Operations methods).
+    | "reorder_task"
+    | "request_review"
+    | "resync_source"
+    | "set_schedule"
+    | "set_assignment"
+    | "pause_key"
+    | "resume_key"
     // Grouping / roadmap — mirrors the Steward action set.
     | "create_feature"
     | "set_task_feature"
@@ -113,6 +122,17 @@ export interface Action {
   milestoneName?: string;
   milestoneDescription?: string;
   targetAt?: number | null;
+  /** reorder_task: move within its lane. */
+  direction?: "up" | "down";
+  /** set_schedule: either/both may be present; `null` clears the field. */
+  estimatedDurationMs?: number | null;
+  plannedStartAt?: number | null;
+  /** set_assignment: WHO may pick up the task. */
+  mode?: "any" | "agents" | "unassigned";
+  agentIds?: string[];
+  /** pause_key / resume_key: workspace-scoped, not project-scoped. `reason`
+   *  (pause_key's required explanation) reuses the field above. */
+  credentialId?: string;
 }
 
 /** Task lanes + project statuses a phone action may target (server still enforces
@@ -139,7 +159,8 @@ export const INTENT_SYSTEM_PROMPT = [
   "You may ALSO perform ONE action, but ONLY when the owner is clearly asking to do it.",
   "Allowed actions: approve | reject | add_task | assign | add_agent | create_project | remove_task |",
   "  move_task | rename_task | set_task_desc | rename_project | set_goal | set_autonomy | set_status | preview | status |",
-  "  create_feature | set_task_feature | archive_feature | create_milestone | set_feature_milestone | set_task_milestone | mark_milestone_shipped.",
+  "  create_feature | set_task_feature | archive_feature | create_milestone | set_feature_milestone | set_task_milestone | mark_milestone_shipped |",
+  "  reorder_task | request_review | resync_source | set_schedule | set_assignment | pause_key | resume_key.",
   "Action object shapes (used as the `action` field below):",
   '  approve/reject: {"action":"approve","gateId":"<gate id from context>"}',
   '  add_task:       {"action":"add_task","projectId":"<project id>","taskText":"<the task>"}',
@@ -163,10 +184,29 @@ export const INTENT_SYSTEM_PROMPT = [
   '  set_feature_milestone:{"action":"set_feature_milestone","featureId":"<id>","milestoneId":"<id or null>"}',
   '  set_task_milestone:{"action":"set_task_milestone","taskId":"<id>","milestoneId":"<id or null>"}',
   '  mark_milestone_shipped:{"action":"mark_milestone_shipped","milestoneId":"<id>"}',
+  '  reorder_task:   {"action":"reorder_task","taskId":"<id>","direction":"up|down"}',
+  '  request_review: {"action":"request_review","taskId":"<id>"}',
+  '  resync_source:  {"action":"resync_source","projectId":"<project id>"}',
+  '  set_schedule:   {"action":"set_schedule","taskId":"<id>","estimatedDurationMs":<ms or null>,"plannedStartAt":<epoch ms or null>}',
+  '  set_assignment: {"action":"set_assignment","taskId":"<id>","mode":"any|agents|unassigned","agentIds":["<agent id>", …]}',
+  '  pause_key:      {"action":"pause_key","credentialId":"<credential id>","reason":"<why, one short sentence>"}',
+  '  resume_key:     {"action":"resume_key","credentialId":"<credential id>"}',
   "remove_task archives a task (a reversible soft-hide, recoverable in the app) — it is",
   "never a hard delete; use it when the owner asks to remove/delete/undo a task.",
   "preview spins up a live preview of the project's web app and sends the URL back here",
   "when it's ready; use it when the owner asks to preview / see / open the running app.",
+  "reorder_task moves a task up/down within its own lane (not between lanes — use move_task",
+  "for that). request_review forces a fresh review pass on a task that's in the review lane",
+  "right now; it can fail with an honest reason (already reviewed, no reviewer free) rather",
+  "than always succeeding. resync_source re-syncs GitHub issues/tasks for a project; whole-",
+  "project, no task id, and fails with an honest reason if the project isn't GitHub-bound.",
+  "set_schedule sets/clears (null) a task's estimated duration (ms) and/or planned start",
+  "(epoch ms) — either or both fields may be present. set_assignment sets WHO may pick up a",
+  "task: `any` = any idle fleet agent (omit agentIds), `agents` = only the listed agentIds",
+  "(≥1, each MUST be a fleet id from context), `unassigned` clears it (only while the task",
+  "is still in backlog). pause_key/resume_key bench/un-bench a workspace credential by id —",
+  "pausing stops every live run on that key and releases their tasks, so pause_key always",
+  "needs a one-sentence reason; never infer either from a bare 'pause it'.",
   "Grouping: FEATURES groups related tasks per project; MILESTONES are planned releases",
   "per project with an optional target date. Both appear in the WORKSPACE CONTEXT below",
   "with `[id]` prefixes — resolve names to those ids from context only; a referenced id",
@@ -579,6 +619,88 @@ export function validateAction(obj: unknown, ctx: IntentContext): Action | null 
       const milestone = ctx.milestones.find((m) => m.id === milestoneId);
       if (!milestone) return none(`unknown milestone "${milestoneId}"`);
       return { kind: "mark_milestone_shipped", milestoneId, projectId: milestone.projectId };
+    }
+
+    case "reorder_task": {
+      const taskId = isStr(o.taskId) ? o.taskId : "";
+      const task = ctx.tasks.find((t) => t.id === taskId);
+      if (!task) return none(`unknown task "${taskId}"`);
+      const direction = o.direction === "up" || o.direction === "down" ? o.direction : "";
+      if (!direction) return none(`unknown direction "${String(o.direction)}"`);
+      return { kind: "reorder_task", taskId, projectId: task.projectId, direction };
+    }
+
+    case "request_review": {
+      const taskId = isStr(o.taskId) ? o.taskId : "";
+      const task = ctx.tasks.find((t) => t.id === taskId);
+      if (!task) return none(`unknown task "${taskId}"`);
+      return { kind: "request_review", taskId, projectId: task.projectId };
+    }
+
+    case "resync_source": {
+      const projectId = isStr(o.projectId) ? o.projectId : "";
+      const project = ctx.projects.find((p) => p.id === projectId);
+      if (!project) return none(`unknown project "${projectId}"`);
+      return { kind: "resync_source", projectId };
+    }
+
+    case "set_schedule": {
+      const taskId = isStr(o.taskId) ? o.taskId : "";
+      const task = ctx.tasks.find((t) => t.id === taskId);
+      if (!task) return none(`unknown task "${taskId}"`);
+      const hasDur = "estimatedDurationMs" in o;
+      const hasStart = "plannedStartAt" in o;
+      if (!hasDur && !hasStart) return none("set_schedule needs estimatedDurationMs and/or plannedStartAt");
+      let estimatedDurationMs: number | null | undefined;
+      if (hasDur) {
+        if (o.estimatedDurationMs === null) estimatedDurationMs = null;
+        else if (typeof o.estimatedDurationMs === "number" && o.estimatedDurationMs > 0) estimatedDurationMs = Math.round(o.estimatedDurationMs);
+        else return none("estimatedDurationMs must be a positive number or null");
+      }
+      let plannedStartAt: number | null | undefined;
+      if (hasStart) {
+        if (o.plannedStartAt === null) plannedStartAt = null;
+        else if (typeof o.plannedStartAt === "number" && Number.isFinite(o.plannedStartAt)) plannedStartAt = Math.round(o.plannedStartAt);
+        else return none("plannedStartAt must be an epoch-ms number or null");
+      }
+      return {
+        kind: "set_schedule",
+        taskId,
+        projectId: task.projectId,
+        ...(estimatedDurationMs !== undefined ? { estimatedDurationMs } : {}),
+        ...(plannedStartAt !== undefined ? { plannedStartAt } : {}),
+      };
+    }
+
+    case "set_assignment": {
+      const taskId = isStr(o.taskId) ? o.taskId : "";
+      const task = ctx.tasks.find((t) => t.id === taskId);
+      if (!task) return none(`unknown task "${taskId}"`);
+      const mode = o.mode === "any" || o.mode === "agents" || o.mode === "unassigned" ? o.mode : "";
+      if (!mode) return none(`unknown assignment mode "${String(o.mode)}"`);
+      if (mode === "agents") {
+        const raw = Array.isArray(o.agentIds) ? o.agentIds.filter((x): x is string => typeof x === "string") : [];
+        const ids = [...new Set(raw)].filter((id) => ctx.fleet.some((a) => a.id === id));
+        if (ids.length === 0) return none("no known agents in agentIds");
+        return { kind: "set_assignment", taskId, projectId: task.projectId, mode, agentIds: ids };
+      }
+      return { kind: "set_assignment", taskId, projectId: task.projectId, mode, agentIds: [] };
+    }
+
+    case "pause_key": {
+      // Benching a key is fleet-wide, not project-scoped — same "never inferred
+      // from a bare 'pause it'" rule as Steward's own pause_key.
+      const credentialId = isStr(o.credentialId) ? o.credentialId : "";
+      const reason = isStr(o.reason) ? o.reason : "";
+      if (!credentialId) return none("missing credentialId");
+      if (!reason) return none("pause_key needs a reason");
+      return { kind: "pause_key", credentialId, reason };
+    }
+
+    case "resume_key": {
+      const credentialId = isStr(o.credentialId) ? o.credentialId : "";
+      if (!credentialId) return none("missing credentialId");
+      return { kind: "resume_key", credentialId };
     }
 
     case "none":
