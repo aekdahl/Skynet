@@ -209,6 +209,11 @@ export interface Store extends StoreState {
       flyCredentialId?: string | null;
       // Which provider keys the project may run on (credential ids; empty = all).
       enabledRunnerCredentialIds?: string[];
+      // Custom MCP servers this project's agents get; see Project.mcpServerIds.
+      mcpServerIds?: string[];
+      // Sentry org/project slug binding for the inbound webhook trigger; null
+      // clears it. See Project.sentryProject.
+      sentryProject?: { org: string; project: string } | null;
       syncSourceStatus?: boolean;
       // Branch to stack runs/PRs onto; null clears back to the global default.
       baseBranch?: string | null;

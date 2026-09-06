@@ -11,6 +11,7 @@ import {
   type RunnerEvents,
   type RunnerHandle,
   type RunnerProvider,
+  type StartSpec,
   type UntrustedRead,
 } from "@skynet/runner-sdk";
 // Cheap, tool-less one-shot for the clarification draft. Explicit mid-tier
@@ -60,6 +61,7 @@ const REFILL_COOLDOWN_MS = 15 * 60 * 1000;
  *  that just ran dry will still be dry in fifteen minutes. */
 const REPLENISH_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 import { secretService } from "./secrets/index.js";
+import { mcpServerService } from "./mcp-servers/index.js";
 import { previewService } from "./preview/index.js";
 import { projectPreview, type ProjectPreviewManager } from "./preview/project-preview.js";
 import { prepareWorktree } from "./preview/worktree.js";
@@ -2150,6 +2152,37 @@ export class Orchestrator {
   }
 
   /**
+   * `browser`/`mcpServers` for a real coding-agent run on this project —
+   * spread into every `provider.start()` call site below (assign/fork/
+   * worker-spawn/checkpoint-restore/escalation-resume/revise-after-review).
+   * Pulled into one place because every one of those call sites used to
+   * resolve `browserTools` independently (only the main assignTask path
+   * actually did) — a forked/resumed/reassigned run silently lost the
+   * operator's browser toggle, and would have silently lost their granted MCP
+   * tools too. No `project` (a call site that races project deletion) just
+   * means no opt-in tooling, same as today.
+   *
+   * Deliberately NOT used by the unattended QA harnesses (deep-review,
+   * feature-verify, breaker, explore) further down this file — those already
+   * auto-approve every tool-call gate with no human watching, so handing them
+   * a write-capable custom MCP server would be unsupervised write access to
+   * whatever that server's credentials reach. Those harnesses opt into
+   * `browser: true` on their own, deliberately, for read-only web
+   * verification only.
+   */
+  private async toolingFor(project: Project | undefined): Promise<Pick<StartSpec, "browser" | "mcpServers">> {
+    if (!project) return {};
+    const { browserTools } = await this.fleetPolicy(project.workspaceId);
+    // Defensive default: a project persisted before this field existed (or a
+    // test fixture built as a partial literal) has no `mcpServerIds` at
+    // runtime even though the zod schema defaults it — never crash a run
+    // start over that, just treat it as "no custom tools granted".
+    const mcpServerIds = project.mcpServerIds ?? [];
+    const mcpServers = mcpServerIds.length ? await mcpServerService.resolveMany(project.workspaceId, mcpServerIds) : undefined;
+    return { browser: browserTools, mcpServers };
+  }
+
+  /**
    * Acquire an idle runner, or PROVISION a fresh one on demand when the fleet is
    * fully occupied — used by fork so a family can branch even when every runner
    * is busy (a fork shouldn't be blocked waiting for capacity). The new runner
@@ -2609,11 +2642,10 @@ export class Orchestrator {
         memory,
         body: taskBody,
       });
-      // Opt-in browser tooling is a per-workspace setting, off by default; the
-      // runner decides how to expose it (Claude → a Playwright MCP server).
-      const { browserTools } = await this.fleetPolicy(project.workspaceId);
+      // Opt-in browser tooling (workspace-wide) and the project's granted
+      // custom MCP servers — see toolingFor.
       const handle = await provider.start(
-        { runId, projectId: project.id, task: brief, model: runner.model, branch, cwd, apiKey, baseUrl, rates, browser: browserTools, planModeGate: project.planModeGate, disallowedTools: project.disallowedTools, role: opts?.role },
+        { runId, projectId: project.id, task: brief, model: runner.model, branch, cwd, apiKey, baseUrl, rates, ...(await this.toolingFor(project)), planModeGate: project.planModeGate, disallowedTools: project.disallowedTools, role: opts?.role },
         this.events(),
       );
       this.live.set(runId, { handle, agentId: runner.id, taskId: task.id, branch, baseRef, git, scratchCwd });
@@ -2812,6 +2844,7 @@ export class Orchestrator {
           apiKey,
           baseUrl,
           rates,
+          ...(await this.toolingFor(project)),
           disallowedTools: project?.disallowedTools,
         },
         this.events(),
@@ -2890,7 +2923,6 @@ export class Orchestrator {
       model: runner.model,
       branch,
       modules,
-      bakeoffId: null,
       progress: 0,
       plan: [],
       usage: null,
@@ -2940,6 +2972,7 @@ export class Orchestrator {
           apiKey,
           baseUrl,
           rates,
+          ...(await this.toolingFor(project)),
           disallowedTools: project?.disallowedTools,
         },
         this.events(),
@@ -3068,6 +3101,7 @@ export class Orchestrator {
           baseUrl,
           rates,
           resumeSessionId,
+          ...(await this.toolingFor(project)),
           disallowedTools: project?.disallowedTools,
         },
         this.events(),
@@ -3496,7 +3530,7 @@ export class Orchestrator {
     await this.hub.runLog(runId, `re-acquired compute to deliver "${resolution.action}" — resuming in the run's worktree`);
     try {
       const handle = await provider.start(
-        { runId, projectId: run.projectId, task: prompt, model: run.model, branch: run.branch, cwd, apiKey, baseUrl, rates, disallowedTools: project?.disallowedTools },
+        { runId, projectId: run.projectId, task: prompt, model: run.model, branch: run.branch, cwd, apiKey, baseUrl, rates, ...(await this.toolingFor(project)), disallowedTools: project?.disallowedTools },
         this.events(),
       );
       this.live.set(runId, { handle, agentId: acq.id, taskId, branch: run.branch, baseRef: config.baseBranch, git });
@@ -3559,7 +3593,7 @@ export class Orchestrator {
     await this.hub.runLog(runId, "revising per review guidance");
     try {
       const handle = await provider.start(
-        { runId, projectId: run.projectId, task: revisePrompt, model: run.model, branch: run.branch, cwd, apiKey, baseUrl, rates, disallowedTools: project?.disallowedTools },
+        { runId, projectId: run.projectId, task: revisePrompt, model: run.model, branch: run.branch, cwd, apiKey, baseUrl, rates, ...(await this.toolingFor(project)), disallowedTools: project?.disallowedTools },
         this.events(),
       );
       this.live.set(runId, { handle, agentId: acq.id, taskId: review.taskId, branch: run.branch, baseRef: review.baseRef, git: review.git });
@@ -4133,6 +4167,7 @@ export class Orchestrator {
           apiKey,
           baseUrl,
           rates,
+          ...(await this.toolingFor(project)),
           disallowedTools: project?.disallowedTools,
           // RESUME this run's own SDK session instead of starting cold. Without
           // it, every "Help & resume" / "Reassign" threw the conversation away

@@ -25,7 +25,9 @@ import { projectPreview } from "./preview/project-preview.js";
 import { registerLivePreviewProxy } from "./preview/preview-proxy.js";
 import { recordPublicOrigin } from "./preview/public-origin.js";
 import { registerSecretsRoutes } from "./secrets/index.js";
+import { registerMcpServerRoutes } from "./mcp-servers/index.js";
 import { registerGithubRoutes, registerGithubWebhookRoutes, configureGithub, githubService } from "./github/index.js";
+import { registerSentryWebhookRoutes, registerSentryStatusRoutes } from "./sentry/index.js";
 import { startTaskSourceSync } from "./task-sync.js";
 import { DEFAULT_WORKSPACE } from "@skynet/shared";
 import { registerEvalsRoutes } from "./evals/index.js";
@@ -213,11 +215,21 @@ async function main() {
   await registerInteropRest(app, { operations });
   // Workspace-scoped provider keys (encrypted at rest); /api auth hook applies.
   await registerSecretsRoutes(app, operations);
+  // Workspace-scoped custom MCP server configs (roadmap "Tools via MCP"),
+  // encrypted at rest; /api auth hook applies.
+  await registerMcpServerRoutes(app);
+  // Whether the inbound Sentry webhook is configured on this server; /api
+  // auth hook applies.
+  await registerSentryStatusRoutes(app);
   // GitHub App connection + safety policy (workspace-scoped); /api auth applies.
   await registerGithubRoutes(app);
   // Inbound GitHub webhook (issues → task) — outside /api on purpose; the HMAC
   // signature is its own auth. No-op unless GITHUB_WEBHOOK_SECRET is set.
   await registerGithubWebhookRoutes(app, { operations });
+  // Inbound Sentry webhook (new/regressed issue → task) — same shape and
+  // posture as the GitHub webhook above. No-op unless SENTRY_WEBHOOK_SECRET
+  // is set. See docs/integrations-catalog.md and ROADMAP.md's "Tools via MCP".
+  await registerSentryWebhookRoutes(app, { operations });
   // LLM-judged acceptance evals (real runs via the standalone evals/ suite,
   // spawned as a subprocess); /api auth hook applies.
   await registerEvalsRoutes(app);

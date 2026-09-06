@@ -16,6 +16,7 @@ import { createInterface } from "node:readline";
 import type { PlanStep, ProviderId, Resolution, Usage } from "@skynet/shared";
 import { fmtDuration, idleCapMs, runtimeCapMs } from "./caps.js";
 import { wrapForSandbox } from "./sandbox.js";
+import { RESERVED_MCP_NAMES } from "./types.js";
 import type {
   HitlRaise,
   RunnerEvents,
@@ -23,6 +24,10 @@ import type {
   RunnerProvider,
   StartSpec,
 } from "./types.js";
+// Re-exported so callers that only import from "./cli-runner.js" (codex.ts,
+// which needs it for its own reserved-name filtering) don't also need a
+// separate "./types.js" import.
+export { RESERVED_MCP_NAMES } from "./types.js";
 
 /** Per-call scratch space a vendor parser can use to correlate events (e.g. an
  *  approval id seen on one line and answered on `resume`). Owned by the handle. */
@@ -103,11 +108,13 @@ export interface CliVendor {
   env?(spec: StartSpec): Record<string, string>;
   /**
    * Write anything the vendor needs into the worktree before spawning — e.g. a
-   * project-scoped MCP config file for a vendor whose MCP servers are file-
+   * project-scoped MCP config file (browser tooling AND/OR user-configured
+   * servers, see `mergeMcpConfig`) for a vendor whose MCP servers are file-
    * based only (no per-invocation flag). Synchronous: writes here are a few
    * small config files, so there's no need to make `launch()` async for a hook
    * only some vendors implement. A vendor whose MCP config IS argv-based (see
-   * `browserMcpServerSpec`) has no reason to implement this at all.
+   * `browserMcpServerSpec`/`userMcpServerEntries`) has no reason to implement
+   * this at all.
    */
   prepareWorktree?(spec: StartSpec, cwd: string): void;
   /** The initial prompt to write to stdin once spawned, or null if the prompt
@@ -158,15 +165,43 @@ export function browserMcpServerSpec(): { command: string; args: string[] } {
     : ["npx", "-y", "@playwright/mcp@latest", "--headless", "--isolated"];
   return { command: parts[0] ?? "npx", args: parts.slice(1) };
 }
-/** Merge the browser MCP server into an already-parsed JSON config object's
- *  `mcpServers` key — shared by every FILE-based vendor (Gemini, Cursor).
- *  Preserves whatever else was in `existing` (e.g. servers the repo's own
- *  committed config already declares). Codex/Copilot don't need this — their
- *  MCP config is a per-invocation flag, no file involved. */
-export function mergeBrowserMcpConfig(existing: Record<string, unknown>): Record<string, unknown> {
+// ─── User-configured MCP servers (shared across CLI vendors) ────────────────
+// Generalizes the browser-only mechanism above into a real, operator-
+// configurable list (roadmap "Tools via MCP") — resolved by the orchestrator
+// from a project's `mcpServerIds` into concrete `StartSpec.mcpServers` before
+// a runner ever sees it (see McpServerSpec's doc comment in types.ts).
+
+/** This run's user-configured MCP servers as a plain `{name: {...}}` map (the
+ *  shape every vendor's own config format wants), skipping any reserved or
+ *  blank name. Shared by every vendor below instead of each re-deriving it
+ *  from `spec.mcpServers`. */
+export function userMcpServerEntries(spec: StartSpec): Record<string, Record<string, unknown>> {
+  const out: Record<string, Record<string, unknown>> = {};
+  for (const s of spec.mcpServers ?? []) {
+    if (!s.name || RESERVED_MCP_NAMES.has(s.name)) continue;
+    out[s.name] =
+      s.transport === "remote"
+        ? { type: "http", url: s.url, ...(s.headers && Object.keys(s.headers).length ? { headers: s.headers } : {}) }
+        : { command: s.command, args: s.args, ...(s.env && Object.keys(s.env).length ? { env: s.env } : {}) };
+  }
+  return out;
+}
+
+/** Merge the browser MCP server (if enabled) AND every user-configured server
+ *  into an already-parsed JSON config object's `mcpServers` key — shared by
+ *  every FILE-based vendor (Gemini, Cursor). Preserves whatever else was in
+ *  `existing` (e.g. servers the repo's own committed config already
+ *  declares). Codex/Copilot don't need this — their MCP config is a
+ *  per-invocation flag, no file involved. Replaces the old browser-only
+ *  `mergeBrowserMcpConfig`. */
+export function mergeMcpConfig(existing: Record<string, unknown>, spec: StartSpec): Record<string, unknown> {
   const existingServers = existing.mcpServers as Record<string, unknown> | undefined;
-  const { command, args } = browserMcpServerSpec();
-  return { ...existing, mcpServers: { ...existingServers, [BROWSER_MCP_NAME]: { command, args } } };
+  const merged: Record<string, unknown> = { ...existingServers, ...userMcpServerEntries(spec) };
+  if (spec.browser) {
+    const { command, args } = browserMcpServerSpec();
+    merged[BROWSER_MCP_NAME] = { command, args };
+  }
+  return { ...existing, mcpServers: merged };
 }
 
 class CliRunnerHandle implements RunnerHandle {
@@ -203,13 +238,14 @@ class CliRunnerHandle implements RunnerHandle {
 
   private launch() {
     const cwd = this.spec.cwd ?? process.cwd();
-    // Best-effort: a vendor's worktree prep (e.g. writing a browser-MCP config
-    // file) is opt-in tooling, never the run's actual task — a failure here
-    // logs and falls through to a plain run rather than failing the whole thing.
+    // Best-effort: a vendor's worktree prep (e.g. writing an MCP config file
+    // for browser tooling and/or user-configured servers) is opt-in tooling,
+    // never the run's actual task — a failure here logs and falls through to
+    // a plain run rather than failing the whole thing.
     try {
       this.vendor.prepareWorktree?.(this.spec, cwd);
     } catch (err) {
-      this.events.onLog(this.runId, `browser-tools setup failed: ${(err as Error).message} — continuing without it`);
+      this.events.onLog(this.runId, `MCP tool setup failed: ${(err as Error).message} — continuing without it`);
     }
     // Opt-in OS write-confinement (SKYNET_RUNNER_SANDBOX). No-op unless enabled
     // and a sandbox tool is available; otherwise runs the vendor bin directly.

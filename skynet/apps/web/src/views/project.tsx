@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useRef, useState } from "react";
-import type { TaskRun, Project, Task, TaskAssignment, Agent, SecretMeta, ProviderId, ProviderInfo } from "@skynet/shared";
+import type { TaskRun, Project, Task, TaskAssignment, Agent, SecretMeta, McpServerMeta, ProviderId, ProviderInfo } from "@skynet/shared";
 import { computeDailySpend, committedUsd, resolveTaskBrief } from "@skynet/shared";
 import { useStore } from "../lib/store";
 import * as api from "../lib/client";
@@ -536,6 +536,18 @@ function TaskCard({
             title={`Imported from GitHub issue ${task.source.repo}#${task.source.number} — status syncs back when enabled`}
           >
             #{task.source.number} ↗
+          </a>
+        )}
+        {task.source?.kind === "sentry_issue" && (
+          <a
+            className="kb-source mono"
+            href={task.source.url || undefined}
+            target="_blank"
+            rel="noreferrer"
+            onClick={stop}
+            title={`From Sentry — ${task.source.org}/${task.source.project}${task.source.shortId ? ` · ${task.source.shortId}` : ""}`}
+          >
+            {task.source.shortId || "Sentry"} ↗
           </a>
         )}
         {task.source?.kind === "repo_file" && (
@@ -1626,6 +1638,48 @@ function ProjectToolAccess({ project, onChange }: { project: Project; onChange: 
   );
 }
 
+// Which custom MCP servers (Integrations → "Custom MCP servers") this
+// project's agents get — the "scoped tools" roadmap "Tools via MCP" gives an
+// agent to act back into the operator's own services, not just Skynet's own
+// git operations. Empty = none, unlike ProjectRunnerKeys above where empty
+// means "everything" — an MCP tool is an explicit grant, never an ambient
+// default a new project inherits silently (see Project.mcpServerIds).
+function ProjectMcpServers({ project, onChange }: { project: Project; onChange: (ids: string[]) => void }) {
+  const [servers, setServers] = useState<McpServerMeta[]>([]);
+  useEffect(() => {
+    api.fetchMcpServers().then(({ servers }) => setServers(servers)).catch(() => setServers([]));
+  }, []);
+  if (servers.length === 0) return null; // nothing to grant yet — add one in Integrations first
+
+  const enabled = project.mcpServerIds;
+  const toggle = (id: string) => onChange(enabled.includes(id) ? enabled.filter((x) => x !== id) : [...enabled, id]);
+  const summary = enabled.length === 0 ? "None" : `${enabled.length} tool${enabled.length === 1 ? "" : "s"}`;
+  return (
+    <details className="proj-keys">
+      <summary
+        className="proj-keys-summary"
+        title="Custom MCP servers this project's agents can call, in addition to Skynet's own git operations. Add one in Integrations first."
+      >
+        <span className="proj-approval-label mono">MCP tools</span>
+        <span className="proj-keys-value">{summary}</span>
+      </summary>
+      <div className="proj-keys-menu">
+        <div className="proj-keys-hint">
+          {enabled.length === 0
+            ? "No custom tools granted. A write-capable server acts outside Skynet's own git guardrails."
+            : "Agents on this project can call these servers' tools (still gated through the normal HITL approval)."}
+        </div>
+        {servers.map((s) => (
+          <label key={s.id} className="proj-keys-item">
+            <input type="checkbox" checked={enabled.includes(s.id)} onChange={() => toggle(s.id)} />
+            <span className="proj-keys-name">{s.name}</span>
+          </label>
+        ))}
+      </div>
+    </details>
+  );
+}
+
 export function ProjectView({
   project,
   now,
@@ -1818,6 +1872,11 @@ export function ProjectView({
   // issue on done). Lives in this settings panel now; only meaningful with a repo.
   const [syncToSource, setSyncToSource] = useState(project.syncSourceStatus);
   const [resyncing, setResyncing] = useState(false);
+  // Sentry org/project slug binding for the inbound webhook trigger (roadmap
+  // "Tools via MCP") — independent of a GitHub repo connection, so it's not
+  // gated behind hasRepo like the fields above.
+  const [sentryOrg, setSentryOrg] = useState(project.sentryProject?.org ?? "");
+  const [sentryProj, setSentryProj] = useState(project.sentryProject?.project ?? "");
   const hasRepo = !!(project.gitBacked || project.repo);
 
   // Breadcrumb's "N GATES OPEN" chip — the same underlying workspace-wide
@@ -1863,8 +1922,10 @@ export function ProjectView({
     setBaseBranch(project.baseBranch ?? "");
     setCheckCmd(project.checkCmd ?? "");
     setSyncToSource(project.syncSourceStatus);
+    setSentryOrg(project.sentryProject?.org ?? "");
+    setSentryProj(project.sentryProject?.project ?? "");
     setFolded(false);
-  }, [project.id, project.name, project.goal, project.instructions, project.baseBranch, project.checkCmd, project.syncSourceStatus]);
+  }, [project.id, project.name, project.goal, project.instructions, project.baseBranch, project.checkCmd, project.syncSourceStatus, project.sentryProject]);
 
   return (
     <section className="projview">
@@ -1954,6 +2015,15 @@ export function ProjectView({
               </button>
             </div>
           )}
+          <div className="projview-setting">
+            <div className="projview-instructions-label mono">
+              Sentry project <span className="projview-instructions-hint">— new/regressed issues here become tasks (roadmap "Tools via MCP"). Set up the webhook in Integrations first.</span>
+            </div>
+            <div className="qx-row">
+              <input className="qx-input" placeholder="Org slug" value={sentryOrg} onChange={(e) => setSentryOrg(e.target.value)} />
+              <input className="qx-input" placeholder="Project slug" value={sentryProj} onChange={(e) => setSentryProj(e.target.value)} />
+            </div>
+          </div>
           <div className="qx-row">
             <button
               className="btn btn-primary"
@@ -1967,6 +2037,7 @@ export function ProjectView({
                   baseBranch: baseBranch.trim() || null,
                   checkCmd: checkCmd.trim() || null,
                   syncSourceStatus: syncToSource,
+                  sentryProject: sentryOrg.trim() && sentryProj.trim() ? { org: sentryOrg.trim(), project: sentryProj.trim() } : null,
                 });
                 setEditing(false);
               }}
@@ -1982,6 +2053,8 @@ export function ProjectView({
                 setBaseBranch(project.baseBranch ?? "");
                 setCheckCmd(project.checkCmd ?? "");
                 setSyncToSource(project.syncSourceStatus);
+                setSentryOrg(project.sentryProject?.org ?? "");
+                setSentryProj(project.sentryProject?.project ?? "");
                 setEditing(false);
               }}
             >
@@ -2091,6 +2164,7 @@ export function ProjectView({
             <ProjectGithubAccount project={project} onChange={(id) => updateProject(project.id, { githubCredentialId: id })} />
             <ProjectFlyAccount project={project} onChange={(id) => updateProject(project.id, { flyCredentialId: id })} />
             <ProjectRunnerKeys project={project} onChange={(ids) => updateProject(project.id, { enabledRunnerCredentialIds: ids })} />
+            <ProjectMcpServers project={project} onChange={(ids) => updateProject(project.id, { mcpServerIds: ids })} />
             <ProjectToolAccess project={project} onChange={(tools) => updateProject(project.id, { disallowedTools: tools })} />
             <div className="projview-head-admin">
               <button

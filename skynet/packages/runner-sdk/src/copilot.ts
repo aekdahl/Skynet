@@ -50,20 +50,22 @@
 // GH_TOKEN). When the binary is missing or unauthenticated the runner degrades
 // cleanly — it surfaces the reason and completes, so the lifecycle never hangs.
 //
-// Opt-in browser tooling (spec.browser): unlike Cursor/Gemini, the Copilot CLI
-// takes MCP config as a real per-invocation flag — `--additional-mcp-config
-// <json>` (verified live against @github/copilot 1.0.80: --help says it
-// "augments config from ~/.copilot/mcp-config.json for this session", i.e.
-// session-scoped, no file ever written). Same {mcpServers:{...}} shape every
-// other vendor's config uses. A denied browser-tool call falls through this
-// runner's own denied-tool → HITL gate below — same live gate as any other
-// tool, no special-casing needed.
+// Opt-in MCP tooling (spec.browser, spec.mcpServers): unlike Cursor/Gemini,
+// the Copilot CLI takes MCP config as a real per-invocation flag —
+// `--additional-mcp-config <json>` (verified live against @github/copilot
+// 1.0.80: --help says it "augments config from ~/.copilot/mcp-config.json for
+// this session", i.e. session-scoped, no file ever written). Same
+// {mcpServers:{...}} shape every other vendor's config uses — user-configured
+// servers (remote included, best-effort/unverified against this specific
+// CLI's schema) are merged into the same flag. A denied browser/MCP-tool call
+// falls through this runner's own denied-tool → HITL gate below — same live
+// gate as any other tool, no special-casing needed.
 
 import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createInterface, type Interface } from "node:readline";
 import type { PlanStep, ProviderId, Resolution, Usage } from "@skynet/shared";
-import { BROWSER_MCP_NAME, browserMcpServerSpec } from "./cli-runner.js";
+import { BROWSER_MCP_NAME, browserMcpServerSpec, userMcpServerEntries } from "./cli-runner.js";
 import type {
   HitlRaise,
   RunnerEvents,
@@ -94,12 +96,13 @@ export function copilotArgs(
   const model = mapModel(spec.model);
   const args = ["-p", prompt, "--output-format", "json"];
   if (model) args.push("--model", model);
+  const mcpServers: Record<string, unknown> = userMcpServerEntries(spec);
   if (spec.browser) {
     const { command, args: mcpArgs } = browserMcpServerSpec();
-    args.push(
-      "--additional-mcp-config",
-      JSON.stringify({ mcpServers: { [BROWSER_MCP_NAME]: { command, args: mcpArgs } } }),
-    );
+    mcpServers[BROWSER_MCP_NAME] = { command, args: mcpArgs };
+  }
+  if (Object.keys(mcpServers).length) {
+    args.push("--additional-mcp-config", JSON.stringify({ mcpServers }));
   }
   return args;
 }
