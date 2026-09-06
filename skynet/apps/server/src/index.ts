@@ -72,8 +72,17 @@ async function main() {
   // Momentum Rollout Phase 1b — the board-management layer alongside the
   // orchestrator (reacts to signals, moves cards, writes Transitions; never
   // touches agents/worktrees). Subscribing is inert on its own: it only acts
-  // once a project has at least one `state:"live"` Rule.
-  const ruleEngine = new RuleEngine({ store, hub, bus });
+  // once a project has at least one `state:"live"` Rule. `resumeRun` is the
+  // one exception to "never touches agents" — a plain callback (not a typed
+  // Orchestrator reference, to keep the engine decoupled) behind the
+  // `resume_run` action, so a CI failure or "changes requested" review can
+  // re-engage the run that owns the PR instead of a human having to notice.
+  const ruleEngine = new RuleEngine({
+    store,
+    hub,
+    bus,
+    resumeRun: (workspaceId, runId, guidance, comment) => orchestrator.reworkReadyPr(workspaceId, runId, guidance, comment),
+  });
   await ruleEngine.start();
   // The shared service layer behind both the HTTP API and the MCP server.
   const operations = new Operations({ store, hub, orchestrator, ruleEngine });

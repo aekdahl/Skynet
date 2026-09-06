@@ -469,13 +469,22 @@ inbound-trigger primitive, Skynet as an MCP server, GitHub Issues two-way sync) 
 [the archive](ROADMAP-ARCHIVE.md#v3--triggers--integrations).
 - [ ] **Tools via MCP:** an agent gets scoped tools (GitHub / Sentry / Slack MCP) to act back into the
   user's services. A "Sentry agent" = a coding agent + Sentry MCP + a Sentry webhook trigger.
-- [ ] **Feedback-loop responders (route back to the *originating* run)** — a CI failure, a PR review comment, or a
+- [~] **Feedback-loop responders (route back to the *originating* run)** — a CI failure, a PR review comment, or a
   merge conflict re-engages the **same** agent that produced the branch (self-healing), not a fresh run.
-  *(Agent Orchestrator-style; ties directly to the responders below.)*
+  **Landed:** the GitHub half — a `resume_run` rule-engine action (`apps/server/src/rules/engine.ts`), triggered
+  by `checks_failed`/`changes_requested` conditions on the existing `github.signal` webhook plumbing, calls
+  `Orchestrator.reworkReadyPr` to resume the run's own worktree/branch (not a fresh run), through the SAME
+  `announceBeforeActing`/undo-window/pause-after-undos safety rails every other rule action gets. Wired via a
+  plain callback injected from `index.ts` (not a typed Orchestrator reference) to keep the engine decoupled —
+  see `RuleEngineDeps.resumeRun`'s own comment. **Remaining:** merge-conflict re-engagement (no signal for it
+  yet), and the primitive only fires from a rule an operator builds in the Automation Builder — no default
+  rule ships yet. *(Agent Orchestrator-style; ties directly to the responders below.)*
 - [ ] **Interop surface (adopted)** — beyond `/mcp`, expose the fleet via an **OpenAI-compatible endpoint + REST**
   so external tools can drive it as a model/service. *(claw-orchestrator-style; broadens who can call Skynet.)*
-- [ ] **Candidate responders:** Sentry regression → fix PR · GitHub issue → PR · PR review · CI-failure
-  fix · Dependabot/CVE patch+fix · PagerDuty/Datadog incident triage · support ticket → bug task.
+- [ ] **Candidate responders:** Sentry regression → fix PR · GitHub issue → PR · PR review (now buildable via
+  `resume_run` above) · CI-failure fix (now buildable via `resume_run` above) · Dependabot/CVE patch+fix ·
+  PagerDuty/Datadog incident triage · support ticket → bug task. Everything past the GitHub-signal cases still
+  needs its own vendor integration (webhook/API + credential) — the primitive existing doesn't build those.
 - [ ] Tier-2 API agents (Devin, Jules — see runner-catalog) plug in here as delegated remote workers.
 
 ## v4 — Moat Layer: Portable cross-vendor memory (M1)  🔗

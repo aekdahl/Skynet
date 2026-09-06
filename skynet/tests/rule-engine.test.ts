@@ -4,13 +4,13 @@
 // covers the two safety rails (excludePriorities, the reentrancy guard) and
 // the separate stall-detection sweep. Real MemoryStore + Hub + InProcessBus —
 // no git, no worktrees, no live agent: the engine never touches any of that.
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { DEFAULT_WORKSPACE } from "@skynet/shared";
 import type { Project, Task, TaskRun, ServerEvent, Rule, Transition } from "@skynet/shared";
 import { InProcessBus } from "../apps/server/src/bus.js";
 import { Hub } from "../apps/server/src/hub.js";
 import { MemoryStore } from "../apps/server/src/store/memory.js";
-import { RuleEngine } from "../apps/server/src/rules/engine.js";
+import { RuleEngine, matchCondition, type EvalContext } from "../apps/server/src/rules/engine.js";
 import { seedStarterRules } from "../apps/server/src/rules/seed.js";
 
 const waitFor = async (pred: () => Promise<boolean> | boolean, ms = 2000): Promise<void> => {
@@ -252,6 +252,108 @@ describe("rule engine — safety rails", () => {
     const transitions = await store.listTransitionsForTask("t1");
     expect(transitions.length).toBeGreaterThan(0);
     expect(transitions.length).toBeLessThan(20); // bounded, not runaway
+  });
+});
+
+describe("rule engine — resume_run action (the ROADMAP's feedback-loop primitive)", () => {
+  const checkFailed = (over: Partial<Extract<ServerEvent, { type: "github.signal" }>> = {}): ServerEvent => ({
+    type: "github.signal", taskId: "t1", kind: "check_failed",
+    payload: { prNumber: 42, checkName: "ci/build", sha: "abc123", conclusion: "failure" },
+    ...over,
+  });
+
+  const resumeRule = (over: Partial<Rule> = {}): Rule => ({
+    id: "rule-resume", workspaceId: DEFAULT_WORKSPACE, projectId: PROJECT_ID, name: "resume on CI failure",
+    when: "checks failed", conditions: [{ field: "event", op: "checks_failed", value: null }],
+    actions: [{ type: "resume_run", params: {} }],
+    safety: { announceBeforeActing: false, undoWindowMin: 0, pauseAfterUndos: 3, excludePriorities: [] },
+    stats: { moves: 0, undos: 0 }, state: "live", pausedReason: null, createdAt: Date.now(), archived: false,
+    ...over,
+  });
+
+  async function setupWithResume(resumeRun: (ws: string, runId: string, guidance: string, comment?: string) => Promise<void>) {
+    const store = new MemoryStore({ seed: false });
+    const bus = new InProcessBus();
+    const hub = new Hub(store, bus);
+    const engine = new RuleEngine({ store, hub, bus, resumeRun });
+    await store.putProject({
+      id: PROJECT_ID, workspaceId: DEFAULT_WORKSPACE, name: "P", goal: "", runIds: [], status: "active",
+    } as Project);
+    await engine.start();
+    return { store, bus };
+  }
+
+  it("check_failed → resumes the run with guidance describing the trigger", async () => {
+    const resumeRun = vi.fn().mockResolvedValue(undefined);
+    const { store, bus } = await setupWithResume(resumeRun);
+    await store.putTask(mkTask({ runId: "r1" }));
+    await store.putRule(resumeRule());
+
+    bus.publish(DEFAULT_WORKSPACE, checkFailed());
+    await waitFor(() => resumeRun.mock.calls.length > 0);
+
+    expect(resumeRun).toHaveBeenCalledTimes(1);
+    const [ws, runId, guidance, comment] = resumeRun.mock.calls[0]!;
+    expect(ws).toBe(DEFAULT_WORKSPACE);
+    expect(runId).toBe("r1");
+    expect(guidance).toContain("check_failed");
+    expect(comment).toContain("check_failed");
+
+    const transitions = await store.listTransitionsForTask("t1");
+    expect(transitions.some((t) => t.evidence.some((e) => e.includes("resumed run r1")))).toBe(true);
+  });
+
+  it("no run linked to the task → skipped, resumeRun never called", async () => {
+    const resumeRun = vi.fn().mockResolvedValue(undefined);
+    const { store, bus } = await setupWithResume(resumeRun);
+    await store.putTask(mkTask({ runId: null }));
+    await store.putRule(resumeRule());
+
+    bus.publish(DEFAULT_WORKSPACE, checkFailed());
+    await waitFor(async () => (await store.listTransitionsForTask("t1")).length > 0);
+
+    expect(resumeRun).not.toHaveBeenCalled();
+    const transitions = await store.listTransitionsForTask("t1");
+    expect(transitions.some((t) => t.evidence.some((e) => e.includes("no run linked")))).toBe(true);
+  });
+
+  it("resumeRun not wired (deps.resumeRun undefined) → skipped evidence, never throws", async () => {
+    const { store, bus, engine } = await setup(); // the default setup() — no resumeRun in deps
+    await store.putTask(mkTask({ runId: "r1" }));
+    await store.putRule(resumeRule());
+    void engine;
+
+    bus.publish(DEFAULT_WORKSPACE, checkFailed());
+    await waitFor(async () => (await store.listTransitionsForTask("t1")).length > 0);
+
+    const transitions = await store.listTransitionsForTask("t1");
+    expect(transitions.some((t) => t.evidence.some((e) => e.includes("not wired up")))).toBe(true);
+  });
+
+  it("resumeRun throwing (e.g. the PR already closed) → a failed, retryable Transition — not swallowed", async () => {
+    const resumeRun = vi.fn().mockRejectedValue(new Error("No open PR for this run."));
+    const { store, bus } = await setupWithResume(resumeRun);
+    await store.putTask(mkTask({ runId: "r1" }));
+    await store.putRule(resumeRule());
+
+    bus.publish(DEFAULT_WORKSPACE, checkFailed());
+    await waitFor(async () => (await store.listTransitionsForTask("t1")).some((t) => t.status === "failed"));
+
+    const failed = (await store.listTransitionsForTask("t1")).find((t) => t.status === "failed");
+    expect(failed?.failureReason).toContain("No open PR");
+  });
+
+  it("matchCondition: checks_failed / changes_requested match their own signal kind only", () => {
+    const base: EvalContext = { task: mkTask(), now: Date.now(), lastSignalAt: 0, event: null };
+    expect(matchCondition({ field: "event", op: "checks_failed", value: null }, { ...base, event: checkFailed() })).toBe(true);
+    expect(matchCondition({ field: "event", op: "changes_requested", value: null }, { ...base, event: checkFailed() })).toBe(false);
+
+    const reviewEvent: ServerEvent = {
+      type: "github.signal", taskId: "t1", kind: "review_changes_requested",
+      payload: { prNumber: 7, prUrl: "", reviewState: "changes_requested" },
+    };
+    expect(matchCondition({ field: "event", op: "changes_requested", value: null }, { ...base, event: reviewEvent })).toBe(true);
+    expect(matchCondition({ field: "event", op: "checks_failed", value: null }, { ...base, event: reviewEvent })).toBe(false);
   });
 });
 
