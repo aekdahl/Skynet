@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { ProviderId, ProviderInfo, Agent, HitlItem, SecretMeta, TaskRun } from "@skynet/shared";
 import { endpointLabel, vendorForBaseUrl } from "@skynet/shared";
 import { useStore } from "../lib/store";
@@ -11,10 +11,13 @@ import {
   providerInfo,
   providerReadiness,
   runnerIdleLabel,
+  runnerName,
   STALE_HEARTBEAT_SEC,
+  workersOf,
   type UsageRollup,
 } from "../lib/derive";
 import { PrimaryButton } from "../components/empty";
+import { StatusDot } from "../components/common";
 import { useConfirm } from "../components/confirm";
 import { toast } from "../components/toast";
 
@@ -595,6 +598,7 @@ function AgentCard({
   informMode,
   informSelected,
   onToggleInform,
+  managerWorkers,
 }: {
   r: Agent;
   busy: TaskRun;
@@ -622,6 +626,9 @@ function AgentCard({
   informMode?: boolean;
   informSelected?: boolean;
   onToggleInform?: () => void;
+  // A manager's expandable worker list, pre-rendered by the caller (which
+  // already has `runs`/`fleet` in scope) — undefined for a plain worker agent.
+  managerWorkers?: ReactNode;
 }) {
   const cost = costOf(costRoll);
   const { tag } = classifyRun(busy, hitl, now, STALE_HEARTBEAT_SEC);
@@ -647,6 +654,11 @@ function AgentCard({
             {p.glyph}
           </span>
           <span className="fleet-rn mono">{r.name}</span>
+          {r.role === "manager" && (
+            <span className="fleet-manager-badge" title="Manager — decomposes the work and delegates to worker agents it spawns">
+              ⌂ manager
+            </span>
+          )}
           <span className="fleet-state fleet-state-busy">
             <span className="dot dot-running" />
             busy
@@ -716,6 +728,7 @@ function AgentCard({
           Duplicate
         </button>
       </div>
+      {managerWorkers}
     </div>
   );
 }
@@ -793,6 +806,45 @@ function AgentRow({
         </button>
       </span>
     </div>
+  );
+}
+
+// A manager's delegated workers — a run's parentId points at the manager's
+// run exactly like a plain fork's does (see lib/derive's workersOf), so this
+// is scoped to the manager's CURRENT run only, not its full history.
+// Collapsed by default: a busy manager card is already the tallest thing on
+// the board, and this only needs a click away, not always-open real estate.
+function ManagerWorkers({
+  workers,
+  fleet,
+  onOpenTask,
+}: {
+  workers: TaskRun[];
+  fleet: Agent[];
+  onOpenTask: (id: string) => void;
+}) {
+  if (workers.length === 0) return null;
+  const done = workers.filter((w) => w.status === "done").length;
+  return (
+    <details className="fleet-manager-workers">
+      <summary className="fleet-manager-summary mono">
+        {done}/{workers.length} workers
+      </summary>
+      <div className="fleet-manager-worker-list">
+        {workers.map((w) => (
+          <button
+            key={w.id}
+            className="fleet-manager-worker-row"
+            title="Open this worker's activity"
+            onClick={() => onOpenTask(w.id)}
+          >
+            <StatusDot status={w.status} />
+            <span className="fleet-manager-worker-name mono">{runnerName(w, fleet)}</span>
+            <span className="fleet-manager-worker-task">{w.name}</span>
+          </button>
+        ))}
+      </div>
+    </details>
   );
 }
 
@@ -1060,6 +1112,11 @@ export function FleetView({
                                   else next.add(r.id);
                                   return next;
                                 })
+                              }
+                              managerWorkers={
+                                r.role === "manager" ? (
+                                  <ManagerWorkers workers={workersOf(busyOf(r)!.id, runs)} fleet={fleet} onOpenTask={onOpenTask} />
+                                ) : undefined
                               }
                             />
                           ),

@@ -1,7 +1,7 @@
 import { Fragment, type ReactNode } from "react";
 import type { Project, Task, TaskRun } from "@skynet/shared";
 import { useStore } from "../lib/store";
-import { activeProjectRuns, projectQueue, runnerName } from "../lib/derive";
+import { activeProjectRuns, isManagerRun, projectQueue, runnerName } from "../lib/derive";
 import { StatusDot } from "./common";
 
 // Subway — ONE MAP PER PROJECT (docs/subway-model.md). The first agent assigned
@@ -162,13 +162,23 @@ export function SwDiagram({
         const agentBacked = fleet.some((a) => a.id === t.agentId);
         const rn = head ? runnerName(head, fleet) : fleet.find((a) => a.id === t.agentId)?.name ?? t.agentId;
         const parentRn = p ? runnerName(p.runs[0]!, fleet) : "";
+        // A worker's parentId points at its manager's run exactly like a plain
+        // fork points at the run it forked from (spawnWorker sets it the same
+        // way) — the only way to tell them apart is the PARENT's agent role.
+        const pIsManager = p ? isManagerRun(p.runs[0]!, fleet) : false;
         const done = t.runs.filter((x) => x.status === "done").length;
-        // Sub-line: fork origin / model, else "N queued" for an idle agent with only a queue.
+        // Sub-line: fork/delegation origin / model, else "N queued" for an idle agent with only a queue.
         const sub = p
-          ? "⑂ fork of " + parentRn
+          ? (pIsManager ? "▸ worker of " : "⑂ fork of ") + parentRn
           : head
             ? head.model
             : t.queued.length + " queued";
+        // A manager's own row rolls up how its delegated workers are doing —
+        // childrenOf(t) IS that set (spawnWorker's parentId is one hop, never
+        // a deeper chain), reusing the same isComplete already computed per
+        // track for the merge check below.
+        const isMgr = head ? isManagerRun(head, fleet) : false;
+        const workers = isMgr ? childrenOf(t) : [];
         return (
           <div key={t.agentId} className="swb-row" style={{ top: ROW0 + r * ROW_H + "px", height: ROW_H + "px" }}>
             <button
@@ -180,9 +190,14 @@ export function SwDiagram({
               {head ? <StatusDot status={head.status} /> : <span className="sw-dot-idle" title="idle — nothing running yet" />}
               <span className="sw-task-text">
                 <span className="sw-tname">{rn}</span>
-                <span className={"sw-trunner mono" + (p ? " sw-fork" : "")}>
+                <span className={"sw-trunner mono" + (p ? (pIsManager ? " sw-worker" : " sw-fork") : "")}>
                   {sub + (isComplete(t) ? " · merged ✓" : "")}
                 </span>
+                {workers.length > 0 && (
+                  <span className="sw-worker-rollup mono" title="Workers this manager has delegated to">
+                    ⌂ {workers.filter(isComplete).length}/{workers.length} workers
+                  </span>
+                )}
               </span>
             </button>
             <span className="swb-count mono">

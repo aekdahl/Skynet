@@ -162,6 +162,15 @@ describe("the tick writes the driver state", () => {
     const hub = new Hub(store, new NullBus());
     orch = new Orchestrator(store, hub);
     ops = new Operations({ store, hub, orchestrator: orch });
+    // These projects are created with autonomy on and an empty board, which is
+    // exactly `updateDriveStates`'s trigger for a replenish call — and the
+    // Operations constructor wires that straight to a REAL model call
+    // (replenishBacklog's default `ask`, unset here). Left unstubbed, every
+    // test below made a live, unauthenticated LLM round-trip (via a nested
+    // Agent SDK session that fails auth, then retries once) that cost 6-9s per
+    // test for a result none of them assert on — see the sibling describe
+    // block below for the same override, needed for the same reason.
+    orch.onDriveReplenish = async () => undefined;
   });
 
   const drive = async (id: string) => (await store.getProject(id))?.drive ?? null;

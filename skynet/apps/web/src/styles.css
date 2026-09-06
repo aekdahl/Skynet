@@ -973,6 +973,11 @@ button.chip:hover { border-color: var(--faint); }
   border-bottom-left-radius: 16px;
 }
 .sw-fork { color: var(--violet); }
+/* A manager delegating to a worker is NOT a fork/retry — distinct color so
+   "worker of" reads as a different relationship at a glance, sharing the
+   "machine handled this" family used for the Inbox's manager-audit section. */
+.sw-worker { color: var(--ak-machine-deep); }
+.sw-worker-rollup { display: block; font-size: var(--fz-11); color: var(--ak-machine-deep); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* START + END anchors — the first agent's frame; every track lives between them */
 .swb-anchor { position: absolute; transform: translate(-50%, -50%); width: 13px; height: 13px; border-radius: 50%; z-index: 2; }
 .swb-start { background: var(--accent); box-shadow: 0 0 0 4px color-mix(in oklch, var(--accent), transparent 82%); }
@@ -1849,6 +1854,13 @@ button.kb-done:hover { opacity: 1; }
 .confirm-choice-primary { border-color: var(--accent); }
 .confirm-choice-danger:hover { border-color: var(--danger); background: color-mix(in oklch, var(--danger), transparent 92%); }
 .confirm-choice-danger .confirm-choice-label { color: var(--danger); }
+/* ManagerPicker's Area/Role scope toggle — a 2-way segmented control, same
+   visual language as .confirm-choice (raised, bordered, accent on select). */
+.mp-scope-toggle { display: flex; gap: var(--space-4); margin: var(--space-12) 0 var(--space-8); }
+.mp-scope-btn { flex: 1; font-family: var(--font-ui); font-size: var(--fz-13); font-weight: 500; padding: var(--space-8) var(--space-12); background: var(--raised); color: var(--muted); border: 1px solid var(--line); border-radius: 7px; cursor: pointer; transition: border-color var(--motion-fast), background var(--motion-fast), color var(--motion-fast); }
+.mp-scope-btn:hover { border-color: var(--faint); }
+.mp-scope-btn-active { border-color: var(--accent); background: color-mix(in oklch, var(--accent), transparent 92%); color: var(--text); font-weight: 600; }
+.mp-hint { font-size: var(--fz-11); color: var(--muted); line-height: 1.5; margin: var(--space-8) 0; }
 @keyframes confirm-fade { from { opacity: 0; } to { opacity: 1; } }
 @keyframes confirm-pop { from { opacity: 0; transform: translateY(6px) scale(0.98); } to { opacity: 1; transform: none; } }
 @media (prefers-reduced-motion: reduce) { .confirm-overlay, .confirm-card { animation: none; } }
@@ -2140,6 +2152,20 @@ button.fleet-task-link:hover { background: var(--hover, var(--raised)); border-c
 button.fleet-task-link:hover .fleet-task-cta { opacity: 1; }
 .fleet-actions { display: flex; flex-wrap: wrap; gap: var(--space-4) var(--space-8); border-top: 1px solid var(--line-soft); padding-top: var(--space-12); }
 .fleet-actions .btn { padding: var(--space-4) var(--space-8); font-size: var(--fz-12); min-height: 30px; }
+/* A manager doesn't edit code itself — it delegates. Same "machine handled
+   this" green family as Subway's worker-of labels and the Inbox's
+   manager-audit section, so the concept reads consistently across surfaces. */
+.fleet-manager-badge { font-size: var(--fz-11); font-family: var(--font-mono); color: var(--ak-machine-deep); border: 1px solid color-mix(in oklch, var(--ak-machine-deep), transparent 60%); border-radius: 5px; padding: 1px var(--space-6); white-space: nowrap; }
+.fleet-manager-workers { border-top: 1px solid var(--line-soft); padding-top: var(--space-8); }
+.fleet-manager-summary { font-size: var(--fz-11); color: var(--ak-machine-deep); cursor: pointer; list-style: none; }
+.fleet-manager-summary::-webkit-details-marker { display: none; }
+.fleet-manager-summary::before { content: "▸ "; }
+details[open] > .fleet-manager-summary::before { content: "▾ "; }
+.fleet-manager-worker-list { display: flex; flex-direction: column; gap: var(--space-4); margin-top: var(--space-8); }
+.fleet-manager-worker-row { display: flex; align-items: center; gap: var(--space-8); width: 100%; border: 1px solid transparent; border-radius: 6px; padding: var(--space-4) var(--space-8); background: var(--raised); font: inherit; text-align: left; cursor: pointer; transition: border-color var(--motion-fast); }
+.fleet-manager-worker-row:hover { border-color: var(--border); }
+.fleet-manager-worker-name { font-size: var(--fz-12); font-weight: 500; }
+.fleet-manager-worker-task { font-size: var(--fz-11); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* Reviewer-eligibility toggle: lit when on, dimmed/struck when off. */
 .fleet-reviewer.off { opacity: 0.55; text-decoration: line-through; }
 /* Answer (a real decision is pending — blue) / Unstick (stale heartbeat, no
