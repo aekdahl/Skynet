@@ -430,14 +430,23 @@ via a `spawn_worker` tool; risk-based escalation; worker→manager→project mer
   Subway and Roster views, an Inbox filter for gates a manager auto-resolved (so a human can audit them
   without them cluttering the main queue), and a real "start a manager" flow in place of the raw
   `assignManager` API call.
-- [ ] **Agent-to-agent handoff on feature completion** — when a Feature reaches `shipped`, or a
-  milestone flips to `shipped`, the orchestrator fans out to configured **role-agents**: a
-  **change-manager** commits the CHANGELOG.md entry (HITL-gated diff), a **docs-writer** updates
-  user-facing docs from the feature's task descriptions + diff, a **release-comms** agent drafts the
-  announcement. Each handoff is a directed variant of `mass-inform` (v1) — a fresh scoped brief, still
-  gated end-to-end. **The joinpoint already exists** (`feature.upserted`/`milestone.upserted` with
-  `status:"shipped"` are real events today); v2's work is turning them into a configurable role-agent
-  fan-out map per project.
+- [x] **Agent-to-agent handoff on feature completion** — landed. `Project.roleAgents` is the
+  configurable fan-out map (a specific agent id per role, all off by default);
+  `startFeatureShipHandoff` subscribes to the existing `feature.upserted`/`milestone.upserted` bus
+  events and fires on a genuine `!== "shipped" -> "shipped"` transition (not every upsert). A
+  **change-manager** drafts a CHANGELOG.md entry (deterministically spliced under the first heading,
+  never LLM-placed); a **docs-writer** updates README.md from the shipped work's task descriptions
+  (v1 scope: one fixed target file per file-writing role, not open-ended doc discovery — a project's
+  own doc structure varies too much to pick reliably; broader targeting is a natural follow-up); a
+  **release-comms** agent drafts an announcement (prose only, no file — approving just finalizes the
+  draft for the operator to copy elsewhere). All three raise a `handoff` HITL — its payload frozen
+  onto the item at draft time (no live-refetch machinery needed, unlike a roadmap proposal: a
+  one-shot draft with no ongoing lifecycle another actor could change out from under it) — approve
+  commits for the two file-writing roles (reusing `commitLocalRepoFile`/`githubService.commitRepoFile`,
+  the same local-vs-GitHub commit path the roadmap-proposal apply flow already established), reject
+  just resolves. No settings UI yet for `roleAgents` (PATCH-API-only, same as the still-open
+  deep-review/breaker-review toggle in the v1.5 priority table above) — set it via the project's
+  `PATCH /api/projects/:id` endpoint for now.
 - [ ] **⭐ North star: the auto dev team.** The endgame of the hierarchy is **Charter → Blueprint →
   Plan**: project intake is an LLM-assisted **Charter** (goals, non-goals, risks, done-definition —
   human-approved, G-1); from it Skynet proposes a **Team Blueprint** (Chief of Staff, Spec Analyst,

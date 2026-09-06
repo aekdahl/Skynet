@@ -3,7 +3,7 @@
 // task, route HITL gates, deliver decisions, fork, complete. Phase 0 uses the
 // mock runner; real providers drop in behind the same runner-sdk interface.
 
-import type { TaskRun, AutonomyBreaker, AutonomyOverride, Checkpoint, HitlItem, Project, Resolution, Agent, Task, TaskAssignment, TaskSource, TaskState, ProviderId, ProviderInfo, MergeBriefing, MergeBrief, FeatureBrief, Risk, Feature, FeatureStatus, Milestone, SolutionBrief, DiffWalkthrough, PullRequest, PrChecksStatus } from "@skynet/shared";
+import type { TaskRun, AutonomyBreaker, AutonomyOverride, Checkpoint, HitlItem, Project, Resolution, Agent, Task, TaskAssignment, TaskSource, TaskState, ProviderId, ProviderInfo, MergeBriefing, MergeBrief, FeatureBrief, Risk, Feature, FeatureStatus, Milestone, SolutionBrief, DiffWalkthrough, PullRequest, PrChecksStatus, HandoffRole } from "@skynet/shared";
 import { WorkspaceSettings, computeDailySpend, costBandFor, dayWindow, pacedAvailableUsd, ratesFor, resolveTaskBrief } from "@skynet/shared";
 import {
   isCreditExhaustionError,
@@ -27,6 +27,17 @@ import { resolveActivePolicy } from "./command-policy.js";
 import { isManagerDelegated, resolveMergeTarget } from "./derive/merge-target.js";
 import { parseReviewVerdict, extractJsonObject, REVIEW_OUTPUT_INSTRUCTION, parseReviewProposals, type ProposedTask } from "./review-verdict.js";
 import { parseComparativeVerdict, comparativeReviewInstruction } from "./bakeoff-verdict.js";
+import {
+  HANDOFF_TARGET_FILE,
+  changeManagerQuestion,
+  parseChangeManagerReply,
+  spliceChangelogEntry,
+  docsWriterQuestion,
+  parseDocsWriterReply,
+  releaseCommsQuestion,
+  parseReleaseCommsReply,
+  type HandoffContext,
+} from "./feature-handoff.js";
 import { parseBreakerVerdict, BREAKER_OUTPUT_INSTRUCTION, type BreakerVerdictOut } from "./breaker-verdict.js";
 import { parseInjectionVerdict, buildInjectionPrompt } from "./injection-firewall.js";
 import { parseDiffWalkthrough, DIFF_WALKTHROUGH_INSTRUCTION, DIFF_WALKTHROUGH_SYSTEM } from "./diff-walkthrough.js";
@@ -1113,6 +1124,11 @@ export class Orchestrator {
       output: null,
       flags: raise.kind === "escalation" ? [...flags, "agent"] : flags,
       sourceBranchOverride: null,
+      handoffRole: null,
+      handoffFilePath: null,
+      handoffBaseline: null,
+      handoffContent: null,
+      handoffDraftText: null,
     };
     // Manager escalation policy (agent-hierarchy.md §4): a worker's low-risk
     // question/plan gate is auto-resolved by ITS MANAGER, not the human
@@ -1622,6 +1638,11 @@ export class Orchestrator {
       // this?" instead of leaving an operator to infer it from the diff.
       flags: [...requiresHumanGlobs, ...gateChips],
       sourceBranchOverride: null,
+      handoffRole: null,
+      handoffFilePath: null,
+      handoffBaseline: null,
+      handoffContent: null,
+      handoffDraftText: null,
     };
     // `full` autonomy (see ApprovalLevel in @skynet/shared) skips even a diff's
     // OWN human decision, unconditionally — no second agent, no LLM consult.
@@ -3710,6 +3731,11 @@ export class Orchestrator {
       output: null,
       flags: [source],
       sourceBranchOverride: null,
+      handoffRole: null,
+      handoffFilePath: null,
+      handoffBaseline: null,
+      handoffContent: null,
+      handoffDraftText: null,
     };
     await this.hub.runStatus(run.id, "waiting");
     await this.hub.raiseHitl(item);
@@ -3785,6 +3811,11 @@ export class Orchestrator {
       // single run to resume/reassign/stop here).
       flags: ["autonomy-paused"],
       sourceBranchOverride: null,
+      handoffRole: null,
+      handoffFilePath: null,
+      handoffBaseline: null,
+      handoffContent: null,
+      handoffDraftText: null,
     };
     await this.hub.raiseHitl(item);
     await this.hub.runLog(runId, `project autonomy paused — ${streak.count} consecutive bad outcomes`).catch(() => undefined);
@@ -4937,6 +4968,11 @@ export class Orchestrator {
       output: null,
       flags: [reason],
       sourceBranchOverride: featureUp ? req.agentBranch : null,
+      handoffRole: null,
+      handoffFilePath: null,
+      handoffBaseline: null,
+      handoffContent: null,
+      handoffDraftText: null,
     });
   }
 
@@ -4999,6 +5035,11 @@ export class Orchestrator {
       // a non-conflict git failure) is what lets a caller tell the two apart.
       flags: [...files, "file_collision"],
       sourceBranchOverride: featureUp ? req.agentBranch : null,
+      handoffRole: null,
+      handoffFilePath: null,
+      handoffBaseline: null,
+      handoffContent: null,
+      handoffDraftText: null,
     });
   }
 
@@ -5054,6 +5095,11 @@ export class Orchestrator {
       output: capped,
       flags: [],
       sourceBranchOverride: null,
+      handoffRole: null,
+      handoffFilePath: null,
+      handoffBaseline: null,
+      handoffContent: null,
+      handoffDraftText: null,
     });
   }
 
@@ -7189,6 +7235,136 @@ export class Orchestrator {
     );
     if (!reviewer) throw new NoReviewerAvailableError();
     await this.autoReview(ws, reviewer, task, hitl, project?.autonomy ?? false);
+  }
+
+  /**
+   * Agent-to-agent handoff on feature completion (v2) — draft ONE configured
+   * role's artifact for a just-shipped Feature/Milestone and raise it as a
+   * `handoff` HITL. Called once per configured role by
+   * `startFeatureShipHandoff`'s bus subscriber (feature-ship-handoff.ts) on a
+   * genuine `!== "shipped" -> "shipped"` transition — this method itself
+   * doesn't know or care about the transition, only about drafting one role's
+   * artifact. Lives on Orchestrator (not Operations, not the subscriber
+   * itself) because it needs the same provider-cache + credential-resolution
+   * plumbing `autoJudgeBakeoff`/`autoReview` already use — the actual apply
+   * (commit-on-approve) lives in Operations.resolveHandoffHitl instead, same
+   * split as the roadmap-proposal pair (Orchestrator never touches those
+   * either). A silent `return` (no HITL raised) covers every "nothing
+   * sensible to show a human" case — a since-deleted agent, a provider with
+   * no `consult`, or a reply that fails feature-handoff.ts's own sanity
+   * floor; a genuine failure (the consult call itself throwing) is left to
+   * propagate so the caller's own best-effort catch+log (mirroring
+   * task-sync.ts's own convention) records it per-role rather than this
+   * method swallowing it silently.
+   */
+  async dispatchFeatureHandoff(
+    ws: string,
+    project: Project,
+    sourceKind: "feature" | "milestone",
+    sourceId: string,
+    sourceName: string,
+    sourceDescription: string | null,
+    role: HandoffRole,
+    agentId: string,
+  ): Promise<void> {
+    const agent = await this.store.getAgent(agentId);
+    if (!agent || agent.workspaceId !== ws) return;
+    const provider = await this.getProvider(agent.provider);
+    if (!provider.consult) return;
+
+    let taskTexts: string[];
+    if (sourceKind === "feature") {
+      taskTexts = (await this.store.listTasks(ws)).filter((t) => t.projectId === project.id && t.featureId === sourceId).map((t) => t.text);
+    } else {
+      const featureIds = new Set(
+        (await this.store.listFeatures(ws)).filter((f) => f.projectId === project.id && f.milestoneId === sourceId).map((f) => f.id),
+      );
+      taskTexts = (await this.store.listTasks(ws))
+        .filter((t) => t.projectId === project.id && t.featureId && featureIds.has(t.featureId))
+        .map((t) => t.text);
+    }
+    const ctx: HandoffContext = { sourceKind, sourceName, description: sourceDescription, taskTexts };
+
+    const apiKey = await secretService.resolve(ws, agent.credentialId ?? agent.provider);
+    const baseUrl = await secretService.resolveEndpoint(ws, agent.credentialId ?? agent.provider).catch(() => undefined);
+    const rates = ratesFor(baseUrl, agent.model);
+    const consultSpec = {
+      task: buildAgentContext({ project, body: `${sourceKind} shipped: ${sourceName}` }),
+      model: agent.model,
+      cwd: config.runnerCwd,
+      apiKey,
+      baseUrl,
+      rates,
+    };
+    const targetFile = HANDOFF_TARGET_FILE[role];
+
+    let filePath: string | null = null;
+    let baseline: string | null = null;
+    let content: string | null = null;
+    let draftText: string | null = null;
+    let why: string;
+    try {
+      if (role === "change-manager") {
+        const reply = await provider.consult(consultSpec, changeManagerQuestion(ctx));
+        const entry = parseChangeManagerReply(reply);
+        if (!entry) return;
+        const doc = await readProjectDoc(ws, project, targetFile!).catch(() => null);
+        filePath = targetFile;
+        baseline = doc?.content ?? null;
+        content = spliceChangelogEntry(baseline, entry);
+        why = entry;
+      } else if (role === "docs-writer") {
+        const doc = await readProjectDoc(ws, project, targetFile!).catch(() => null);
+        const reply = await provider.consult(consultSpec, docsWriterQuestion(ctx, doc?.content ?? null));
+        const updated = parseDocsWriterReply(reply, doc?.content ?? null);
+        if (!updated) return;
+        filePath = targetFile;
+        baseline = doc?.content ?? null;
+        content = updated;
+        why = `Updated ${targetFile} for "${sourceName}".`;
+      } else {
+        const reply = await provider.consult(consultSpec, releaseCommsQuestion(ctx));
+        const text = parseReleaseCommsReply(reply);
+        if (!text) return;
+        draftText = text;
+        why = text;
+      }
+    } catch (err) {
+      throw new Error(`${role} handoff consult failed: ${friendlyConsultError(err as Error)}`);
+    }
+
+    const id = `q-handoff-${sourceId}-${role}-${++this.seq}`;
+    const roleLabel = role === "change-manager" ? "Change-manager" : role === "docs-writer" ? "Docs-writer" : "Release-comms";
+    await this.hub.raiseHitl({
+      id,
+      workspaceId: ws,
+      runId: `handoff:${id}`,
+      bakeoffId: null,
+      projectId: project.id,
+      roadmapProposalId: null,
+      kind: "handoff",
+      title: `${roleLabel}: ${filePath ?? "announcement"} for "${sourceName}"`,
+      why,
+      risk: "low",
+      raisedAt: now(),
+      expiresAt: null,
+      resolvedAt: null,
+      resolution: null,
+      rationale: null,
+      command: null,
+      options: null,
+      recommended: null,
+      steps: null,
+      diff: null,
+      output: null,
+      flags: [],
+      sourceBranchOverride: null,
+      handoffRole: role,
+      handoffFilePath: filePath,
+      handoffBaseline: baseline,
+      handoffContent: content,
+      handoffDraftText: draftText,
+    });
   }
 
   /**

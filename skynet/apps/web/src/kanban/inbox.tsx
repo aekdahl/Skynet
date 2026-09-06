@@ -56,6 +56,8 @@ export function cardVariant(item: Decision): CardVariant {
       // its own conflict styling once its live fetch resolves; this default
       // only shapes the outer shell before that (never conflict-red).
       return "roadmap";
+    case "handoff":
+      return "approval";
     default: // approval, plan, verifier
       return "approval";
   }
@@ -79,6 +81,8 @@ function provenanceLabel(item: Decision): string {
       return item.flags.includes("stuck-review") ? "ESCALATION · AWAITING REVIEW" : "ESCALATION · NEEDS HELP";
     case "roadmap_edit":
       return "ROADMAP EDIT · NEEDS YOUR YES";
+    case "handoff":
+      return "HANDOFF · " + (item.handoffRole === "change-manager" ? "CHANGELOG" : item.handoffRole === "docs-writer" ? "DOCS" : "ANNOUNCEMENT");
   }
 }
 
@@ -561,6 +565,73 @@ function BatchedDecisionCard({
   );
 }
 
+// ── handoff card (v2, agent-to-agent handoff on feature completion) ────────
+// Unlike RoadmapEditCard above, there's nothing to live-fetch — the whole
+// payload (see HitlItem.handoffRole's own doc comment) is frozen onto the
+// item at raise time, so this renders straight off `item`, same as every
+// other plain HitlItem kind. A file-writing role (change-manager/docs-writer)
+// shows the current vs. proposed file content; release-comms (no file) shows
+// just the draft text.
+function HandoffCard({
+  item,
+  selected,
+  leaving,
+  now,
+  onOpen,
+  onResolve,
+}: {
+  item: Decision;
+  selected: boolean;
+  leaving: boolean;
+  now: number;
+  onOpen: () => void;
+  onResolve: (action: "approve" | "reject" | "modify" | "option" | "reassign", extra?: { optionIndex?: number; guidance?: string; resetWork?: boolean; remember?: boolean }) => void;
+}) {
+  const idleSec = Math.max(0, (now - item.raisedAt) / 1000);
+  const idleUrgent = idleSec > 15 * 60;
+  const roleLabel = item.handoffRole === "change-manager" ? "Change-manager" : item.handoffRole === "docs-writer" ? "Docs-writer" : "Release-comms";
+
+  return (
+    <article className={"di-card" + (selected ? " sel" : "") + (leaving ? " leaving" : "")}>
+      <div className="di-card-head">
+        <span className="di-kind-label mono">{provenanceLabel(item)}</span>
+        <span className="di-meta">{item.projectName}</span>
+        <span className={"di-idle" + (idleUrgent ? " urgent" : "")}>{fmtWait(idleSec)}</span>
+      </div>
+      <p className="di-verdict">{item.title}</p>
+      {item.handoffFilePath ? (
+        <div className="di-roadmap-body">
+          <p className="di-panel-title">{item.handoffFilePath}</p>
+          {item.handoffBaseline !== null && (
+            <>
+              <p className="di-why-label">Current</p>
+              <pre className="di-diff mono">{item.handoffBaseline || "(empty)"}</pre>
+            </>
+          )}
+          <p className="di-why-label">Proposed</p>
+          <pre className="di-diff mono">{item.handoffContent}</pre>
+        </div>
+      ) : (
+        <div className="di-roadmap-body">
+          <p className="di-why-label">{roleLabel}'s draft</p>
+          <p className="di-why-body">“{item.handoffDraftText}”</p>
+        </div>
+      )}
+      <div className="di-actions">
+        <button className="di-btn di-btn-primary" onClick={() => onResolve("approve")}>
+          {item.handoffFilePath ? "APPROVE & COMMIT" : "APPROVE"}
+        </button>
+        <button className="di-btn di-btn-ghost" onClick={() => onResolve("reject")}>
+          REJECT
+        </button>
+      </div>
+      <button className="di-open-link" onClick={onOpen} title="Open the project">
+        Open →
+      </button>
+    </article>
+  );
+}
+
 function DecisionCard({
   item,
   selected,
@@ -885,7 +956,7 @@ export function DecisionInboxView({
         case "Enter":
           if (!it) return;
           e.preventDefault();
-          if (it.kind === "roadmap_edit") onOpenProject(it.projectId);
+          if (it.kind === "roadmap_edit" || it.kind === "handoff") onOpenProject(it.projectId);
           else onOpenTask(it.runId);
           break;
         case "y":
@@ -1012,6 +1083,22 @@ export function DecisionInboxView({
                     if (it.kind === "roadmap_edit") {
                       return (
                         <RoadmapEditCard
+                          key={it.id}
+                          item={it}
+                          selected={flatIdx === selectedIdx}
+                          leaving={leavingIds.has(it.id)}
+                          now={now}
+                          onOpen={() => onOpenProject(it.projectId)}
+                          onResolve={(action, extra) => resolveAndCollapse(it, action, extra)}
+                        />
+                      );
+                    }
+                    // v2 — a handoff item is the same "no run behind it" shape
+                    // as roadmap_edit above, just with its payload frozen onto
+                    // the item itself rather than a live-fetched entity.
+                    if (it.kind === "handoff") {
+                      return (
+                        <HandoffCard
                           key={it.id}
                           item={it}
                           selected={flatIdx === selectedIdx}
