@@ -187,6 +187,61 @@ about `kind`/`build` (it only ever proposes a plain "web" dev command today),
 an ephemeral datastore for a service that needs one, and the actual
 containerized/hosted isolation.
 
+## Phase-3 v0 (this PR)
+
+The first working slice of `kind: "command"` — no server, no port, no URL: a
+finished command's exit code + declared artifacts ARE the preview.
+
+- **Descriptor**: two new `.skynet/preview.json` fields, read only when
+  `kind: "command"` — `command` (falls back to `start`/`dev` so a minimal
+  descriptor that just renames the field still works) and `artifacts` (glob
+  patterns, repo-relative, for files the command produces). Explicit-only,
+  same as `kind: "service"` — "is this a CLI tool" isn't safely inferable the
+  way "is this a web app" is, so the package.json heuristic and the
+  agent-assisted resolver never propose it. A descriptor that asks for
+  `kind: "command"` with nothing to run surfaces a clear error immediately
+  instead of silently falling through to a web-shaped heuristic.
+- **Execution**: `ProjectPreviewManager.runCommandOnce` runs the resolved
+  command to COMPLETION — through the exact same sandboxing +
+  `assertApprovable` command-safety gate the dev-server spawn already goes
+  through (`preview/worktree.ts`'s new `runCommand`, a sibling of
+  `runToCompletion` that resolves with `{code, timedOut}` instead of
+  rejecting on a non-zero exit — a failing test run is a normal, showable
+  RESULT here, not an infra error). No `freePort`/health-check/proxy
+  involvement at all. `status` lands on `live` (exit 0 — "finished") or
+  `failed` (non-zero/timeout), reusing the existing state values rather than
+  adding new ones.
+- **Artifacts**: `collectArtifacts` walks the worktree (skipping
+  `.git`/`node_modules`, bounded so a huge repo can't hang a preview)
+  matching each file against the descriptor's globs via a small hand-rolled
+  `matchGlob` (`*` within a segment, `**` across segments including zero —
+  no glob dependency exists in this repo, matching how `parsePreviewPorts`/
+  `injectViteBase` are hand-rolled too). Each match gets a `url`: a new
+  public capability-URL route, `GET /preview-artifact/<token>/<path>`
+  (`preview/route.ts`'s `registerPreviewArtifactRoute`), keyed by the live
+  preview's own unguessable token — mirroring `/p/<token>/`'s pattern rather
+  than the workspace-authenticated `/api/…` surface, since a plain
+  `<img>`/`<iframe>` the web UI embeds can't attach the app's bearer session
+  header. Only a path THIS run's own reported `artifacts` list names is ever
+  reachable — never an arbitrary worktree file (a command-kind worktree is a
+  full repo checkout that can hold `.env`/`.git` internals/secrets in
+  source).
+- **On merge**: `refresh()` re-runs the command after re-pointing the
+  worktree (there's no HMR/rebuild concept for a one-shot command — "the code
+  changed" just means "run it again").
+- **Web**: `LivePreviewModal` renders a `CommandPreviewPanel` instead of the
+  iframe/placeholder — status, the resolved command, an ALWAYS-visible output
+  pane (a command's output IS the preview, unlike a dev server's incidental
+  logs), and any artifacts rendered by MIME type (`image/*` inline,
+  `application/pdf` in an iframe, everything else a download link).
+  Device-frame/URL-bar/Reload are hidden — they're web-app-only concepts.
+
+Verified end-to-end against a real repo through the actual browser UI (not
+just unit tests): a `kind: "command"` project correctly shows the command
+badge, exit code, sandboxed-run log line, and a produced PNG artifact
+rendering inline via the new capability-URL route (confirmed via the actual
+HTTP round-trip: `200`, `content-type: image/png`, correct byte count).
+
 ---
 
 ## Deploy to Fly.io (persistent, human-triggered)

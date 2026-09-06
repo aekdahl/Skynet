@@ -3148,6 +3148,19 @@ button.rb-proj:hover { color: var(--accent); }
   word-break: break-word;
 }
 
+/* ─── "command"-kind preview (Phase 3) — no iframe, a result panel instead ── */
+.lp-cmd { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: var(--space-12); padding: var(--space-16); }
+.lp-cmd-exit { font-size: var(--fz-12-5); font-weight: 600; font-family: var(--font-mono, monospace); }
+/* Reuse .lp-logs's look but let it grow with the panel instead of a fixed
+   200px band — a command's output IS the preview here, not incidental. */
+.lp-cmd-output { flex: none; height: auto; min-height: 120px; max-height: 50vh; border-top: none; border: 1px solid var(--line-soft); border-radius: 8px; }
+.lp-cmd-artifacts { display: flex; flex-direction: column; gap: var(--space-12); }
+.lp-cmd-artifact { display: flex; flex-direction: column; gap: var(--space-8); }
+.lp-cmd-artifact-name { font-size: var(--fz-11-5); color: var(--muted); word-break: break-all; }
+.lp-cmd-artifact-size { color: var(--faint); }
+.lp-cmd-artifact-img { max-width: 100%; border: 1px solid var(--line-soft); border-radius: 8px; background: var(--bg); }
+.lp-cmd-artifact-pdf { width: 100%; height: 60vh; border: 1px solid var(--line-soft); border-radius: 8px; }
+
 /* ─── Deploy to Fly.io (persistent, human-triggered) ────────────────────── */
 .fly-modal { width: min(560px, 92vw); max-height: 85vh; }
 .fly-body { padding: var(--space-12) var(--space-16); gap: var(--space-12); overflow: auto; }

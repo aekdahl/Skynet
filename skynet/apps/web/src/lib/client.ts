@@ -1350,8 +1350,18 @@ export function refreshProjectContext(projectId: string) {
 // ─── Live preview (Phase-1: web/sites) ──────────────────────────────────────
 export type PreviewSource = "main" | "merged" | "latest";
 // "service" (Phase 2) rebuilds/restarts automatically when the fleet merges,
-// instead of relying on the dev server's own HMR — see docs/live-preview.md.
-export type PreviewKind = "web" | "service";
+// instead of relying on the dev server's own HMR. "command" (Phase 3) has no
+// server/URL at all — a finished command's exit code + artifacts ARE the
+// preview. See docs/live-preview.md.
+export type PreviewKind = "web" | "service" | "command";
+export interface PreviewArtifact {
+  path: string;
+  size: number;
+  mime: string;
+  /** Capability URL (`/preview-artifact/<token>/…`) — fetch/embed directly,
+   *  no auth header needed (mirrors the `/p/<token>/` dev-server proxy). */
+  url: string;
+}
 export interface PreviewState {
   status: "idle" | "starting" | "live" | "failed" | "stopped";
   url: string | null;
@@ -1363,6 +1373,10 @@ export interface PreviewState {
   source: PreviewSource;
   combined: { total: number; included: number; skipped: number } | null;
   kind: PreviewKind;
+  // "command" kind only (null/[] for "web"/"service"): the finished run's
+  // exit code and any declared artifacts it produced.
+  exitCode: number | null;
+  artifacts: PreviewArtifact[];
 }
 export function previewStatus(projectId: string) {
   return req<PreviewState>("GET", `/api/projects/${projectId}/preview`);

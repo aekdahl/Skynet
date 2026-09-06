@@ -40,12 +40,17 @@ const MIME: Record<string, string> = {
   ".txt": "text/plain; charset=utf-8",
 };
 
-const mimeFor = (path: string): string => {
+/** Extension → content-type. Exported for reuse by the command-kind artifact
+ *  route (`api.ts`) — same "serve a file safely" concern, one MIME table. */
+export const mimeFor = (path: string): string => {
   const dot = path.lastIndexOf(".");
   return (dot >= 0 ? MIME[path.slice(dot).toLowerCase()] : undefined) ?? "application/octet-stream";
 };
 
-function securityHeaders(reply: FastifyReply): void {
+/** CSP/no-sniff/no-cache headers for any route serving agent-produced content
+ *  that gets embedded (iframe/img) — exported for reuse by the command-kind
+ *  artifact route (`api.ts`). */
+export function securityHeaders(reply: FastifyReply): void {
   // Allow embedding (the whole point) but pin the rest down.
   reply.header("Content-Security-Policy", `frame-ancestors ${previewConfig.frameAncestors}`);
   reply.header("X-Content-Type-Options", "nosniff");
@@ -131,4 +136,28 @@ export async function registerPreview(app: FastifyInstance, deps: { store: Store
   app.get<{ Params: PreviewParams }>("/preview/:runId/*", handler);
   app.log.info(`preview route mounted (mode=${previewService.mode}, root=${previewConfig.artifactRoot})`);
   return true;
+}
+
+/**
+ * Register the command-kind artifact route (Phase 3, docs/live-preview.md):
+ * `GET /preview-artifact/<token>/<path>` — a file a "command"-kind live
+ * preview produced. Keyed by the live preview's own unguessable TOKEN, not a
+ * workspace-authenticated project/run id — same reason `/p/<token>/` (the
+ * dev-server proxy) isn't under `/api/`: a plain `<img>`/`<iframe>` the web
+ * UI embeds can't attach the app's bearer session header, so the token
+ * itself is the capability. `resolve` is `ProjectPreviewManager.
+ * artifactForToken`, injected so this route file never imports the manager
+ * directly (matches how the live-preview proxy is wired in index.ts).
+ */
+export function registerPreviewArtifactRoute(
+  app: FastifyInstance,
+  resolveArtifact: (token: string, relPath: string) => { absPath: string; mime: string } | null,
+): void {
+  type Params = { token: string; "*"?: string };
+  app.get<{ Params: Params }>("/preview-artifact/:token/*", (req, reply) => {
+    const hit = resolveArtifact(req.params.token, req.params["*"] ?? "");
+    if (!hit) return reply.code(404).type("text/plain").send("not found");
+    securityHeaders(reply);
+    return reply.type(hit.mime).send(createReadStream(hit.absPath));
+  });
 }
