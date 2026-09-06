@@ -119,6 +119,9 @@ describe("DEF-003/005: assign is idempotent and refuses done tasks", () => {
     // The original agent is not orphaned — still the live/attached one.
     const agent = await store.getRun(first.id);
     expect(agent?.status).not.toBe("done");
+
+    // Exactly one run exists workspace-wide (no untracked orphan run).
+    expect((await store.listRuns(DEFAULT_WORKSPACE)).length).toBe(1);
   });
 
   it("assigning a done task is refused (TaskAlreadyAssignedError), no runner acquired", async () => {
@@ -134,6 +137,7 @@ describe("DEF-003/005: assign is idempotent and refuses done tasks", () => {
     expect(provider.started).toBe(0);
     expect((await store.getAgent("r1"))?.status).toBe("idle");
     expect((await store.getAgent("r2"))?.status).toBe("idle");
+    expect((await store.listRuns(DEFAULT_WORKSPACE)).length).toBe(0);
   });
 
   it("a task whose agent is done CAN be re-assigned (frees a fresh spawn)", async () => {

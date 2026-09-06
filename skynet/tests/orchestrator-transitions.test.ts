@@ -95,13 +95,16 @@ describe("orchestrator's own autonomous moves write machine Transitions", () => 
     expect(await store.listTransitionsForTask("t1")).toEqual([]);
   });
 
-  it("a no-op triage (still unclear, no state change) writes NO Transition", async () => {
-    // clarity stays unclear and the task is already sitting in... actually
-    // triage always starts from backlog per tickAutonomy's own filter, and
-    // "unclear" still moves backlog → triage (a real move) — so exercise the
-    // true no-op case directly via requestRetriage-style re-evaluation
-    // isn't reachable through tickAutonomy. Assert the general guard instead:
-    // writeMachineTransition is a no-op when from === to.
+  it("an unpicked task (autoPick:false) is left alone by auto-pick — no state change, no Transition", async () => {
+    // NOTE: tickAutonomy's triage step only ever fires on a `backlog` task,
+    // and per triageOne it always moves it OUT of backlog (→ "todo" when
+    // clear, → "triage" when unclear) — there is no path where triage runs
+    // and leaves the task's state unchanged. So the "no-op triage" scenario
+    // this test was originally named for is not reachable through
+    // tickAutonomy at all; writeMachineTransition's own from===to guard is
+    // real (see orchestrator.ts) but nothing here can trigger it via triage.
+    // What IS reachable and worth covering: a `todo` task with autoPick:false
+    // is skipped by the auto-pick step entirely, so it writes no Transition.
     const { store, orch } = await setup();
     await store.putTask(mkTask({ state: "todo", autoPick: false })); // autoPick off → never auto-picked
     await orch.tickAutonomy();

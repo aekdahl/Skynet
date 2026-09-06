@@ -179,4 +179,36 @@ describe("resyncProjectSource", () => {
     expect(githubService.setIssueState).not.toHaveBeenCalled();
     expect(githubService.setIssueLabels).not.toHaveBeenCalled();
   });
+
+  it("pushes write-back drift for a repo_file task — checks off the checklist item and commits it, when syncSourceStatus is on", async () => {
+    const { store, ops } = await setup({ syncSourceStatus: true });
+    const task = await ops.createTask(DEFAULT_WORKSPACE, "p1", { text: "Some item", source: { kind: "repo_file", path: "TODO.md", anchor: "Some item" } });
+    const fresh = await store.getTask(task.id);
+    await store.putTask({ ...fresh!, state: "done" }); // Skynet-side is done — the file was never told
+    fn(githubService.getRepoFileWithSha).mockResolvedValue({ content: "- [ ] Some item\n", sha: "abc" });
+
+    const res = await ops.resyncProjectSource(DEFAULT_WORKSPACE, "p1");
+    expect(res.pushed).toBe(1);
+    expect(githubService.commitRepoFile).toHaveBeenCalledWith(
+      DEFAULT_WORKSPACE,
+      "acme/app",
+      "TODO.md",
+      "- [x] Some item\n",
+      "abc",
+      expect.stringContaining("re-sync"),
+      undefined,
+    );
+  });
+
+  it("does not push repo_file drift when the checklist item already matches the task's current state", async () => {
+    const { store, ops } = await setup({ syncSourceStatus: true });
+    const task = await ops.createTask(DEFAULT_WORKSPACE, "p1", { text: "Some item", source: { kind: "repo_file", path: "TODO.md", anchor: "Some item" } });
+    const fresh = await store.getTask(task.id);
+    await store.putTask({ ...fresh!, state: "done" });
+    fn(githubService.getRepoFileWithSha).mockResolvedValue({ content: "- [x] Some item\n", sha: "abc" }); // already checked
+
+    const res = await ops.resyncProjectSource(DEFAULT_WORKSPACE, "p1");
+    expect(res.pushed).toBe(0);
+    expect(githubService.commitRepoFile).not.toHaveBeenCalled();
+  });
 });
