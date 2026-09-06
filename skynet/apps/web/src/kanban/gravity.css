@@ -125,6 +125,8 @@
 }
 
 .gv-card {
+  /* font/color/text-align/cursor reset shared with .mb-card, .mb-card-clickzone,
+     .hd-stalled-row, .rg-card-link — see styles.css. */
   display: flex;
   flex-direction: column;
   gap: var(--ak-sp-5);
@@ -134,10 +136,6 @@
   border-radius: var(--ak-radius-card);
   background: var(--ak-surface-1);
   box-shadow: var(--ak-shadow-focus-card);
-  text-align: left;
-  font: inherit;
-  color: inherit;
-  cursor: pointer;
   transition: border-color var(--motion-fast), background-color var(--motion-fast), box-shadow var(--motion-fast);
 }
 /* Same shared treatment as .mb-card (board.css) — border machine-tinted,

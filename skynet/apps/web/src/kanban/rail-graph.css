@@ -98,10 +98,6 @@
   background: none;
   border: none;
   padding: 0;
-  color: inherit;
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
 }
 .rg-card-link:hover { color: var(--ak-text-primary); text-decoration: underline; }
 .rg-card-link:focus-visible { outline: none; box-shadow: var(--ak-focus-ring); border-radius: var(--ak-radius-bar); }
