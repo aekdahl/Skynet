@@ -15,6 +15,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { createInterface } from "node:readline";
 import type { PlanStep, ProviderId, Resolution, Usage } from "@skynet/shared";
 import { fmtDuration, idleCapMs, runtimeCapMs } from "./caps.js";
+import { egressProxyEnv } from "./egress-proxy.js";
 import { wrapForSandbox } from "./sandbox.js";
 import type {
   HitlRaise,
@@ -198,10 +199,10 @@ class CliRunnerHandle implements RunnerHandle {
     this.events.onStatus(this.runId, "running");
     this.events.onLog(this.runId, `picked up "${spec.task}" on ${spec.branch}`);
     this.hb = setInterval(() => this.events.onHeartbeat(this.runId), 5_000);
-    this.launch();
+    void this.launch();
   }
 
-  private launch() {
+  private async launch() {
     const cwd = this.spec.cwd ?? process.cwd();
     // Best-effort: a vendor's worktree prep (e.g. writing a browser-MCP config
     // file) is opt-in tooling, never the run's actual task — a failure here
@@ -215,6 +216,17 @@ class CliRunnerHandle implements RunnerHandle {
     // and a sandbox tool is available; otherwise runs the vendor bin directly.
     const wrapped = wrapForSandbox(this.vendor.bin, this.vendor.buildArgs(this.spec), { cwd });
     if (wrapped.note) this.events.onLog(this.runId, wrapped.note);
+    // Opt-in network-egress allowlist (SKYNET_RUNNER_EGRESS_ALLOWLIST). No-op
+    // (undefined) unless enabled; a failure to start the shared proxy is
+    // logged and swallowed rather than failing the run — same fails-open,
+    // best-effort posture as wrapForSandbox above (see egress-proxy.ts).
+    let egressEnv: Record<string, string> | undefined;
+    try {
+      egressEnv = await egressProxyEnv();
+      if (egressEnv) this.events.onLog(this.runId, "network egress restricted to an allowlist — see server logs for any blocked host");
+    } catch (err) {
+      this.events.onLog(this.runId, `egress allowlist proxy failed to start, continuing with network open: ${(err as Error).message}`);
+    }
     let child: ChildProcess;
     try {
       child = spawn(wrapped.bin, wrapped.args, {
@@ -228,7 +240,7 @@ class CliRunnerHandle implements RunnerHandle {
         // the agent's worktree — writing real files there instead of failing
         // loudly. Overriding PWD to match `cwd` here is strictly more correct
         // for every vendor, not just the one that surfaced the bug.
-        env: { ...process.env, PWD: cwd, ...(this.vendor.env?.(this.spec) ?? {}) },
+        env: { ...process.env, PWD: cwd, ...egressEnv, ...(this.vendor.env?.(this.spec) ?? {}) },
         // Default stdio is "pipe" for all three streams — except a vendor that
         // opts into closeStdin (see CliVendor), whose stdin is closed at spawn
         // time instead (stdout/stderr stay piped either way).

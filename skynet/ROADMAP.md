@@ -237,10 +237,20 @@ Ordered by priority (urgent bug → launch-wedge remainder → product debt → 
   Apple Developer ID cert (Apple Developer Program enrollment, $99/yr) + a Windows code-signing cert
   and adding both as repo secrets — a paid/human step, not engineering. Last remaining GTM blocker on
   the committed release.
-- [ ] 🏢 **Scale + containerized runner:** Redis multi-replica fan-out; **GKE Jobs for runners** — one
-  container per agent, completing the v0 sandbox item's deferred half: memory/CPU caps (cgroups) and a
-  network egress allowlist (proxy). The command-deny, worktree write-confinement, and runtime cap
-  already ship locally. Hosted-only — not needed for the local desktop release.
+- [~] 🏢 **Scale + containerized runner.** Network-egress-allowlist slice done (PR #678,
+  `product/runner-egress-allowlist`); GKE Jobs + cgroup caps remain open. **Correction found while
+  claiming this item:** Redis multi-replica fan-out was NOT actually outstanding — `RedisBus`
+  (`apps/server/src/bus.redis.ts`) and `RedisSessionStore` (`apps/server/src/auth/sessions.redis.ts`)
+  already ship, selected via `BUS=redis`; the roadmap line was stale drift, corrected rather than
+  re-implemented. **Done:** a network egress allowlist — `packages/runner-sdk/src/egress-proxy.ts`, a
+  local CONNECT+HTTP forward proxy an operator opts into via `SKYNET_RUNNER_EGRESS_ALLOWLIST`
+  (comma-separated hostnames; blank = today's fully-open behavior, and deliberately no curated default
+  list — a wrong one would silently break runs). One proxy shared per server process; a disallowed
+  host gets a 403 with the real connection never attempted. Not hosted-only — needs no cloud infra,
+  works for any Skynet instance including the local desktop release. **Still open** (genuinely
+  hosted-only, deferred): **GKE Jobs for runners** — one container per agent, needs a real GKE cluster
+  to implement/verify — and memory/CPU caps (cgroups, Linux-only, unverifiable without a Linux host).
+  The command-deny, worktree write-confinement, and runtime cap already ship locally.
 - [ ] 🔗⛓ **Structural agent-hierarchy hooks** — `role`, `familyOf`→root, worker→manager merge (cheap,
   additive; from [docs/agent-hierarchy.md](docs/agent-hierarchy.md)). Cheap groundwork for v2; not
   urgent on its own since nothing consumes it yet.
