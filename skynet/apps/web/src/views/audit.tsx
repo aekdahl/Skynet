@@ -49,6 +49,17 @@ const ACTOR_DOT_TITLE: Record<ComplianceApproverType, string> = {
   "agent-review": "Auto-approved by a fleet agent's review",
 };
 
+// A worker's low-risk question/plan gate that its MANAGER agent auto-resolved
+// (docs/agent-hierarchy.md §4, orchestrator.ts's raise()) — operatorId is the
+// literal string "manager:<managerRunId>". It lands in the same "agent-review"
+// bucket as a plain autonomy auto-review (classifyOperatorId doesn't split
+// them further), so give it its own, more specific tooltip here.
+const isManagerAutoResolve = (operatorId: string): boolean => operatorId.startsWith("manager:");
+const actorDotTitle = (operatorId: string): string =>
+  isManagerAutoResolve(operatorId)
+    ? "Auto-resolved by this worker's manager agent — never paged to a human"
+    : ACTOR_DOT_TITLE[classifyOperatorId(operatorId)];
+
 const isResolveAction = (a: string): a is ResolveAction =>
   a === "approve" || a === "reject" || a === "modify" || a === "option" || a === "reassign" || a === "dismiss" || a === "push";
 
@@ -200,7 +211,7 @@ function AuditRow({
         <span
           className="audit-actor-dot"
           style={{ background: ACTOR_DOT_COLOR[classifyOperatorId(rec.operatorId)] }}
-          title={ACTOR_DOT_TITLE[classifyOperatorId(rec.operatorId)]}
+          title={actorDotTitle(rec.operatorId)}
           aria-hidden="true"
         />
         <span className="audit-op">{rec.operatorId}</span>
@@ -333,6 +344,15 @@ export function AuditView({
 
   const active = useMemo(() => merged.filter((r) => !r.archived), [merged]);
   const archived = useMemo(() => merged.filter((r) => r.archived), [merged]);
+  // "An Inbox filter for gates a manager auto-resolved, so a human can audit
+  // them without them cluttering the main queue" — these are born already-
+  // resolved (never open), so they can only ever live here, not in either
+  // Inbox view. A toggle rather than a permanent split: most workspaces have
+  // none yet, and mixing them into the normal trail by default keeps the
+  // "who decided what" chronology intact for the rest.
+  const managerRecords = useMemo(() => merged.filter((r) => isManagerAutoResolve(r.operatorId)), [merged]);
+  const [managerOnly, setManagerOnly] = useState(false);
+  const activeShown = managerOnly ? active.filter((r) => isManagerAutoResolve(r.operatorId)) : active;
 
   const onArchive = useCallback(
     async (hitlId: string, next: boolean) => {
@@ -383,6 +403,16 @@ export function AuditView({
           </p>
         </div>
         <div className="audit-bulk">
+          {managerRecords.length > 0 && (
+            <button
+              className={"btn btn-sm" + (managerOnly ? " btn-primary" : " btn-ghost")}
+              aria-pressed={managerOnly}
+              title="Gates a worker's manager auto-resolved on its own — never paged to a human"
+              onClick={() => setManagerOnly((v) => !v)}
+            >
+              ⚙ Manager auto-resolves · {managerRecords.length}
+            </button>
+          )}
           <ComplianceReportExport projects={projects} />
           {merged.length > 0 && (
             <>
@@ -430,9 +460,15 @@ export function AuditView({
         </div>
       )}
 
-      {!error && active.length > 0 && (
+      {!error && managerOnly && activeShown.length === 0 && active.length > 0 && (
+        <div className="audit-empty">
+          <p>No manager auto-resolves among the active decisions.</p>
+        </div>
+      )}
+
+      {!error && activeShown.length > 0 && (
         <div className="audit-list">
-          {active.map((rec, i) => (
+          {activeShown.map((rec, i) => (
             <AuditRow key={`${rec.hitlId}-${rec.at}-${i}`} {...rowProps(rec)} />
           ))}
         </div>

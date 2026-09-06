@@ -305,6 +305,10 @@ export interface Store extends StoreState {
   reassignTaskAgent: (projectId: string, taskId: string, agentId: string) => Promise<void>;
   resyncProjectSource: (projectId: string) => Promise<void>;
   assignTask: (projectId: string, taskId: string) => Promise<TaskRun | null>;
+  // Start this task under a NEW manager agent (spawn_worker-capable) instead
+  // of a plain worker — see docs/agent-hierarchy.md. `area` is its optional
+  // module scope.
+  assignManager: (projectId: string, taskId: string, area: string[]) => Promise<TaskRun | null>;
   // Cross-vendor consensus run: fire the task at 2+ providers in parallel.
   startBakeoff: (projectId: string, taskId: string, providerIds: ProviderId[]) => Promise<TaskRun[] | null>;
   // Bake-off peer review: have an agent compare the siblings and pick a winner.
@@ -980,6 +984,18 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         } catch (e) {
           if (e instanceof api.ApiError && e.status === 409) {
             toast(serverMessage(e, "No idle agent available — configure or free one in Fleet."));
+            return null;
+          }
+          throw e;
+        }
+      },
+      assignManager: async (projectId, taskId, area) => {
+        try {
+          return await api.assignManager(projectId, taskId, area);
+        } catch (e) {
+          if (e instanceof api.ApiError) {
+            if (e.status === 409) toast(serverMessage(e, "No idle agent available — configure or free one in Fleet."));
+            else toast(serverMessage(e, "Couldn't start the manager."));
             return null;
           }
           throw e;

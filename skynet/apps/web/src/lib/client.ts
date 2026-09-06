@@ -1080,6 +1080,14 @@ export function archiveTask(projectId: string, taskId: string, archived = true) 
 export function assignTask(projectId: string, taskId: string) {
   return req<TaskRun>("POST", `/api/projects/${projectId}/tasks/${taskId}/assign`);
 }
+/** Start this task under a NEW manager agent instead of a plain worker — the
+ *  manager gets a spawn_worker tool to delegate real worker TaskRuns of its
+ *  own (docs/agent-hierarchy.md). `area` is the manager's optional module
+ *  scope (empty = an unscoped "role manager"). Same endpoint as assignTask —
+ *  the server branches on this body flag (operations.ts#assignManager). */
+export function assignManager(projectId: string, taskId: string, area: string[]) {
+  return req<TaskRun>("POST", `/api/projects/${projectId}/tasks/${taskId}/assign`, { area });
+}
 /** Cross-vendor consensus run: fire the task at 2+ providers in parallel,
  *  each in its own worktree off the same base commit. Picking a winner is
  *  just approving that sibling's own diff HITL — see resolveHitl. */
