@@ -404,6 +404,38 @@ export const SCENARIOS: Scenario[] = [
     },
   },
   {
+    id: "plan-entity",
+    name: "The living Plan — read, write, version conflict (Product Steward Phase 1)",
+    desc: "A fresh project's Plan starts empty at version 0; the first write lands at version 1; a second write against the now-stale baseVersion is refused, not silently accepted — no repo needed, the Plan isn't repo-coupled.",
+    run: async () => {
+      const steps: Step[] = [];
+      const name = `UAT: plan entity ${uid()}`;
+      await api.createProject({ name, goal: "acceptance" });
+      const s = await settle((sn) => sn.projects.some((p) => p.name === name));
+      const p = s.projects.find((p2) => p2.name === name)!;
+
+      const fresh = await api.fetchProjectPlan(p.id);
+      steps.push(step("a fresh project's Plan starts empty at version 0", fresh.version === 0 && fresh.markdown === ""));
+
+      const v1 = await api.updateProjectPlan(p.id, { markdown: "# UAT plan", baseVersion: 0 });
+      steps.push(step("the first write lands at version 1 with the written markdown", v1.version === 1 && v1.markdown === "# UAT plan"));
+
+      let refused = false;
+      try {
+        await api.updateProjectPlan(p.id, { markdown: "clobber", baseVersion: 0 });
+      } catch {
+        refused = true;
+      }
+      steps.push(step("a write against the now-stale baseVersion is refused, not silently accepted", refused));
+
+      const v2 = await api.updateProjectPlan(p.id, { markdown: "# v2", baseVersion: v1.version });
+      steps.push(step("a write against the CURRENT version succeeds and bumps it again", v2.version === 2 && v2.markdown === "# v2"));
+
+      await swallow(api.deleteProject(p.id));
+      return steps;
+    },
+  },
+  {
     id: "task-detail-panel",
     name: "Task Detail panel's own endpoints — trail + subtask accept",
     desc: "A fresh task's transition trail is empty; accepting all (zero) suggested subtasks is a clean no-op; accepting a specific but nonexistent one is refused — control-plane only, no seeded Proposal needed.",

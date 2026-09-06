@@ -119,14 +119,27 @@ export function ProjectPlanView({ project }: { project: Project }) {
   const [err, setErr] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
+  // Snapshotted at startEdit — NEVER read from the live `plan` state inside
+  // save(). Found live: a plan.upserted WS event (e.g. another tab's save)
+  // arriving while this panel is open re-fetches `plan` unconditionally,
+  // which would silently update `plan.version` to the NEW current version —
+  // if save() then used `plan.version` as its baseVersion, a stale edit
+  // would match the server's real current version and clobber the
+  // intervening change instead of conflicting. This is the one value the
+  // edit was actually drafted against, so it's what has to gate the write.
+  const [editBaseVersion, setEditBaseVersion] = useState(0);
   const [saving, setSaving] = useState(false);
   const [conflict, setConflict] = useState(false);
 
   const load = () => {
     api.fetchProjectPlan(project.id).then(setPlan).catch((e: unknown) => setErr((e as Error)?.message || "Couldn't load the Plan."));
   };
+  // Skip the live refetch while actively editing — the visible v/author/time
+  // header shouldn't shift under the operator mid-edit, and it's pointless
+  // besides (the draft doesn't re-sync from it; see editBaseVersion above).
+  // A genuine conflict still surfaces correctly on Save via the 409 path.
   // eslint-disable-next-line react-hooks/exhaustive-deps -- `load` is a fresh closure every render; only re-fetch on identity/live-signal changes
-  useEffect(load, [project.id, planRev]);
+  useEffect(() => { if (!editing) load(); }, [project.id, planRev, editing]);
 
   const projMilestones = useMemo(
     () => milestones.filter((m) => m.projectId === project.id && !m.archived).sort((a, b) => (a.order ?? 0) - (b.order ?? 0)),
@@ -143,15 +156,15 @@ export function ProjectPlanView({ project }: { project: Project }) {
   const startEdit = () => {
     if (!plan) return;
     setDraft(plan.markdown);
+    setEditBaseVersion(plan.version);
     setConflict(false);
     setEditing(true);
   };
   const save = async () => {
-    if (!plan) return;
     setSaving(true);
     setErr(null);
     try {
-      const saved = await api.updateProjectPlan(project.id, { markdown: draft, baseVersion: plan.version });
+      const saved = await api.updateProjectPlan(project.id, { markdown: draft, baseVersion: editBaseVersion });
       setPlan(saved);
       setEditing(false);
     } catch (e) {
