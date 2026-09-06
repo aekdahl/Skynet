@@ -17,7 +17,7 @@ import type { Decision, Project, RoadmapProposal, Task, TaskRun } from "@skynet/
 import { dayWindow } from "@skynet/shared";
 import { useStore } from "../lib/store";
 import * as api from "../lib/client";
-import { fmtWait, needsReviewConfirm } from "../lib/derive";
+import { fmtWait, needsReviewConfirm, runnerName } from "../lib/derive";
 import { isTypingTarget } from "../lib/keys";
 import { useChoice, useConfirm } from "../components/confirm";
 import { useEscapeLayer } from "../lib/escape-stack";
@@ -930,6 +930,16 @@ export function DecisionInboxView({
   const handledByPolicyToday = queue.filter(
     (q) => q.resolvedAt != null && q.resolvedAt >= startOfToday && q.resolution?.by?.startsWith("policy:"),
   ).length;
+  // A worker's low-risk question/plan gate auto-resolves against its manager
+  // instead of paging a human (orchestrator.ts's raise()) — it never reaches
+  // `visible` above (listDecisions already excludes anything resolved), so
+  // without this it's invisible everywhere except the raw Audit trail. Same
+  // shape as handledByPolicyToday, but kept a SEPARATE section below: "a
+  // standing rule fired" and "a manager exercised judgment" are different
+  // things worth telling apart, not one merged count.
+  const handledByManagerToday = queue.filter(
+    (q) => q.resolvedAt != null && q.resolvedAt >= startOfToday && q.resolution?.by?.startsWith("manager:"),
+  );
 
   const dismissHints = () => {
     localStorage.setItem(EMPTY_HINTS_KEY, "1");
@@ -1049,6 +1059,28 @@ export function DecisionInboxView({
               View the audit trail →
             </button>
           </p>
+
+          {handledByManagerToday.length > 0 && (
+            <details className="di-managed-section">
+              <summary className="di-section-rule di-section-rule-manager">
+                Handled by your managers · {handledByManagerToday.length} today
+              </summary>
+              <div className="di-cards">
+                {handledByManagerToday.map((it) => {
+                  const managerRunId = it.resolution!.by.slice("manager:".length);
+                  const managerRun = runs.find((r) => r.id === managerRunId);
+                  const managerLabel = managerRun ? runnerName(managerRun, fleet) : managerRunId;
+                  return (
+                    <button key={it.id} className="di-managed-row" onClick={() => onOpenTask(it.runId)}>
+                      <span className="di-managed-kind mono">{it.kind}</span>
+                      <span className="di-managed-title">{it.title}</span>
+                      <span className="di-managed-by mono">by {managerLabel}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </details>
+          )}
         </div>
         {wide ? (
           <div className="di-side">

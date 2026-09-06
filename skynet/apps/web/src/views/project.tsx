@@ -6,6 +6,7 @@ import * as api from "../lib/client";
 import { useEscapeLayer } from "../lib/escape-stack";
 import { Blocked, PrimaryButton } from "../components/empty";
 import { BakeoffPicker } from "../components/bakeoff-picker";
+import { ManagerPicker } from "../components/manager-picker";
 import {
   agentsForProject,
   computeUsageRollup,
@@ -360,10 +361,12 @@ function TaskCard({
     reassignTaskAgent,
     archiveTask,
     assignTask,
+    assignManager,
     startBakeoff,
     transitionTask,
     moveTask,
     dismissTaskLint,
+    modules,
   } = useStore();
   const confirm = useConfirm();
   const choice = useChoice();
@@ -426,6 +429,7 @@ function TaskCard({
   // fleet agent (startBakeoff resolves a model/credential template from one).
   const bakeoffProviders = providers.filter((p) => fleet.some((a) => a.provider === p.id));
   const [bakeoffOpen, setBakeoffOpen] = useState(false);
+  const [managerOpen, setManagerOpen] = useState(false);
   const dnd = useContext(BoardDnd);
   const dragging = dnd?.drag?.taskId === task.id;
   // Once a run exists, the eligibility ("any agent") is moot — surface WHO is
@@ -852,6 +856,28 @@ function TaskCard({
                 if (runs && runs.length > 0) {
                   window.dispatchEvent(new CustomEvent("skynet:open-bakeoff", { detail: { bakeoffId: runs[0]!.bakeoffId } }));
                 }
+              }}
+            />
+          )}
+          {(s === "backlog" || s === "todo") && (
+            <Blocked disabled={noFleet} reason={noFleet ? "No agents configured — add one in Fleet before starting." : undefined}>
+              <button
+                className="kb-move kb-manager"
+                disabled={noFleet}
+                title={noFleet ? undefined : "Start this task as a manager that decomposes it and delegates to worker agents it spawns."}
+                onClick={() => setManagerOpen(true)}
+              >
+                ⌂ Manager
+              </button>
+            </Blocked>
+          )}
+          {managerOpen && (
+            <ManagerPicker
+              modules={modules}
+              onCancel={() => setManagerOpen(false)}
+              onStart={async (area) => {
+                setManagerOpen(false);
+                await assignManager(pid, task.id, area);
               }}
             />
           )}

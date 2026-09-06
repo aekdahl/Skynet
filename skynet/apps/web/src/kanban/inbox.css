@@ -111,6 +111,24 @@
   margin: 0;
 }
 .di-section-rule-lime { color: var(--ak-machine); margin-top: var(--ak-sp-20); padding: var(--ak-sp-8) 0; }
+/* "Handled by your managers" — a distinct green from the policy-lime section
+   above it (same family Subway's worker-of labels use): different audience,
+   "a manager exercised judgment" vs. "a standing rule fired". */
+.di-managed-section { margin-top: var(--ak-sp-8); }
+.di-section-rule-manager { color: var(--ak-machine-deep); padding: var(--ak-sp-8) 0; cursor: pointer; list-style: none; }
+.di-section-rule-manager::-webkit-details-marker { display: none; }
+.di-section-rule-manager::before { content: "▸ "; }
+.di-managed-section[open] > .di-section-rule-manager::before { content: "▾ "; }
+.di-managed-row {
+  display: flex; align-items: center; gap: var(--ak-sp-8); width: 100%;
+  background: var(--ak-surface-1); border: 1px solid var(--ak-border-subtle);
+  border-radius: var(--ak-radius-row); padding: var(--ak-sp-8) var(--ak-sp-12);
+  font: inherit; text-align: left; cursor: pointer;
+}
+.di-managed-row:hover { border-color: var(--ak-border); }
+.di-managed-kind { font-size: 11px; color: var(--ak-machine-deep); text-transform: uppercase; letter-spacing: .03em; }
+.di-managed-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ak-text-primary); }
+.di-managed-by { font-size: 12px; color: var(--ak-text-muted); white-space: nowrap; }
 
 .di-group-toggle {
   display: flex; align-items: center; gap: var(--ak-sp-6);
