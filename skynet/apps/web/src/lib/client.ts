@@ -69,6 +69,26 @@ const TOKEN_KEY = "skynet_token";
 const token = () =>
   (typeof localStorage !== "undefined" && localStorage.getItem(TOKEN_KEY)) || "dev-cyberdyne";
 
+/** Chat → canvas handoff (hosted cold-click case, ROADMAP.md): pick up the
+ *  one-time session token the server's `GET /handoff/:token` route
+ *  (apps/server/src/auth/routes.ts) appended as `?st=…` after exchanging a
+ *  short-lived signed token for a real session, stash it exactly where a
+ *  normal login writes its own token, then scrub it from the visible URL —
+ *  the hash (the target route) is left untouched. A bookmark/refresh/
+ *  screenshot of the landed page should never carry a live session token.
+ *  Must run once at boot, BEFORE anything reads token() (main.tsx calls this
+ *  before the first render). No-op if `?st=` isn't present. */
+export function consumeHandoffToken(): void {
+  const st = new URLSearchParams(location.search).get("st");
+  if (!st) return;
+  try {
+    localStorage.setItem(TOKEN_KEY, st);
+  } catch {
+    /* private mode / storage disabled — falls through to a normal login */
+  }
+  history.replaceState(null, "", location.pathname + location.hash);
+}
+
 // The current session's principal, mirrored from `GET /api/auth/me` — a
 // human login carries no `scopes` (full authority) UNLESS it's a viewer
 // account (server: auth/operators.ts maps role "viewer" → scopes: ["observe"]

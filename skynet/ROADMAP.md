@@ -393,13 +393,21 @@ consensus runs just got unblocked), then remaining ease-of-use work, then the lo
   `Project.roadmapPath` so the Roadmap tab (and Steward's own grounding) can point at any repo-relative
   file, not just `ROADMAP.md`. **Remaining:** broader action coverage (fleet ops, credentials) +
   Telegram parity on the newer actions.
-- [~] **Chat → canvas handoff, zero cold start** — a reply can carry a deep link straight into the exact
+- [x] **Chat → canvas handoff, zero cold start** — a reply can carry a deep link straight into the exact
   web-app view (project/task pre-focused) instead of cramming it into a chat bubble. **Desktop half
   shipped:** a `skynet://` OS protocol handler (`app.setAsDefaultProtocolClient`), handling both macOS's
   `open-url` event and Windows/Linux's argv-based launch, translating onto the existing hash route with
-  no login wall since the app is already running locally as the single operator. **Hosted/GCP path (🏢
-  deferred, untouched):** still needs a short-lived signed-token exchange, since that's the one case
-  that actually needs to establish a session from a cold click.
+  no login wall since the app is already running locally as the single operator. **Hosted/GCP path
+  shipped:** a short-lived (24h, `SKYNET_HANDOFF_TTL_MS`), single-use, signed exchange token
+  (`auth/link-exchange.ts`) minted alongside a Telegram notification's link when `AUTH_REQUIRED` is on —
+  the security case a cold click on a hosted deploy genuinely needs, since receiving the message on the
+  owner's own configured Telegram is the same out-of-band proof `mfa.ts`'s OTP delivery already relies
+  on. `GET /handoff/:token` (a public, top-level route — same capability-URL pattern as `/p/<token>/`,
+  not `/api`-prefixed) consumes it, issues a real session, and 302s to `/?st=<token>#/<route>`; the SPA's
+  `consumeHandoffToken()` (called once at boot, before the first WS connect) stashes `?st=` into
+  `localStorage` — where the app's auth is actually keyed, not the httpOnly cookie the route also sets —
+  then strips it from the address bar. An `AUTH_REQUIRED=false` hosted deploy is unchanged (a plain hash
+  link, no session needed since anyone can already load it).
 - [~] **Operator ergonomics (P3 of [docs/ux-review.md](docs/ux-review.md)).** Landed: the **⌘K command
   palette** (fuzzy-navigate or approve the most recent pending gate), the **keyboard-first Inbox**
   (j/k/↵/a/r/m, a dismissible shortcut hint bar), **cost/usage roll-ups** (project header, per-runner
