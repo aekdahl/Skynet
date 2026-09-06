@@ -82,6 +82,17 @@ It must not reach the Skynet control-plane or the host broadly:
 - The iframe stays `sandbox`ed with a strict `frame-ancestors`/CSP (extends the
   posture the current `/preview` route already enforces).
 - Egress/network confinement rides the containerized runner (hosted, 🏢).
+- The **install/build step** (`.skynet/preview.json`'s `install`/`buildCmd`, or
+  the inferred lockfile command) runs BEFORE a human has approved anything, so
+  it gets stricter treatment than the dev/start process above: it's classified
+  by the same command-safety denylist an agent's own command gate is judged
+  against (a hard-denied command never spawns), its env defaults to an
+  ALLOWLIST rather than the server's own env minus a few known secrets, and
+  its OS write-sandbox is **mandatory**, not opt-in — see
+  `preview/worktree.ts`'s `runToCompletion`. The dev/start process itself
+  keeps the opt-in sandbox described above (it legitimately needs broader
+  write access than a one-shot install) but is classified the same way before
+  it spawns.
 
 ## The overwatch UX
 
@@ -133,6 +144,48 @@ The first working slice, web + desktop:
 Deferred within Phase 1 (fast-follows): dev-server HMR polish across more
 frameworks, the agent-assisted resolver's live call + write-back, and the
 per-run pre-merge "Preview this change" button.
+
+## Phase-2 v0 (this PR)
+
+The first working slice of `kind: "service"` — a full-stack app with a
+server/API that generally has no HMR of its own:
+
+- **Descriptor**: `.skynet/preview.json`'s `kind`, `build`, and `healthPath`
+  fields — declared back in Phase 1's descriptor shape but unread by the local
+  preview until now (`build`/`outputDir` were, and remain, also read by the
+  Fly deploy engine) — are now consumed by `ProjectPreviewManager`. `kind` is
+  explicit and descriptor-only: the package.json heuristic and the
+  agent-assisted resolver always propose `"web"`; only a human/agent-committed
+  `kind: "service"` opts a recipe in. `build` (when `kind: "service"`) runs
+  once before the recipe's `dev`/`start` command, and again on every
+  rebuild-restart below — via the same shared `runToCompletion` `ensureDeps`
+  already uses for install, so build output streams into the preview's log
+  ring buffer live. `healthPath` overrides the health-check probe path
+  (default `/`) for a service whose root route isn't a plain 200.
+- **Multi-process**: no new proxy/routing machinery. A service's `dev`/`start`
+  command is (as it already was) an arbitrary shell command — it can run
+  several processes itself (`concurrently "npm run api" "npm run web"`, a
+  Procfile-style wrapper, …); Skynet still health-checks and proxies exactly
+  ONE port through the same `/p/<token>/` proxy, unchanged.
+- **Auto-rebuild on merge**: `refresh()` (already invoked on every merge via
+  `completeMerged`) now arms a **debounced** rebuild-restart for `kind:
+  "service"` previews — a burst of merges within 1.5s collapses into one
+  rebuild, not one per merge. A "web" preview's refresh is unchanged (re-point
+  the worktree, rely on HMR). The rebuild reruns the declared `build` step (if
+  any) then restarts the process — landing back on `live`/`failed` exactly
+  like an initial start, so a build error shows in the logs drawer instead of
+  a stale server silently serving pre-merge code.
+- **Isolation**: unchanged from Phase 1 — the OS-level sandbox
+  (`wrapForSandbox`) wraps the service's process the same way it wraps a web
+  dev server. No container runtime was introduced; this repo has none, and
+  building one (image pipeline, isolation primitive, networking) is explicitly
+  out of scope for this slice. Treat "the containerized runner (v1)" language
+  below as future, hosted-side work.
+
+Deferred within Phase 2 (fast-follows): the agent-assisted resolver reasoning
+about `kind`/`build` (it only ever proposes a plain "web" dev command today),
+an ephemeral datastore for a service that needs one, and the actual
+containerized/hosted isolation.
 
 ---
 

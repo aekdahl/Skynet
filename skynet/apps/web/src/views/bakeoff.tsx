@@ -16,11 +16,13 @@ const providerLabel = (run: TaskRun): string => `${run.provider} · ${run.model}
 // correctly (read-only) after the fact — Task.bakeoffId, by contrast, IS
 // cleared on resolution, which is why the route carries the group id instead.
 export function BakeoffView({ bakeoffId, onBack, onOpenTask }: { bakeoffId: string; onBack: () => void; onOpenTask: (runId: string) => void }) {
-  const { runs, queue, tasks, resolveHitl } = useStore();
+  const { runs, queue, tasks, resolveHitl, requestBakeoffJudgment } = useStore();
   const confirm = useConfirm();
   const siblings = runs.filter((r) => r.bakeoffId === bakeoffId).sort((a, b) => a.startedAt - b.startedAt);
   const task = tasks.find((t) => t.bakeoffId === bakeoffId) ?? null;
   const resolved = siblings.length > 0 && !task; // every sibling ended up NOT owning the task → someone already won
+  const verdict = task?.bakeoffVerdict ?? null;
+  const recommended = verdict?.winnerRunId ? siblings.find((r) => r.id === verdict.winnerRunId) : undefined;
 
   if (siblings.length === 0) {
     return (
@@ -49,6 +51,8 @@ export function BakeoffView({ bakeoffId, onBack, onOpenTask }: { bakeoffId: stri
     await resolveHitl(hitl.id, "approve");
   };
 
+  const judgeNow = () => task && void requestBakeoffJudgment(task.projectId, task.id);
+
   return (
     <section className="queue">
       <div className="vw-head">
@@ -59,17 +63,37 @@ export function BakeoffView({ bakeoffId, onBack, onOpenTask }: { bakeoffId: stri
             ? "Resolved — a winner was already picked. Shown here for reference."
             : `${siblings.length} providers, same task, same base commit. Review each diff and pick a winner — the rest retire automatically.`}
         </p>
+        {!resolved && verdict && (
+          <p className="bakeoff-verdict">
+            {recommended ? (
+              <>
+                <strong>Agent recommends {providerLabel(recommended)}</strong> — {verdict.reason}. A human still has to pick it below.
+              </>
+            ) : (
+              <>
+                <strong>Agent flagged this for you</strong> — {verdict.reason}
+              </>
+            )}
+          </p>
+        )}
+        {!resolved && !verdict && (
+          <button className="btn btn-ghost" onClick={judgeNow}>
+            Judge now →
+          </button>
+        )}
       </div>
       <div className="bakeoff-grid">
         {siblings.map((run) => {
           const hitl = openDiffFor(run.id);
           const isWinner = task ? task.runId === run.id : run.status !== "done" || !!run.mergedAt;
+          const isRecommended = !resolved && recommended?.id === run.id;
           return (
-            <div key={run.id} className="bakeoff-col">
+            <div key={run.id} className={`bakeoff-col${isRecommended ? " bakeoff-col-recommended" : ""}`}>
               <div className="bakeoff-col-head">
                 <button className="bakeoff-col-title" onClick={() => onOpenTask(run.id)} title="Open this run">
                   {providerLabel(run)}
                 </button>
+                {isRecommended && <span className="bakeoff-col-recommend-badge" title="The agent judge picked this one">★ recommended</span>}
                 <span className="bakeoff-col-status mono">{run.status}</span>
               </div>
               {hitl?.diff ? (

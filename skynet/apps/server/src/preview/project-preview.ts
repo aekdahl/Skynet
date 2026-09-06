@@ -29,6 +29,7 @@ import { dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { wrapForSandbox } from "@skynet/runner-sdk/sandbox";
 import { ASSISTANT_MODEL, oneShotRepoAssistant } from "@skynet/runner-sdk/claude";
+import { assertApprovable, scrubbedEnv } from "../command-safety.js";
 import { secretService } from "../secrets/index.js";
 import { publicOrigin } from "./public-origin.js";
 import {
@@ -69,6 +70,23 @@ export function previewEnv(extra: Record<string, string> = {}): NodeJS.ProcessEn
   delete env.npm_config_omit; // "--omit=dev"
   for (const key of PREVIEW_ENV_DENYLIST) delete env[key];
   return env;
+}
+
+/**
+ * Environment for an INSTALL or BUILD step specifically — command-safety.ts's
+ * `scrubbedEnv()` (an ALLOWLIST) plus NODE_ENV=development, rather than
+ * `previewEnv()`'s denylist over the full server env. Both commands come
+ * straight from `.skynet/preview.json` on the unreviewed branch being
+ * previewed/deployed (see `runToCompletion`'s hardening in preview/worktree.ts)
+ * and have no legitimate need for operator-set custom vars the way the
+ * long-lived dev/start process might — so they get the strictest baseline
+ * available instead of "whatever the server process happens to hold, minus a
+ * known list of secrets." Exported so the Fly deploy engine (fly/deploy.ts),
+ * which runs the SAME class of commands for a static-site deploy, shares this
+ * exact baseline instead of re-deriving its own.
+ */
+export function previewInstallEnv(): NodeJS.ProcessEnv {
+  return { ...scrubbedEnv(), NODE_ENV: "development" };
 }
 
 /** `"npm run <script>"` → `<script>`, else null. Used to look up the actual
@@ -176,6 +194,14 @@ export type PreviewStatus = "idle" | "starting" | "live" | "failed" | "stopped";
 //               so you see everything in flight in a single preview.
 export type PreviewSource = "main" | "merged" | "latest";
 
+// Phase 2: "web" (default — Phase 1 behavior, unchanged) vs "service" — a
+// full-stack app with a server/API that generally has no HMR of its own, so a
+// merge needs an actual restart (optionally preceded by a rebuild) instead of
+// relying on a dev-server file-watcher. Only an EXPLICIT `.skynet/preview.json`
+// descriptor can opt a recipe into "service" — the package.json heuristic and
+// the agent-assist path always resolve "web". See docs/live-preview.md.
+export type PreviewKind = "web" | "service";
+
 export interface PreviewRecipe {
   /** The command line to start the server, e.g. "npm run dev". */
   cmd: string;
@@ -188,6 +214,15 @@ export interface PreviewRecipe {
    *  isn't a wrapped npm script (a direct command, or the script couldn't be
    *  looked up). */
   wrappedScript?: string;
+  kind: PreviewKind;
+  /** A build step to run before `cmd`, and again before every rebuild-restart
+   *  on merge. Only ever set when `kind === "service"` — a "web" recipe never
+   *  runs this even if the descriptor happens to declare one (existing repos
+   *  already set `build` for the Fly deploy engine; see resolveRecipeStatic). */
+  build?: string;
+  /** Health-check path, default "/". Lets a service whose root route isn't a
+   *  200 (an API with no "/" handler, auth-gated root, …) still be probed. */
+  healthPath?: string;
 }
 
 export interface PreviewState {
@@ -202,6 +237,9 @@ export interface PreviewState {
   // "merged" as a placeholder). `combined` is populated for `latest`.
   source: PreviewSource;
   combined: { total: number; included: number; skipped: number } | null;
+  // "service" restarts (optionally rebuilding) on every merge instead of
+  // relying on HMR — see docs/live-preview.md's Phase 2 section.
+  kind: PreviewKind;
 }
 
 interface Live {
@@ -238,6 +276,25 @@ interface Live {
   // can't reach the leaf process) the server serves at base `/`, and the proxy
   // must strip the prefix + re-prefix the HTML. See preview-proxy.ts.
   baseInjected?: boolean;
+  // Phase 2 (service kind) — see PreviewRecipe/PreviewKind.
+  kind?: PreviewKind;
+  buildCmd?: string;
+  healthPath?: string;
+  // Pending debounced rebuild-restart, armed by refresh() on merge. Cleared by
+  // killChild() so a Stop/manual Restart during the debounce window can't fire
+  // a rebuild against a torn-down/replaced Live.
+  rebuildTimer?: ReturnType<typeof setTimeout>;
+  // True while performRebuildRestart is actually running (build+respawn+health
+  // check — can take several seconds, easily longer than the debounce window
+  // itself). Guards against a SECOND merge's debounce timer firing a second,
+  // OVERLAPPING rebuild-restart on the same Live (two concurrent kills/spawns
+  // racing the same child/port) — see armRebuild/performRebuildRestart.
+  rebuilding?: boolean;
+  // Set when a merge's debounce timer fires WHILE rebuilding is already true —
+  // performRebuildRestart re-arms one more (debounced) rebuild after the
+  // in-flight one finishes, so a merge that arrives mid-rebuild is never
+  // silently dropped.
+  rebuildPending?: boolean;
 }
 
 /** What to start — the parameterization shared by project + run previews. */
@@ -274,6 +331,11 @@ const EMBEDDED_INSTALL_RE =
 const LOG_CAP = 200;
 const IDLE_MS = 15 * 60 * 1000; // auto-stop a preview no one is watching
 const HEALTH_TIMEOUT_MS = 45_000;
+// Phase 2 (service kind): a merge arms a rebuild-restart after this quiet
+// window, so a burst of merges collapses into one rebuild instead of one per
+// merge. BUILD_TIMEOUT_MS mirrors ensureDeps's install budget.
+const REBUILD_DEBOUNCE_MS = 1_500;
+const BUILD_TIMEOUT_MS = 5 * 60_000;
 // Window during which the health check accepts ONLY the dev-client / injected
 // port — long enough for a `concurrently` client to print its "Local:" line
 // after its API sibling, so the API's port doesn't win the boot race.
@@ -390,7 +452,7 @@ export class ProjectPreviewManager {
   /** A serializable snapshot for the API/UI. */
   state(key: string): PreviewState {
     const p = this.previews.get(key);
-    if (!p) return { status: "idle", url: null, port: null, recipe: null, error: null, logs: [], startedAt: null, source: "merged", combined: null };
+    if (!p) return { status: "idle", url: null, port: null, recipe: null, error: null, logs: [], startedAt: null, source: "merged", combined: null, kind: "web" };
     p.lastTouched = Date.now(); // polling status counts as "watching" → defers idle stop
     // Public origin known (hosted) → hand back the proxied `/p/<token>/` URL so
     // the preview is reachable from a phone; else the loopback URL (desktop, same
@@ -411,6 +473,7 @@ export class ProjectPreviewManager {
       startedAt: p.startedAt,
       source: p.source,
       combined: p.combined ?? null,
+      kind: p.kind ?? "web",
     };
   }
 
@@ -456,8 +519,12 @@ export class ProjectPreviewManager {
   }
 
   /** Read `.skynet/preview.json` if present (tolerant of a malformed file). */
-  private readDescriptor(dir: string): { dev?: string; start?: string; port?: number; install?: string } | null {
-    return readDescriptorRaw(dir) as { dev?: string; start?: string; port?: number; install?: string } | null;
+  private readDescriptor(
+    dir: string,
+  ): { dev?: string; start?: string; port?: number; install?: string; kind?: string; build?: string; healthPath?: string } | null {
+    return readDescriptorRaw(dir) as
+      | { dev?: string; start?: string; port?: number; install?: string; kind?: string; build?: string; healthPath?: string }
+      | null;
   }
 
   /** package.json's `scripts[name]` body, if the file and script both exist. */
@@ -484,7 +551,21 @@ export class ProjectPreviewManager {
         // path below, so Vite detection works here as well.
         const scriptName = npmRunScriptName(cmd);
         const wrappedScript = scriptName ? this.readPackageScript(dir, scriptName) : undefined;
-        return { cmd, port: d.port ?? port, source: "descriptor", ...(wrappedScript ? { wrappedScript } : {}) };
+        // "service" is opt-in and explicit — only an actual `kind: "service"`
+        // in the descriptor turns it on. `build` is attached ONLY for a
+        // service: existing descriptors already set `build` for the Fly
+        // deploy engine (fly/descriptor.ts reads the same field) and must not
+        // have that suddenly run during an ordinary "web" dev-server preview.
+        const kind: PreviewKind = d.kind === "service" ? "service" : "web";
+        return {
+          cmd,
+          port: d.port ?? port,
+          source: "descriptor",
+          kind,
+          ...(kind === "service" && d.build ? { build: d.build } : {}),
+          ...(d.healthPath ? { healthPath: d.healthPath } : {}),
+          ...(wrappedScript ? { wrappedScript } : {}),
+        };
       }
     }
     const pkgPath = join(dir, "package.json");
@@ -493,7 +574,7 @@ export class ProjectPreviewManager {
         const pkg = JSON.parse(readFileSync(pkgPath, "utf8")) as { scripts?: Record<string, string> };
         const scripts = pkg.scripts ?? {};
         const script = ["dev", "start", "serve", "preview"].find((s) => scripts[s]);
-        if (script) return { cmd: `npm run ${script}`, port, source: "heuristic", wrappedScript: scripts[script] };
+        if (script) return { cmd: `npm run ${script}`, port, source: "heuristic", kind: "web", wrappedScript: scripts[script] };
       } catch {
         /* malformed package.json */
       }
@@ -517,7 +598,7 @@ export class ProjectPreviewManager {
     log?: (line: string) => void,
   ): Promise<PreviewRecipe | null> {
     const cached = this.agentRecipe.get(recipeKey);
-    if (cached) return { cmd: cached.cmd, port, source: "agent" };
+    if (cached) return { cmd: cached.cmd, port, source: "agent", kind: "web" };
     const stat = this.resolveRecipeStatic(dir, port);
     if (stat) return stat;
     if (!workspaceId) return null; // no key context → can't ask the agent
@@ -532,7 +613,10 @@ export class ProjectPreviewManager {
     // for project previews (persistTo set) — a pre-merge run preview must not
     // write into the shared repo.
     if (persistTo) await this.persistRecipe(persistTo, cmd, log);
-    return { cmd, port, source: "agent" };
+    // The agent-assist path only ever proposes a "web" dev-server command
+    // today (see askAgentForRecipe's prompt) — reasoning about a build step /
+    // service kind is a fast-follow, not this slice (see docs/live-preview.md).
+    return { cmd, port, source: "agent", kind: "web" };
   }
 
   /** Write the agent's proposal to `<repo>/.skynet/preview.json` (if absent) so
@@ -604,10 +688,12 @@ export class ProjectPreviewManager {
     }
   }
 
-  /** Single HTTP probe: true if something answers on `port`, false otherwise. */
-  private probe(port: number, timeoutMs = 1200): Promise<boolean> {
+  /** Single HTTP probe: true if something answers on `port`, false otherwise.
+   *  `path` lets a service whose root route isn't a 200 (an API with no "/"
+   *  handler, auth-gated root, …) still be probed — see PreviewRecipe.healthPath. */
+  private probe(port: number, timeoutMs = 1200, path = "/"): Promise<boolean> {
     return new Promise((res) => {
-      const req = httpGet({ host: "127.0.0.1", port, path: "/", timeout: timeoutMs }, (r) => {
+      const req = httpGet({ host: "127.0.0.1", port, path, timeout: timeoutMs }, (r) => {
         r.resume();
         res(true);
       });
@@ -635,7 +721,7 @@ export class ProjectPreviewManager {
       ].filter((x): x is number => typeof x === "number");
       for (const port of new Set(candidates)) {
         if (!alive()) return null;
-        if (await this.probe(port)) return port;
+        if (await this.probe(port, undefined, p.healthPath)) return port;
       }
       await new Promise((r) => setTimeout(r, 400));
     }
@@ -689,10 +775,10 @@ export class ProjectPreviewManager {
    *  clones with none anywhere fall back to a real install. No-op once present
    *  (a warm reused worktree, or a prior symlink). */
   private async ensureDeps(p: Live, gitRepo: string): Promise<void> {
-    // A live preview is a DEV run — force NODE_ENV=development for the install
-    // too (see previewEnv's header comment: otherwise devDependencies the dev
-    // script needs get skipped).
-    return sharedEnsureDeps(p.dir, gitRepo, (line) => this.log(p, line), previewEnv());
+    // previewInstallEnv(), not previewEnv() — the install command comes
+    // straight from the unreviewed branch (see its own doc comment); it
+    // still needs NODE_ENV=development so devDependencies aren't skipped.
+    return sharedEnsureDeps(p.dir, gitRepo, (line) => this.log(p, line), previewInstallEnv());
   }
 
   /** A fresh detached worktree has no `.env`, yet many dev scripts assume one —
@@ -789,17 +875,24 @@ export class ProjectPreviewManager {
     );
   }
 
-  /** Run a setup command (e.g. install) to completion, streaming to the logs.
-   *  Not sandboxed — install needs the registry; the untrusted app runtime (the
-   *  dev server) is the wrapped one. Rejects on non-zero exit or timeout. */
+  /** Run an install-class command (re-install, an embedded sub-package
+   *  install) to completion, streaming to the logs. previewInstallEnv(), not
+   *  previewEnv() — see that function's own doc comment. The mandatory
+   *  sandbox + command-safety deny-check live in the shared
+   *  runToCompletion (preview/worktree.ts), not here. Rejects on non-zero
+   *  exit or timeout. */
   private runToCompletion(cmd: string, cwd: string, p: Live, timeoutMs: number): Promise<void> {
-    return sharedRunToCompletion(cmd, cwd, (line) => this.log(p, line), timeoutMs, previewEnv());
+    return sharedRunToCompletion(cmd, cwd, (line) => this.log(p, line), timeoutMs, previewInstallEnv());
   }
 
-  /** Kill a preview's dev-server child + idle timer, WITHOUT removing its
-   *  worktree (so a restart keeps node_modules warm). Full teardown is stop(). */
+  /** Kill a preview's dev-server child + idle/rebuild timers, WITHOUT removing
+   *  its worktree (so a restart keeps node_modules warm). Full teardown is
+   *  stop(). Clearing rebuildTimer here means a Stop/manual Restart during a
+   *  pending debounced rebuild (see armRebuild) can't fire against a
+   *  torn-down/replaced Live. */
   private killChild(p: Live): Promise<void> {
     if (p.idleTimer) clearTimeout(p.idleTimer);
+    if (p.rebuildTimer) clearTimeout(p.rebuildTimer);
     return killTree(p.child);
   }
 
@@ -932,129 +1025,204 @@ export class ProjectPreviewManager {
       if (this.previews.get(spec.key) !== p) return this.state(spec.key); // superseded during install
       await this.ensureEnvFile(p); // a fresh worktree has no .env — many dev scripts crash without one
 
-      // When we'll serve this preview through the public `/p/<token>/` proxy
-      // (hosted — a public origin is known), a Vite dev server must emit its
-      // asset + HMR URLs under that base, else they 404 off the prefix (and
-      // anything Vite can't statically rewrite to a literal — a worker's own
-      // runtime `import(variable)`, e.g. pdfjs-dist's fake-worker fallback —
-      // ends up unprefixed no matter how good preview-proxy.ts's regexes get;
-      // base-mode is the only fix that actually covers those). Inject
-      // `--base=/p/<token>/` for a Vite recipe that doesn't already set one.
-      // A recipe for a nested monorepo can embed its OWN install step for a
-      // sub-package ensureDeps()'s root-level symlink/install never reaches
-      // (e.g. `cd apps/web && pnpm install && pnpm dev`) — unlike the root
-      // install, nothing skips it once it's already warm, so it reran on
-      // every single start/restart. Strip it when it's provably a no-op —
-      // BEFORE base-injection, so the flag lands on the command that's
-      // actually going to run, not the pre-reconciled one.
-      const reconciledCmd = this.reconcileEmbeddedInstalls(p, recipe.cmd);
-      // `cmd` itself is almost always `npm run dev` (the heuristic path,
-      // resolveRecipeStatic) — the literal word "vite" never appears there,
-      // only inside the wrapped script body — so `injectViteBase` detects
-      // Vite off `recipe.wrappedScript` when this is an `npm run` wrapper.
-      // Detection still reads the original `recipe` (reconciliation only
-      // touches an embedded install prefix, never whether this IS Vite);
-      // only the base string it injects into is the reconciled command.
-      const { cmd: cmdWithBase, injected } = injectViteBase(
-        { ...recipe, cmd: reconciledCmd },
-        p.token,
-        Boolean(publicOrigin()),
-      );
-      if (injected) {
-        p.baseInjected = true;
-        this.log(p, `serving behind Skynet's proxy — added --base=/p/${p.token}/ for Vite`);
-      }
-
-      // `ensureDeps`'s node_modules symlink resolves outside this worktree,
-      // past Vite's fs.allow boundary — so any /@fs/ reference into it (a
-      // worker, wasm, or an import.meta.url-resolved asset; pdfjs-dist's
-      // pdf.worker is the case that surfaced this) 403s, independent of the
-      // base-mode fix above and in desktop/loopback mode too. See
-      // `injectViteFsAllow`'s own comment for why nesting the worktree
-      // doesn't help and a generated config does.
-      let nmSymlinked = false;
-      try {
-        nmSymlinked = lstatSync(join(p.dir, "node_modules")).isSymbolicLink();
-      } catch {
-        /* no node_modules yet, or not a link — nothing to extend */
-      }
-      const fsAllowConfigPath = join(p.dir, ".skynet-preview.vite.config.mjs");
-      const { cmd, injected: fsAllowInjected } = injectViteFsAllow(recipe, cmdWithBase, fsAllowConfigPath, nmSymlinked);
-      if (fsAllowInjected) {
-        await writeFile(fsAllowConfigPath, viteFsAllowConfigSource([spec.gitRepo]));
-        this.log(p, "extended Vite's fs.allow so node_modules symlinked from the checkout stays servable");
-      }
-      this.log(p, `▸ ${cmd}  (PORT=${recipe.port}, source: ${recipe.source})`);
-
-      // Spawn via a shell so "npm run dev" etc. work; wrap for the opt-in OS
-      // sandbox (no-op unless SKYNET_RUNNER_SANDBOX). PORT is injected two ways
-      // (env + common Vite/CRA/Next var) so most dev servers pick it up.
-      const wrapped = wrapForSandbox("/bin/sh", ["-c", cmd], { cwd: p.dir });
-      if (wrapped.note) this.log(p, wrapped.note);
-      const child = spawn(wrapped.bin, wrapped.args, {
-        cwd: p.dir,
-        env: previewEnv({ PORT: String(recipe.port), VITE_PORT: String(recipe.port), BROWSER: "none" }),
-        // Detached → the child leads its own process GROUP, so killChild can
-        // signal the whole tree (sh → concurrently → node + vite). Without this,
-        // killing the shell orphans the dev servers and they keep holding their
-        // ports — the next start then dies with EADDRINUSE (server crashes → the
-        // preview shows a blank page with no working backend).
-        detached: true,
-      });
-      p.child = child;
-      const onOutput = (b: Buffer) => {
-        const s = b.toString();
-        this.log(p, s);
-        this.noteDetectedPorts(p, s);
-      };
-      child.stdout?.on("data", onOutput);
-      child.stderr?.on("data", onOutput);
-      // Finalize a failure on "close" (not "exit"): it fires AFTER stdout/stderr
-      // have drained, so the captured logs — and thus the surfaced reason — are
-      // complete. `closed` also lets the health wait bail the instant it dies.
-      let closed = false;
-      child.on("close", (code) => {
-        closed = true;
-        if (this.previews.get(spec.key) !== p) return; // superseded
-        if (p.status !== "stopped") {
+      // Phase 2 (service kind): a "service" recipe restarts (not HMR-reliant)
+      // on every merge — see refresh()/armRebuild() below — and may declare a
+      // build step to run before `cmd`. Stash both on the Live so the rebuild
+      // path (performRebuildRestart) doesn't need the recipe re-resolved.
+      p.kind = recipe.kind;
+      p.buildCmd = recipe.kind === "service" ? recipe.build : undefined;
+      p.healthPath = recipe.healthPath;
+      if (p.buildCmd) {
+        this.log(p, `▸ building — ${p.buildCmd}`);
+        try {
+          // previewInstallEnv(), not previewEnv() — this build command comes
+          // from the same unreviewed `.skynet/preview.json` as the install
+          // step (see that function's own doc comment); same untrusted class.
+          await sharedRunToCompletion(p.buildCmd, p.dir, (l) => this.log(p, l), BUILD_TIMEOUT_MS, previewInstallEnv());
+        } catch (err) {
+          if (this.previews.get(spec.key) !== p) return this.state(spec.key); // superseded during build
           p.status = "failed";
-          // Include the output tail so the operator sees WHY it exited, not just
-          // an opaque code (this is the message the Telegram/UI failure shows).
-          p.error = p.error ?? previewExitReason(code, p.logs);
+          p.error = `build failed: ${(err as Error).message}`;
+          return this.state(spec.key);
         }
-      });
-      child.on("error", (err) => {
-        p.status = "failed";
-        p.error = err.message;
-      });
-
-      // Health-check the port the app ACTUALLY listens on, not just the one we
-      // injected: dev servers routinely ignore `PORT` (Vite always does; a
-      // `concurrently` script hardcodes its own), announcing the real port on
-      // stdout instead. waitForAppPort races the injected port against the ports
-      // parsed from output (preferring a "Local:"-style dev-client URL) and
-      // returns whichever answers first. Bails the moment the child dies.
-      const live = await this.waitForAppPort(
-        p,
-        recipe.port,
-        Date.now() + HEALTH_TIMEOUT_MS,
-        () => this.previews.get(spec.key) === p && !closed && p.status === "starting",
-      );
-      if (this.previews.get(spec.key) !== p) return this.state(spec.key); // superseded mid-wait
-      if (live && p.status === "starting") {
-        if (live !== recipe.port) this.log(p, `detected dev server on port ${live} (injected PORT=${recipe.port} not honored) — previewing that`);
-        p.port = live; // the URL + /p/<token>/ proxy target follow the real port
-        p.status = "live";
-        this.armIdle(spec.key, p);
-      } else if (p.status === "starting") {
-        p.status = "failed";
-        p.error = p.error ?? `the app didn't start listening within ${HEALTH_TIMEOUT_MS / 1000}s (tried port ${recipe.port}${p.detectedPorts?.length ? ` + detected ${p.detectedPorts.join(", ")}` : ""})${previewLogTail(p.logs)}`;
+        if (this.previews.get(spec.key) !== p) return this.state(spec.key); // superseded during build
       }
+
+      await this.runRecipe(p);
     } catch (err) {
       p.status = "failed";
       p.error = (err as Error).message;
     }
     return this.state(spec.key);
+  }
+
+  /** Reconcile embedded installs → inject Vite base/fs-allow → spawn the
+   *  resolved recipe's command → wire stdout/stderr into the log ring buffer
+   *  → health-check the port it actually listens on, landing `p.status` on
+   *  `live` or `failed`. Operates purely off fields already set on `p`
+   *  (`p.recipe`, `p.token`, `p.dir`, `p.gitRepo`) — shared by the initial
+   *  start (startSpec, after the optional build step above) and a service's
+   *  rebuild-restart on merge (performRebuildRestart). `p.status` must already
+   *  be "starting" when called (both callers set it before invoking this). */
+  private async runRecipe(p: Live): Promise<void> {
+    const recipe = p.recipe!;
+    // When we'll serve this preview through the public `/p/<token>/` proxy
+    // (hosted — a public origin is known), a Vite dev server must emit its
+    // asset + HMR URLs under that base, else they 404 off the prefix (and
+    // anything Vite can't statically rewrite to a literal — a worker's own
+    // runtime `import(variable)`, e.g. pdfjs-dist's fake-worker fallback —
+    // ends up unprefixed no matter how good preview-proxy.ts's regexes get;
+    // base-mode is the only fix that actually covers those). Inject
+    // `--base=/p/<token>/` for a Vite recipe that doesn't already set one.
+    // A recipe for a nested monorepo can embed its OWN install step for a
+    // sub-package ensureDeps()'s root-level symlink/install never reaches
+    // (e.g. `cd apps/web && pnpm install && pnpm dev`) — unlike the root
+    // install, nothing skips it once it's already warm, so it reran on
+    // every single start/restart. Strip it when it's provably a no-op —
+    // BEFORE base-injection, so the flag lands on the command that's
+    // actually going to run, not the pre-reconciled one.
+    const reconciledCmd = this.reconcileEmbeddedInstalls(p, recipe.cmd);
+    // `cmd` itself is almost always `npm run dev` (the heuristic path,
+    // resolveRecipeStatic) — the literal word "vite" never appears there,
+    // only inside the wrapped script body — so `injectViteBase` detects
+    // Vite off `recipe.wrappedScript` when this is an `npm run` wrapper.
+    // Detection still reads the original `recipe` (reconciliation only
+    // touches an embedded install prefix, never whether this IS Vite);
+    // only the base string it injects into is the reconciled command.
+    const { cmd: cmdWithBase, injected } = injectViteBase(
+      { ...recipe, cmd: reconciledCmd },
+      p.token,
+      Boolean(publicOrigin()),
+    );
+    if (injected) {
+      p.baseInjected = true;
+      this.log(p, `serving behind Skynet's proxy — added --base=/p/${p.token}/ for Vite`);
+    }
+
+    // `ensureDeps`'s node_modules symlink resolves outside this worktree,
+    // past Vite's fs.allow boundary — so any /@fs/ reference into it (a
+    // worker, wasm, or an import.meta.url-resolved asset; pdfjs-dist's
+    // pdf.worker is the case that surfaced this) 403s, independent of the
+    // base-mode fix above and in desktop/loopback mode too. See
+    // `injectViteFsAllow`'s own comment for why nesting the worktree
+    // doesn't help and a generated config does.
+    let nmSymlinked = false;
+    try {
+      nmSymlinked = lstatSync(join(p.dir, "node_modules")).isSymbolicLink();
+    } catch {
+      /* no node_modules yet, or not a link — nothing to extend */
+    }
+    const fsAllowConfigPath = join(p.dir, ".skynet-preview.vite.config.mjs");
+    const { cmd, injected: fsAllowInjected } = injectViteFsAllow(recipe, cmdWithBase, fsAllowConfigPath, nmSymlinked);
+    if (fsAllowInjected) {
+      await writeFile(fsAllowConfigPath, viteFsAllowConfigSource([p.gitRepo]));
+      this.log(p, "extended Vite's fs.allow so node_modules symlinked from the checkout stays servable");
+    }
+    this.log(p, `▸ ${cmd}  (PORT=${recipe.port}, source: ${recipe.source})`);
+
+    // The dev/start command is agent-branch content too (.skynet/preview.json's
+    // `dev`, or a package.json script on the same unreviewed branch) — the same
+    // hard-DENY classification an agent's own command gate is judged against
+    // applies here before it ever spawns (initial start AND a service's
+    // rebuild-restart, since both call runRecipe). Only `deny` throws; an
+    // ordinary `npm run dev` classifies `gate`/`allow` and passes straight
+    // through — this catches a genuinely malicious override, not routine dev
+    // commands.
+    assertApprovable(cmd);
+
+    // Spawn via a shell so "npm run dev" etc. work; wrap for the opt-in OS
+    // sandbox (no-op unless SKYNET_RUNNER_SANDBOX — unlike the install/build
+    // step above, sandboxing here stays opt-in: a live dev server legitimately
+    // needs broader write access — build caches, generated files — than a
+    // one-shot install, so forcing it on risks breaking real dev setups).
+    // PORT is injected two ways (env + common Vite/CRA/Next var) so most dev
+    // servers pick it up.
+    const wrapped = wrapForSandbox("/bin/sh", ["-c", cmd], { cwd: p.dir });
+    if (wrapped.note) this.log(p, wrapped.note);
+    const child = spawn(wrapped.bin, wrapped.args, {
+      cwd: p.dir,
+      env: previewEnv({ PORT: String(recipe.port), VITE_PORT: String(recipe.port), BROWSER: "none" }),
+      // Detached → the child leads its own process GROUP, so killChild can
+      // signal the whole tree (sh → concurrently → node + vite). Without this,
+      // killing the shell orphans the dev servers and they keep holding their
+      // ports — the next start then dies with EADDRINUSE (server crashes → the
+      // preview shows a blank page with no working backend).
+      detached: true,
+    });
+    p.child = child;
+    // Reset port-sniffing state from any prior spawn under this same Live (a
+    // rebuild-restart reuses it) — a stale strong/detected port from the
+    // OLD process must never win the new health check.
+    p.strongPort = undefined;
+    p.detectedPorts = undefined;
+    const onOutput = (b: Buffer) => {
+      const s = b.toString();
+      this.log(p, s);
+      this.noteDetectedPorts(p, s);
+    };
+    child.stdout?.on("data", onOutput);
+    child.stderr?.on("data", onOutput);
+    // Finalize a failure on "close" (not "exit"): it fires AFTER stdout/stderr
+    // have drained, so the captured logs — and thus the surfaced reason — are
+    // complete. `closed` also lets the health wait bail the instant it dies.
+    let closed = false;
+    child.on("close", (code) => {
+      closed = true;
+      if (this.previews.get(p.key) !== p) return; // superseded
+      // A "service" rebuild-restart (performRebuildRestart) spawns a SECOND
+      // (or later) child onto the SAME Live — unlike every other path, which
+      // only ever spawns once per Live. `close` can fire slightly AFTER
+      // killTree's "exit"-based promise already resolved (it waits for
+      // stdout/stderr to drain too), which can be after the new attempt has
+      // already moved `p.status` off "stopped" — so a status check alone
+      // isn't enough to tell "this is the OLD child we deliberately killed"
+      // from "the CURRENT child just died". Compare identity instead: only a
+      // still-current child's own close can fail the preview.
+      if (p.child !== child) return; // a stale handler from a since-replaced child
+      if (p.status !== "stopped") {
+        p.status = "failed";
+        // Include the output tail so the operator sees WHY it exited, not just
+        // an opaque code (this is the message the Telegram/UI failure shows).
+        p.error = p.error ?? previewExitReason(code, p.logs);
+      }
+    });
+    child.on("error", (err) => {
+      if (p.child !== child) return; // stale handler from a since-replaced child — see "close" above
+      p.status = "failed";
+      p.error = err.message;
+    });
+
+    // Health-check the port the app ACTUALLY listens on, not just the one we
+    // injected: dev servers routinely ignore `PORT` (Vite always does; a
+    // `concurrently` script hardcodes its own), announcing the real port on
+    // stdout instead. waitForAppPort races the injected port against the ports
+    // parsed from output (preferring a "Local:"-style dev-client URL) and
+    // returns whichever answers first. Bails the moment the child dies.
+    const live = await this.waitForAppPort(
+      p,
+      recipe.port,
+      Date.now() + HEALTH_TIMEOUT_MS,
+      () => this.previews.get(p.key) === p && !closed && p.status === "starting",
+    );
+    if (this.previews.get(p.key) !== p) return; // superseded mid-wait
+    if (live && p.status === "starting") {
+      if (live !== recipe.port) this.log(p, `detected dev server on port ${live} (injected PORT=${recipe.port} not honored) — previewing that`);
+      p.port = live; // the URL + /p/<token>/ proxy target follow the real port
+      p.status = "live";
+      this.armIdle(p.key, p);
+    } else if (p.status === "starting") {
+      p.status = "failed";
+      // `as number[] | undefined`: TS's control-flow narrowing tracks the
+      // `p.detectedPorts = undefined` reset above as the LAST assignment in
+      // this function body and locks the type to `undefined` here, even
+      // though `noteDetectedPorts` (invoked from the `onOutput` closure
+      // registered on the child's stdout/stderr, and from concurrent spawns
+      // under other keys) mutates it in between — it can't see through a
+      // closure that's registered, not called, in the linear flow. The cast
+      // just restates the field's real declared type; no behavior change.
+      const detected = p.detectedPorts as number[] | undefined;
+      p.error = p.error ?? `the app didn't start listening within ${HEALTH_TIMEOUT_MS / 1000}s (tried port ${recipe.port}${detected?.length ? ` + detected ${detected.join(", ")}` : ""})${previewLogTail(p.logs)}`;
+    }
   }
 
   /** Re-point the worktree at a moving branch tip (called on merge for PROJECT
@@ -1074,10 +1242,94 @@ export class ProjectPreviewManager {
       if (p.source === "latest") await this.combineLatest(p);
       this.log(p, p.source === "latest" ? "↻ refreshed — recombined latest" : `↻ refreshed to ${p.source === "main" ? "base" : "integration"} branch tip`);
       const after = (await this.git(p.dir, "rev-parse", "HEAD").catch(() => ({ stdout: "" }))).stdout.trim();
-      if (before && after && before !== after) await this.reconcileDepsOnRefresh(p, before, after);
+      if (before && after && before !== after) {
+        await this.reconcileDepsOnRefresh(p, before, after);
+        // "service": no HMR to rely on — a merge needs an actual restart
+        // (optionally preceded by a rebuild) to serve the new code. "web"
+        // previews keep relying on the dev server's own file-watcher, unchanged.
+        if (p.kind === "service") this.armRebuild(p);
+      }
     }
     p.lastTouched = Date.now();
     return this.state(key);
+  }
+
+  /** Arm (or re-arm) a debounced rebuild-restart for a "service" preview,
+   *  called from refresh() on merge. Debounced so a burst of merges landing
+   *  within REBUILD_DEBOUNCE_MS collapses into ONE rebuild, not one per merge
+   *  (per docs/live-preview.md: "a debounced rebuild + soft iframe reload on
+   *  merge"). Cleared by killChild() (Stop/manual Restart during the window). */
+  private armRebuild(p: Live): void {
+    if (p.rebuildTimer) clearTimeout(p.rebuildTimer);
+    p.rebuildTimer = setTimeout(() => {
+      p.rebuildTimer = undefined;
+      // A rebuild-restart (build+respawn+health check) can easily take longer
+      // than the debounce window itself — if one's already running, don't
+      // start a SECOND, overlapping one (two concurrent kills/spawns racing
+      // the same child/port); just note a merge arrived and let
+      // performRebuildRestart's `finally` re-arm one more when it's done.
+      if (p.rebuilding) {
+        p.rebuildPending = true;
+        return;
+      }
+      void this.performRebuildRestart(p);
+    }, REBUILD_DEBOUNCE_MS);
+  }
+
+  /** Rebuild (if the recipe declared a build step) and restart a "service"
+   *  preview's process against the worktree refresh() already re-pointed —
+   *  landing back on `live`/`failed` exactly like an initial start (reuses
+   *  runRecipe). The worktree/token/port allocation are untouched; only the
+   *  child process and (optionally) its build artifacts are refreshed. Never
+   *  runs two of itself concurrently on the same Live — see `rebuilding`/
+   *  `rebuildPending` on Live and armRebuild's guard above. */
+  private async performRebuildRestart(p: Live): Promise<void> {
+    if (this.previews.get(p.key) !== p || p.status === "stopped") return; // superseded/torn down
+    p.rebuilding = true;
+    try {
+      this.log(p, p.buildCmd ? "↻ rebuilding — merged changes landed" : "↻ restarting — merged changes landed");
+      // Mark "stopped" BEFORE killing the old child — same reason startSpec's
+      // soft-replace and stop() both do this: the old child's own "close"
+      // handler (from the runRecipe() call that spawned it) checks `p.status
+      // !== "stopped"` to decide whether to mark the preview "failed"; without
+      // this, killing it while status is (about to be) "starting" would race
+      // that handler into stomping the new attempt with a spurious failure.
+      p.status = "stopped";
+      await this.killChild(p); // kills the OLD child only; killChild also re-clears rebuildTimer (harmless, already consumed)
+      if (this.previews.get(p.key) !== p) return; // superseded while the old child was exiting
+      // killChild only awaits the OLD child's "exit" (killTree), which can fire
+      // BEFORE its "close" (close waits for stdio to drain too — see runRecipe's
+      // own comment). Clear p.child now, not just after runRecipe respawns below,
+      // so a late "close" from the old child — which can land during the build
+      // step's await, well before a NEW child exists to reassign it — is
+      // unambiguously stale by the `p.child !== child` identity check either way.
+      p.child = undefined;
+      p.status = "starting";
+      if (p.buildCmd) {
+        try {
+          // previewInstallEnv(), not previewEnv() — same untrusted class as
+          // the initial build step in startSpec (see previewInstallEnv's doc
+          // comment): this re-runs the SAME `.skynet/preview.json` build
+          // command on every merge, still unreviewed content each time.
+          await sharedRunToCompletion(p.buildCmd, p.dir, (l) => this.log(p, l), BUILD_TIMEOUT_MS, previewInstallEnv());
+        } catch (err) {
+          if (this.previews.get(p.key) !== p) return; // superseded during build
+          p.status = "failed";
+          p.error = `rebuild failed: ${(err as Error).message}`;
+          return;
+        }
+        if (this.previews.get(p.key) !== p) return; // superseded during build
+      }
+      await this.runRecipe(p);
+    } finally {
+      p.rebuilding = false;
+      // A merge's debounce timer fired while we were mid-rebuild (see
+      // armRebuild) — run one more, debounced, so it isn't silently dropped.
+      if (p.rebuildPending) {
+        p.rebuildPending = false;
+        this.armRebuild(p);
+      }
+    }
   }
 
   /** After a refresh folds new merged work into the preview, reconcile deps if a
@@ -1178,7 +1430,7 @@ export class ProjectPreviewManager {
       await rm(p.dir, { recursive: true, force: true }).catch(() => undefined);
       this.previews.delete(key);
     }
-    return { status: "stopped", url: null, port: null, recipe: null, error: null, logs: [], startedAt: null, source: "merged", combined: null };
+    return { status: "stopped", url: null, port: null, recipe: null, error: null, logs: [], startedAt: null, source: "merged", combined: null, kind: "web" };
   }
 
   /** Auto-stop a preview nothing has polled in IDLE_MS (bounds resource use). */

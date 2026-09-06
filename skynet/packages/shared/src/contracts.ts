@@ -1021,6 +1021,23 @@ export const Task = z.object({
     })
     .nullable()
     .default(null),
+  // Comparative verdict left by an agent JUDGING a cross-vendor bake-off
+  // (see TaskRun.bakeoffId) — the N-way sibling of `reviewVerdict` above,
+  // same always-recorded invariant: set once a judge has compared the
+  // siblings, whether or not it could confidently pick one. Persists after
+  // `bakeoffId` is cleared on collapse, so the audit trail survives the
+  // group's resolution. `winnerRunId: null` means the judge flagged it for a
+  // human instead of guessing — the bake-off's diff HITLs stay open either way
+  // unless a human (or an autonomous project's auto-resolve) later approves one.
+  bakeoffVerdict: z
+    .object({
+      winnerRunId: z.string().nullable(),
+      reason: z.string(),
+      by: z.string(), // judge agent name (or id, as a fallback)
+      at: Timestamp,
+    })
+    .nullable()
+    .default(null),
   // Agent eligibility — who may take this task (see TaskAssignment). Defaults to
   // `unassigned`; a task must carry `any`/`agents` before it can leave `backlog`.
   assignment: TaskAssignment.default({ mode: "unassigned", agentIds: [] }),

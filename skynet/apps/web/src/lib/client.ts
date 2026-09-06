@@ -55,6 +55,7 @@ import {
   type ProposeRoadmapChangeRequest,
   type CommitRoadmapLineEditRequest,
   type RoadmapWorkspaceRollup,
+  type AutonomyTelemetryRollup,
   type MemoryFactSummary,
   type CreateMemoryFactRequest,
 } from "@skynet/shared";
@@ -623,6 +624,13 @@ export function fetchWorkspaceRoadmapRollup() {
   return req<RoadmapWorkspaceRollup>("GET", "/api/roadmap-rollup");
 }
 
+// ── autonomy telemetry dashboard (ZTMR / HITL volume / resolution time) ────
+// Scoped server-side the same way the roadmap roll-up is — no client filter.
+export function fetchAutonomyTelemetry(windowDays?: number) {
+  const qs = windowDays != null ? `?days=${windowDays}` : "";
+  return req<AutonomyTelemetryRollup>("GET", `/api/autonomy-telemetry${qs}`);
+}
+
 // ── roadmap proposal governance (TASK 30) ────────────────────────────────
 // A roadmap_edit HITL's plain approve/reject rides the existing resolveHitl
 // above (Operations.resolveHitl branches on kind itself) — no dedicated
@@ -1079,6 +1087,14 @@ export function assignTask(projectId: string, taskId: string) {
 export function startBakeoff(projectId: string, taskId: string, providerIds: ProviderId[]) {
   return req<TaskRun[]>("POST", `/api/projects/${projectId}/tasks/${taskId}/bakeoff`, { providerIds });
 }
+/** The bake-off sibling of `requestReview`: force the N-way comparison pass
+ *  now instead of waiting for a periodic tick to find every sibling finished
+ *  and an eligible judge idle at the same moment. Throws (ApiError 409) with
+ *  an honest, specific reason — not every sibling finished yet / already
+ *  judged / no judge free right now — for the caller to surface. */
+export function requestBakeoffJudgment(projectId: string, taskId: string) {
+  return req<unknown>("POST", `/api/projects/${projectId}/tasks/${taskId}/request-bakeoff-review`);
+}
 /** Answer triage's clarifying questions — appends the operator's own words to
  *  the task description and returns it to backlog for re-triage. */
 export function answerClarification(projectId: string, taskId: string, answer: string) {
@@ -1348,6 +1364,9 @@ export function refreshProjectContext(projectId: string) {
 
 // ─── Live preview (Phase-1: web/sites) ──────────────────────────────────────
 export type PreviewSource = "main" | "merged" | "latest";
+// "service" (Phase 2) rebuilds/restarts automatically when the fleet merges,
+// instead of relying on the dev server's own HMR — see docs/live-preview.md.
+export type PreviewKind = "web" | "service";
 export interface PreviewState {
   status: "idle" | "starting" | "live" | "failed" | "stopped";
   url: string | null;
@@ -1358,6 +1377,7 @@ export interface PreviewState {
   startedAt: number | null;
   source: PreviewSource;
   combined: { total: number; included: number; skipped: number } | null;
+  kind: PreviewKind;
 }
 export function previewStatus(projectId: string) {
   return req<PreviewState>("GET", `/api/projects/${projectId}/preview`);

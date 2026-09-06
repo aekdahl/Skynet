@@ -27,6 +27,7 @@ import { join, resolve } from "node:path";
 import type { FlyDeployStatus } from "@skynet/shared";
 import { flyctlBin } from "./fly-bin.js";
 import { generateFlyToml, generateStaticDockerfile, nextAppNameAttempt, resolveFlyConfig } from "./descriptor.js";
+import { previewInstallEnv } from "../preview/project-preview.js";
 import { ensureDeps, git, prepareWorktree, readDescriptorRaw, runToCompletion } from "../preview/worktree.js";
 
 const LOG_CAP = 400;
@@ -230,9 +231,12 @@ export class FlyDeployManager {
 
       if (cfg.buildCmd) {
         this.log(p, `static-site deploy — building "${cfg.outputDir}" locally, then shipping it`);
-        await ensureDeps(p.dir, opts.gitRepo, (l) => this.log(p, l));
+        // previewInstallEnv() (an allowlist), not previewEnv() — install/build
+        // here run the SAME unreviewed `.skynet/preview.json` content the live
+        // preview's own install/build steps do; see that function's doc comment.
+        await ensureDeps(p.dir, opts.gitRepo, (l) => this.log(p, l), previewInstallEnv());
         this.log(p, `▸ ${cfg.buildCmd}`);
-        await runToCompletion(cfg.buildCmd, p.dir, (l) => this.log(p, l), 5 * 60_000);
+        await runToCompletion(cfg.buildCmd, p.dir, (l) => this.log(p, l), 5 * 60_000, previewInstallEnv());
         if (!existsSync(join(p.dir, cfg.outputDir))) {
           throw new Error(`build succeeded but "${cfg.outputDir}" wasn't produced — check .skynet/preview.json's "outputDir"`);
         }
