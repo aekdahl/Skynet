@@ -467,8 +467,17 @@ uses the **user's own accounts** (their Sentry, GitHub, LLM key) — Skynet is t
 supervision layer, it doesn't host or resell those services. 3 items shipped (the enabling
 inbound-trigger primitive, Skynet as an MCP server, GitHub Issues two-way sync) — see
 [the archive](ROADMAP-ARCHIVE.md#v3--triggers--integrations).
-- [ ] **Tools via MCP:** an agent gets scoped tools (GitHub / Sentry / Slack MCP) to act back into the
-  user's services. A "Sentry agent" = a coding agent + Sentry MCP + a Sentry webhook trigger.
+- [x] **Tools via MCP:** an agent gets scoped tools (GitHub / Sentry / Slack MCP) to act back into the
+  user's services. Shipped: a generic, operator-configurable custom-MCP-server store (stdio command or
+  remote URL, either transport — Integrations → "Custom MCP servers"), a per-project opt-in grant, and
+  wiring into every stdio-capable runner vendor (Claude, Codex, Gemini, Cursor, Copilot — merged
+  alongside the existing browser-MCP mechanism; Hermes/Kimi/OpenCode have no MCP mechanism at all and
+  stay unsupported). Plus the concrete "Sentry agent" proof case: a Sentry webhook (issue created → task,
+  mirroring the GitHub issues webhook) bound per project by org/project slug. GitHub and Slack MCP
+  servers work the same way today (paste the command/URL) — GitHub already had its own inbound trigger
+  (the issues webhook, archived above); Slack has neither an MCP server nor a trigger wired by Skynet
+  itself yet, just the generic building block. See [docs/integrations-catalog.md](docs/integrations-catalog.md)
+  for the security tradeoff (a write-capable server acts outside Skynet's own git guardrails).
 - [ ] **Feedback-loop responders (route back to the *originating* run)** — a CI failure, a PR review comment, or a
   merge conflict re-engages the **same** agent that produced the branch (self-healing), not a fresh run.
   *(Agent Orchestrator-style; ties directly to the responders below.)*

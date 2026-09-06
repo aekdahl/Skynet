@@ -701,6 +701,18 @@ export const Project = z.object({
   // MCP token may only create runners with these keys. EMPTY = every key in the
   // workspace (the default — unchanged behavior); a non-empty list confines it.
   enabledRunnerCredentialIds: z.array(z.string()).default([]),
+  // Which custom MCP servers (see McpServerMeta) this project's agents get, by
+  // id. Empty = none (default) — unlike enabledRunnerCredentialIds, empty here
+  // is NOT "everything": an MCP tool is an explicit grant (it can act on the
+  // operator's own Sentry/GitHub/Slack), never an ambient default a new
+  // project inherits silently.
+  mcpServerIds: z.array(z.string()).default([]),
+  // Sentry project binding for the inbound webhook trigger (sentry/webhook.ts)
+  // — new/regressed issues on this Sentry project become a Skynet task. null =
+  // this project doesn't receive Sentry-issue tasks; being non-null IS the
+  // opt-in (no separate boolean, same effect as syncSourceStatus below but
+  // expressed as "bound or not").
+  sentryProject: z.object({ org: z.string(), project: z.string() }).nullable().default(null),
   // Opt-in: write task status changes back to their imported source of truth
   // (e.g. close/comment the GitHub issue on done). Outward-facing, so off by
   // default. See docs/task-source-sync.md.
@@ -799,6 +811,17 @@ export type CreateProjectContextEntryRequest = z.infer<typeof CreateProjectConte
 // carried for the task's life. `syncedAt`/`sourceRev` reserve a future two-way sync.
 export const TaskSource = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("github_issue"), repo: z.string(), number: z.number().int(), url: z.string().default("") }),
+  // The Sentry inbound-trigger's task source (sentry/webhook.ts's
+  // handleSentryIssueEvent) — org+project slug identify which Sentry project,
+  // issueId is the dedup key for a redelivered webhook.
+  z.object({
+    kind: z.literal("sentry_issue"),
+    org: z.string(),
+    project: z.string(),
+    issueId: z.string(),
+    shortId: z.string().default(""),
+    url: z.string().default(""),
+  }),
   z.object({ kind: z.literal("repo_file"), path: z.string(), anchor: z.string().default("") }), // Phase 2
   z.object({ kind: z.literal("external"), system: z.string(), id: z.string(), url: z.string().default("") }), // Phase 3
   // Self-replenishing backlog (v1 "autonomous sweep"): a task the fleet itself
@@ -1871,6 +1894,12 @@ export const UpdateProjectRequest = z.object({
   // Which provider keys the project may run on (secret-store credential ids;
   // empty = all keys). See Project.enabledRunnerCredentialIds.
   enabledRunnerCredentialIds: z.array(z.string()).optional(),
+  // Which custom MCP servers the project may use. See Project.mcpServerIds.
+  mcpServerIds: z.array(z.string()).optional(),
+  // Sentry org/project slug binding for the inbound webhook trigger; null
+  // clears it (this project stops receiving Sentry-issue tasks). See
+  // Project.sentryProject.
+  sentryProject: z.object({ org: z.string(), project: z.string() }).nullable().optional(),
   syncSourceStatus: z.boolean().optional(), // write status changes back to the source of truth
   roadmapPath: z.string().nullable().optional(), // see Project.roadmapPath; null clears → default candidates
   newBoardEnabled: z.boolean().optional(), // see Project.newBoardEnabled
@@ -2249,6 +2278,66 @@ export const CreateCredentialRequest = z.object({
   baseUrl: z.string().nullable().optional(),
 });
 export type CreateCredentialRequest = z.infer<typeof CreateCredentialRequest>;
+
+// ─── Custom MCP servers ─────────────────────────────────────────────────────
+// A workspace-scoped tool an operator wires up so an agent can act BACK into
+// one of the operator's own services during a run (a GitHub/Sentry/Slack MCP
+// server, or anything else speaking MCP) — not a CredentialProvider (those are
+// "one bearer token + one endpoint" for a known LLM/git/fly provider; an MCP
+// server is a named launch spec, stdio or remote, that may need several
+// secrets). See docs/integrations-catalog.md and ROADMAP.md's "Tools via MCP".
+//
+// SECURITY: granting a write-capable MCP server (e.g. a real GitHub PAT) lets
+// an agent act OUTSIDE Skynet's own git-operation guardrails (PR-only writes,
+// no-force-push, the module allowlist) — those wrap Skynet's own git code
+// path, not arbitrary MCP tool calls a runner CLI makes on the agent's behalf.
+// Accepted tradeoff, same trust model as every integration here: it runs on
+// the user's own credentials, and the existing per-tool-call HITL approval
+// gate (already governing browser MCP tool calls) is the mitigation.
+export const McpServerTransport = z.enum(["stdio", "remote"]);
+export type McpServerTransport = z.infer<typeof McpServerTransport>;
+
+/** Safe, returnable metadata for a configured MCP server — never the secret
+ *  env/header VALUES, only their key names (same "safe to show" precedent as
+ *  SecretMeta.last4). */
+export const McpServerMeta = z.object({
+  id: z.string(),
+  workspaceId: z.string(),
+  name: z.string(),
+  transport: McpServerTransport,
+  // stdio only:
+  command: z.string().default(""),
+  args: z.array(z.string()).default([]),
+  envKeys: z.array(z.string()).default([]),
+  // remote only:
+  url: z.string().default(""),
+  headerKeys: z.array(z.string()).default([]),
+  updatedAt: Timestamp,
+  updatedBy: z.string(),
+});
+export type McpServerMeta = z.infer<typeof McpServerMeta>;
+
+/** Body for adding a custom MCP server. Discriminated on `transport` — a
+ *  stdio server launches a local command, a remote one calls a URL (Sentry's
+ *  own MCP server, `https://mcp.sentry.dev/mcp`, is remote). No edit/rotate
+ *  endpoint in v1 — remove and re-add to change one (same as GithubAccounts/
+ *  FlyAccounts' own add/remove-only UX). */
+export const CreateMcpServerRequest = z.discriminatedUnion("transport", [
+  z.object({
+    transport: z.literal("stdio"),
+    name: z.string().min(1).max(60),
+    command: z.string().min(1),
+    args: z.array(z.string()).default([]),
+    env: z.record(z.string(), z.string()).default({}),
+  }),
+  z.object({
+    transport: z.literal("remote"),
+    name: z.string().min(1).max(60),
+    url: z.string().min(1),
+    headers: z.record(z.string(), z.string()).default({}),
+  }),
+]);
+export type CreateMcpServerRequest = z.infer<typeof CreateMcpServerRequest>;
 
 /** Result of a live verify against the vendor (or its CLI-auth account
  *  endpoint) — a real, cheap call confirming the key actually authenticates.
