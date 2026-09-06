@@ -1,0 +1,63 @@
+name: Claude PR Review
+
+# Automated review on every PR, using a structured verdict (--json-schema) so
+# this job's own pass/fail reflects the verdict — mark it as a required status
+# check in branch protection once it's been observed running cleanly for a
+# while (see docs/sensitive-paths.json's sibling workflow, pr-risk-label.yml,
+# for the advisory-only high-risk flag; this one is meant to gate merge).
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Claude review
+        id: review
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+
+            Review this pull request for:
+            - Correctness bugs (logic errors, edge cases, incorrect assumptions)
+            - Reuse/simplification (unnecessary duplication, over-engineering)
+            - Efficiency (obvious performance issues)
+
+            Skip style nitpicks the linter/formatter already enforces.
+
+            Note: The PR branch is already checked out in the current working directory.
+
+            Post your findings as PR review comments:
+            - Use `mcp__github_inline_comment__create_inline_comment` (with `confirmed: true`)
+              for issues tied to a specific line.
+            - Use `gh pr comment` for a short top-level summary.
+            Only post GitHub comments — don't submit review text as chat messages.
+
+            Then return a verdict for the schema below. "request_changes" only for
+            a real bug or a genuinely misleading claim — not style preference.
+          claude_args: |
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"
+            --json-schema '{"type":"object","properties":{"verdict":{"type":"string","enum":["approve","request_changes"]},"summary":{"type":"string"}},"required":["verdict","summary"]}'
+
+      - name: Gate on verdict
+        if: fromJSON(steps.review.outputs.structured_output).verdict == 'request_changes'
+        run: |
+          echo "::error::Claude requested changes: $(echo '${{ steps.review.outputs.structured_output }}' | jq -r '.summary')"
+          exit 1
