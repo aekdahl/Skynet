@@ -1227,6 +1227,10 @@ export class Operations {
       // Source-of-truth write-back is opt-in (outward-facing) — enabled in settings,
       // or right here when the creation form asks for an issue import (below).
       syncSourceStatus: !!(repo && input.importGithubIssues),
+      // Phase 3 (external/webhook write-back) is never configured at creation —
+      // set later in project settings. See Project.externalWebhookUrl.
+      externalWebhookUrl: null,
+      externalWebhookSecret: null,
       // Optional: stack this project's runs/PRs onto a branch; else the global default.
       baseBranch: input.baseBranch?.trim() || null,
       // No override at creation — set later, once the operator (or Steward)
@@ -1295,7 +1299,25 @@ export class Operations {
       patch.roadmapPath === undefined
         ? {}
         : { roadmapPath: patch.roadmapPath?.trim() ? patch.roadmapPath.trim() : null };
-    const updated = await this.hub.upsertProject({ ...existing, ...patch, ...rebind, ...instructions, ...baseBranch, ...roadmapPath });
+    // Same clear-on-blank normalization for the Phase 3 webhook fields.
+    const externalWebhookUrl =
+      patch.externalWebhookUrl === undefined
+        ? {}
+        : { externalWebhookUrl: patch.externalWebhookUrl?.trim() ? patch.externalWebhookUrl.trim() : null };
+    const externalWebhookSecret =
+      patch.externalWebhookSecret === undefined
+        ? {}
+        : { externalWebhookSecret: patch.externalWebhookSecret?.trim() ? patch.externalWebhookSecret.trim() : null };
+    const updated = await this.hub.upsertProject({
+      ...existing,
+      ...patch,
+      ...rebind,
+      ...instructions,
+      ...baseBranch,
+      ...roadmapPath,
+      ...externalWebhookUrl,
+      ...externalWebhookSecret,
+    });
     this.maybeAutoClone(ws, updated); // binding a repo on a server clones it
     // Re-enabling autonomy (whether the operator turned it off themselves, or
     // the session circuit-breaker did) starts the streak fresh — otherwise an

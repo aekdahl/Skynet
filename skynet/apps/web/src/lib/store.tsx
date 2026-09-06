@@ -202,6 +202,10 @@ export interface Store extends StoreState {
       // Which provider keys the project may run on (credential ids; empty = all).
       enabledRunnerCredentialIds?: string[];
       syncSourceStatus?: boolean;
+      // Phase 3 generic webhook destination/secret; null clears each back to
+      // "not configured" / "unsigned". See Project.externalWebhookUrl.
+      externalWebhookUrl?: string | null;
+      externalWebhookSecret?: string | null;
       // Branch to stack runs/PRs onto; null clears back to the global default.
       baseBranch?: string | null;
       // Where the Roadmap tab reads its doc from; null clears back to the

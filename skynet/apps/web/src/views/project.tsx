@@ -1817,6 +1817,11 @@ export function ProjectView({
   // Write task status back to the source (e.g. close/comment the linked GitHub
   // issue on done). Lives in this settings panel now; only meaningful with a repo.
   const [syncToSource, setSyncToSource] = useState(project.syncSourceStatus);
+  // Phase 3 generic outbound webhook (docs/task-source-sync.md) — destination for
+  // any `external`-sourced task (Linear/Jira/etc). Gated by the same syncToSource
+  // opt-in above; independent of `project.repo` since it needs no GitHub repo.
+  const [webhookUrl, setWebhookUrl] = useState(project.externalWebhookUrl ?? "");
+  const [webhookSecret, setWebhookSecret] = useState(project.externalWebhookSecret ?? "");
   const [resyncing, setResyncing] = useState(false);
   const hasRepo = !!(project.gitBacked || project.repo);
 
@@ -1863,8 +1868,20 @@ export function ProjectView({
     setBaseBranch(project.baseBranch ?? "");
     setCheckCmd(project.checkCmd ?? "");
     setSyncToSource(project.syncSourceStatus);
+    setWebhookUrl(project.externalWebhookUrl ?? "");
+    setWebhookSecret(project.externalWebhookSecret ?? "");
     setFolded(false);
-  }, [project.id, project.name, project.goal, project.instructions, project.baseBranch, project.checkCmd, project.syncSourceStatus]);
+  }, [
+    project.id,
+    project.name,
+    project.goal,
+    project.instructions,
+    project.baseBranch,
+    project.checkCmd,
+    project.syncSourceStatus,
+    project.externalWebhookUrl,
+    project.externalWebhookSecret,
+  ]);
 
   return (
     <section className="projview">
@@ -1927,16 +1944,16 @@ export function ProjectView({
               />
             </label>
           )}
-          {project.repo && (
-            <div className="projview-setting">
-              <div className="projview-instructions-label mono">
-                Sync to source <span className="projview-instructions-hint">— write task status back to its GitHub issue: comment + close on done, reopen if it moves back out.</span>
-              </div>
-              <label className="proj-autonomy" title="Write task status changes back to the source of truth.">
-                <input type="checkbox" className="proj-autonomy-cb" checked={syncToSource} onChange={(e) => setSyncToSource(e.target.checked)} />
-                <span className="proj-autonomy-switch" aria-hidden="true" />
-                <span className="proj-autonomy-label">{syncToSource ? "On — status flows back to GitHub" : "Off"}</span>
-              </label>
+          <div className="projview-setting">
+            <div className="projview-instructions-label mono">
+              Sync to source <span className="projview-instructions-hint">— write task status back to where it came from: a GitHub issue (comment + close on done, reopen if it moves back out), a repo checklist file, or an external webhook.</span>
+            </div>
+            <label className="proj-autonomy" title="Write task status changes back to the source of truth.">
+              <input type="checkbox" className="proj-autonomy-cb" checked={syncToSource} onChange={(e) => setSyncToSource(e.target.checked)} />
+              <span className="proj-autonomy-switch" aria-hidden="true" />
+              <span className="proj-autonomy-label">{syncToSource ? "On — status flows back to the source" : "Off"}</span>
+            </label>
+            {project.repo && (
               <button
                 className="btn btn-ghost btn-sm"
                 disabled={resyncing}
@@ -1952,7 +1969,30 @@ export function ProjectView({
               >
                 {resyncing ? "Re-syncing…" : "Re-sync now"}
               </button>
-            </div>
+            )}
+          </div>
+          {syncToSource && (
+            <label className="projview-instructions-label mono">
+              External webhook URL <span className="projview-instructions-hint">— POSTs {"{taskId, text, from, to, source, prUrl}"} here when a task sourced externally (e.g. Linear/Jira) changes state. Blank = not configured, no external write-back happens.</span>
+              <input
+                className="qx-input"
+                placeholder="https://example.com/skynet-webhook"
+                value={webhookUrl}
+                onChange={(e) => setWebhookUrl(e.target.value)}
+              />
+            </label>
+          )}
+          {syncToSource && webhookUrl.trim() && (
+            <label className="projview-instructions-label mono">
+              Webhook signing secret <span className="projview-instructions-hint">— optional; HMAC-SHA256-signs the POST body (X-Skynet-Signature-256 header) so the receiver can verify it came from this Skynet instance. Blank = sent unsigned.</span>
+              <input
+                className="qx-input"
+                type="password"
+                placeholder="(sent unsigned)"
+                value={webhookSecret}
+                onChange={(e) => setWebhookSecret(e.target.value)}
+              />
+            </label>
           )}
           <div className="qx-row">
             <button
@@ -1967,6 +2007,8 @@ export function ProjectView({
                   baseBranch: baseBranch.trim() || null,
                   checkCmd: checkCmd.trim() || null,
                   syncSourceStatus: syncToSource,
+                  externalWebhookUrl: webhookUrl.trim() || null,
+                  externalWebhookSecret: webhookSecret.trim() || null,
                 });
                 setEditing(false);
               }}
@@ -1982,6 +2024,8 @@ export function ProjectView({
                 setBaseBranch(project.baseBranch ?? "");
                 setCheckCmd(project.checkCmd ?? "");
                 setSyncToSource(project.syncSourceStatus);
+                setWebhookUrl(project.externalWebhookUrl ?? "");
+                setWebhookSecret(project.externalWebhookSecret ?? "");
                 setEditing(false);
               }}
             >

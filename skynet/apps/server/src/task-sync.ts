@@ -6,9 +6,11 @@
 //
 // Opt-in per project (Project.syncSourceStatus, off by default — writing back is
 // outward-facing). Best-effort: a failure is logged, never blocks the transition.
-// Phase 1 = GitHub issues; the `SyncSink` shape is the seam for repo-file /
-// external adapters (see docs/task-source-sync.md).
+// Phase 1 = GitHub issues, Phase 2 = repo files, Phase 3 = a generic outbound
+// webhook for `external`-sourced tasks (Linear/Jira/anything else) — see
+// docs/task-source-sync.md.
 
+import { createHmac } from "node:crypto";
 import { DEFAULT_WORKSPACE } from "@skynet/shared";
 import type { Task, TaskState } from "@skynet/shared";
 import type { Bus } from "./bus.js";
@@ -36,6 +38,40 @@ const STAGE_LABEL_STATES: ReadonlySet<TaskState> = new Set(["triage", "ongoing",
  *  state has no stage label (backlog/todo). */
 export function stageLabelFor(state: TaskState): string | null {
   return STAGE_LABEL_STATES.has(state) ? `skynet:${state}` : null;
+}
+
+/** POST timeout — generous enough for a slow receiver, short enough that a
+ *  hung endpoint can never meaningfully stall the bus subscriber that fired it
+ *  (this is always awaited inside a best-effort `writeBack`, never the
+ *  caller's own request/response path). */
+const EXTERNAL_WEBHOOK_TIMEOUT_MS = 10_000;
+
+/** Body of the Phase 3 generic outbound webhook — everything a receiver needs
+ *  to locate its own record (`source`) and know what changed, without Skynet
+ *  having to speak that system's API. */
+export interface ExternalWebhookPayload {
+  taskId: string;
+  text: string;
+  from: TaskState;
+  to: TaskState;
+  source: { system: string; id: string; url: string };
+  prUrl: string | null;
+}
+
+/** PURE: the Phase 3 webhook body for a state transition, or `null` when the
+ *  task isn't `external`-sourced (nothing to send) — kept pure so the shape is
+ *  unit-tested without a live endpoint, same discipline as `githubIssuePlan`. */
+export function buildExternalWebhookPayload(task: Task, from: TaskState, to: TaskState, prUrl: string | null): ExternalWebhookPayload | null {
+  if (!task.source || task.source.kind !== "external") return null;
+  return { taskId: task.id, text: task.text, from, to, source: { ...task.source }, prUrl };
+}
+
+/** PURE: the `X-Skynet-Signature-256` header value for a webhook body, same
+ *  sha256-hex-digest scheme as GitHub's inbound `X-Hub-Signature-256` (see
+ *  github/webhook.ts's `verifySignature`) so one HMAC convention covers both
+ *  directions. */
+export function signWebhookBody(secret: string, body: string): string {
+  return `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`;
 }
 
 export interface SyncDeps {
@@ -115,6 +151,25 @@ async function writeBack(task: Task, from: TaskState, to: TaskState, deps: SyncD
     deps.log?.(`[task-sync] ${src.path} ← "${src.anchor}" ${checked ? "checked" : "unchecked"}`);
     return;
   }
+
+  // Phase 3 — generic outbound webhook: POST the transition to a
+  // project-configured URL (Linear/Jira/anything else consumes it via their
+  // own inbound-webhook rules). No readback, so this is fire-once on the
+  // transition itself — see reconcileSourceState below for why manual resync
+  // can't do anything more for this kind.
+  if (src.kind === "external") {
+    if (!project.externalWebhookUrl) return; // opt-in AND configured
+    const run = task.runId ? await deps.store.getRun(task.runId) : undefined;
+    const payload = buildExternalWebhookPayload(task, from, to, run?.pr?.url ?? null);
+    if (!payload) return;
+    const body = JSON.stringify(payload);
+    const headers: Record<string, string> = { "content-type": "application/json" };
+    if (project.externalWebhookSecret) headers["x-skynet-signature-256"] = signWebhookBody(project.externalWebhookSecret, body);
+    const res = await fetch(project.externalWebhookUrl, { method: "POST", headers, body, signal: AbortSignal.timeout(EXTERNAL_WEBHOOK_TIMEOUT_MS) });
+    if (!res.ok) throw new Error(`external webhook responded ${res.status}`);
+    deps.log?.(`[task-sync] ${src.system}:${src.id} ← task ${task.id} is now ${to} (webhook)`);
+    return;
+  }
 }
 
 /**
@@ -178,5 +233,10 @@ export async function reconcileSourceState(task: Task, deps: SyncDeps): Promise<
     return true;
   }
 
+  // "external" (Phase 3's generic webhook) deliberately does nothing here —
+  // there's no third-party API to read a persistent state back FROM, so
+  // there's nothing to diff against. Only writeBack's transition-time POST
+  // covers this kind; a dedicated Linear/Jira adapter with real readback would
+  // add its own branch here.
   return false;
 }

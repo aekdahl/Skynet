@@ -705,6 +705,17 @@ export const Project = z.object({
   // (e.g. close/comment the GitHub issue on done). Outward-facing, so off by
   // default. See docs/task-source-sync.md.
   syncSourceStatus: z.boolean().default(false),
+  // Phase 3 write-back destination (docs/task-source-sync.md): a task sourced
+  // externally (TaskSource.kind === "external", e.g. a Linear/Jira issue) POSTs
+  // its state transitions here as {taskId, text, from, to, source, prUrl}.
+  // Gated by `syncSourceStatus` same as the other sinks. null = not configured
+  // — no external write-back happens even for an externally-sourced task.
+  externalWebhookUrl: z.string().nullable().default(null),
+  // Optional shared secret used to HMAC-sign the outbound webhook body (same
+  // sha256 scheme as GitHub's inbound X-Hub-Signature-256 — see
+  // github/webhook.ts's verifySignature) so the receiver can confirm a payload
+  // actually came from this Skynet instance. null = sent unsigned.
+  externalWebhookSecret: z.string().nullable().default(null),
   // Which stored Fly.io credential this project's `Deploy to Fly.io` action
   // authenticates with — a secret-store credential id of a `fly` API token.
   // null → the workspace's default Fly connection. Same shape as
@@ -1842,6 +1853,8 @@ export const UpdateProjectRequest = z.object({
   // empty = all keys). See Project.enabledRunnerCredentialIds.
   enabledRunnerCredentialIds: z.array(z.string()).optional(),
   syncSourceStatus: z.boolean().optional(), // write status changes back to the source of truth
+  externalWebhookUrl: z.string().nullable().optional(), // see Project.externalWebhookUrl; null clears → not configured
+  externalWebhookSecret: z.string().nullable().optional(), // see Project.externalWebhookSecret; null clears → unsigned
   roadmapPath: z.string().nullable().optional(), // see Project.roadmapPath; null clears → default candidates
   newBoardEnabled: z.boolean().optional(), // see Project.newBoardEnabled
   queuedWipLimit: z.number().int().positive().nullable().optional(), // see Project.queuedWipLimit; null clears → no limit
