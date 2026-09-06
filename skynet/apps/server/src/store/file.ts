@@ -9,7 +9,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from "node:fs";
 import { dirname } from "node:path";
 import type { GithubConnection, WorkspaceSettings } from "@skynet/shared";
-import { Agent, AuditRecord, AutonomyBreaker, AutonomyOverride, Checkpoint, Dependency, Feature, HitlItem, Milestone, Module, PendingRuleAction, PolicyVersion, Project, ProjectContextEntry, Proposal, RoadmapDoc, RoadmapLineClaim, RoadmapProposal, Rule, SolutionBrief, Task, TaskRun, Transition } from "@skynet/shared";
+import { Agent, AuditRecord, AutonomyBreaker, AutonomyOverride, Checkpoint, Dependency, Feature, HitlItem, Milestone, Module, PendingRuleAction, Plan, PolicyVersion, Project, ProjectContextEntry, Proposal, RoadmapDoc, RoadmapLineClaim, RoadmapProposal, Rule, SolutionBrief, Task, TaskRun, Transition } from "@skynet/shared";
 import type { z } from "zod";
 import { MemoryStore } from "./memory.js";
 
@@ -120,6 +120,9 @@ export class FileStore extends MemoryStore {
       // Roadmap doc cache (Phase 24) — keyed by projectId, same pattern as the
       // autonomy breaker/override above.
       for (const rd of fillArray(d.roadmapDocs, RoadmapDoc, "roadmap doc")) this.roadmapDocs.set(rd.projectId, rd);
+      // The living Plan (Product Steward Phase 1) — keyed by projectId, same
+      // pattern as the roadmap doc cache just above.
+      for (const p of fillArray(d.plans, Plan, "plan")) this.plans.set(p.projectId, p);
       fill(this.roadmapProposals, d.roadmapProposals, RoadmapProposal, "roadmap proposal");
       for (const c of fillArray(d.roadmapLineClaims, RoadmapLineClaim, "roadmap line claim")) this.roadmapLineClaims.set(`${c.projectId}:${c.lineId}`, c);
       // Telemetry milestones (PMF v1.5) — a bare `${workspaceId}::${kind}` key
@@ -168,6 +171,7 @@ export class FileStore extends MemoryStore {
       autonomyBreakers: [...this.autonomyBreakers.values()],
       autonomyOverrides: [...this.autonomyOverrides.values()],
       roadmapDocs: [...this.roadmapDocs.values()],
+      plans: [...this.plans.values()],
       roadmapProposals: [...this.roadmapProposals.values()],
       roadmapLineClaims: [...this.roadmapLineClaims.values()],
       telemetryMilestones: [...this.telemetryMilestones],

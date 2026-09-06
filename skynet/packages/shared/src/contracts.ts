@@ -1201,6 +1201,41 @@ export const Milestone = z.object({
 });
 export type Milestone = z.infer<typeof Milestone>;
 
+// ─── Plan: the living, versioned roadmap (docs/product-steward.md §2) ─────
+// One per project — the durable replacement for the throwaway ROADMAP.md/
+// PLAN.md scratch files an AI keeps in a repo today. Not repo-coupled: it
+// lives in Skynet and works for chat-only (non-git) projects too. Phase 1
+// (this) is the entity + a project-view panel, operator-maintained; Phase 2
+// (docs/product-steward.md §3) adds an `edit_plan` MCP tool so a steward
+// agent can propose changes under the existing author scope, HITL-gated.
+//
+// Deliberately does NOT embed its own milestone list — the project already
+// has a first-class `Milestone` entity that `Task`/`Feature` link into
+// (see Milestone above); duplicating that inside Plan would just be two
+// competing "milestone" concepts. The project-view panel renders this
+// markdown alongside the project's real Milestones instead (wrap, don't
+// rebuild — §6). Optimistic concurrency (`version` + `UpdatePlanRequest.
+// baseVersion` below) is the "Plan authorship conflicts" open question's
+// answer: a version check on write, not last-writer-wins-silently.
+export const Plan = z.object({
+  projectId: z.string(), // no separate id — one per project, same as RoadmapDoc
+  workspaceId: z.string(),
+  markdown: z.string().default(""),
+  version: z.number().int(),
+  updatedBy: z.string(), // "steward:<agentId>" (Phase 2+) or an operator id
+  updatedAt: Timestamp,
+});
+export type Plan = z.infer<typeof Plan>;
+
+export const UpdatePlanRequest = z.object({
+  markdown: z.string(),
+  // The version this edit was drafted against — the write is refused
+  // (PlanVersionConflictError → 409) if the Plan moved since, so a stale
+  // edit can't silently clobber a change made in another tab/by the steward.
+  baseVersion: z.number().int(),
+});
+export type UpdatePlanRequest = z.infer<typeof UpdatePlanRequest>;
+
 // ─── SolutionBrief: the persistent pre-work planning doc ─────────────────
 // A human-authored (or human-approved) design doc for a chunk of work, BEFORE
 // any task/run exists for it — "what are we building and why, what did we

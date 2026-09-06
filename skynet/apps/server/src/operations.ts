@@ -39,6 +39,8 @@ import type {
   HitlItem,
   InformRequest,
   Milestone,
+  Plan,
+  UpdatePlanRequest,
   PolicyDryRunResult,
   PolicyVersion,
   PrChecksStatus,
@@ -185,6 +187,7 @@ export class RoadmapConflictError extends Error {
     this.name = "RoadmapConflictError";
   }
 }
+
 
 /** A RoadmapProposal isn't `open` — already resolved, or held for a human to
  *  untangle a conflict (Rule 4). 409. */
@@ -3019,6 +3022,32 @@ export class Operations {
     const tasks = (await this.store.listTasks(ws)).filter((t) => t.milestoneId === mid);
     for (const t of tasks) await this.hub.patchTask(t.id, { milestoneId: null });
     await this.hub.deleteMilestone(mid);
+  }
+
+  // ── the living Plan (Product Steward Phase 1, docs/product-steward.md) ──
+  /** The project's Plan, or an EPHEMERAL empty one (version 0, never
+   *  persisted) if nothing's been written yet — so the panel always has
+   *  something to render, and `version: 0` doubles as "no Plan exists yet"
+   *  for updateProjectPlan's baseVersion below (a real, saved Plan is never
+   *  version 0; its first write starts at 1 — see store.putPlan). */
+  async getProjectPlan(ws: string, projectId: string): Promise<Plan> {
+    const project = await this.store.getProject(projectId);
+    if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
+    const existing = await this.store.getPlan(projectId);
+    if (existing) return existing;
+    return { projectId, workspaceId: ws, markdown: "", version: 0, updatedBy: "", updatedAt: 0 };
+  }
+
+  /** Write the Plan. `input.baseVersion` is passed straight through as
+   *  store.putPlan's `expectedVersion` — the store owns both the optimistic-
+   *  concurrency check (VersionConflictError → 409, same discipline every
+   *  other versioned entity here already uses) and bumping `version`, so a
+   *  stale edit can't silently clobber one made in another tab or (Phase 2+)
+   *  by the steward — the "Plan authorship conflicts" open question's answer. */
+  async updateProjectPlan(ws: string, projectId: string, input: UpdatePlanRequest, updatedBy: string): Promise<Plan> {
+    const project = await this.store.getProject(projectId);
+    if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
+    return this.hub.upsertPlan({ projectId, workspaceId: ws, markdown: input.markdown, version: 0, updatedBy, updatedAt: now() }, input.baseVersion);
   }
 
   // ── solution briefs (pre-work planning docs) ───────────────────────────

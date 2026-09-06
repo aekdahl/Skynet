@@ -30,6 +30,7 @@ import {
   InformRequest,
   UpdateFeatureRequest,
   UpdateMilestoneRequest,
+  UpdatePlanRequest,
   UpdateProjectRequest,
   UpdateProjectRoadmapRequest,
   ProposeRoadmapChangeRequest,
@@ -1455,6 +1456,24 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     try {
       await ops.deleteMilestone(ws(req), req.params.mid);
       return { ok: true };
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
+  // ── the living Plan (Product Steward Phase 1) ─────────────────────────
+  app.get<{ Params: { id: string } }>("/api/projects/:id/plan", async (req, reply) => {
+    try {
+      return await ops.getProjectPlan(ws(req), req.params.id);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+  app.patch<{ Params: { id: string } }>("/api/projects/:id/plan", async (req, reply) => {
+    const body = UpdatePlanRequest.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+    try {
+      return await ops.updateProjectPlan(ws(req), req.params.id, body.data, req.principal!.operatorId);
     } catch (err) {
       return fail(reply, err);
     }
