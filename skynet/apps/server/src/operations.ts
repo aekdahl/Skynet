@@ -366,6 +366,11 @@ export class Operations {
     // for the same reason as onDriveRefill: the driver ticks in the
     // orchestrator, the thinking lives here.
     this.orchestrator.onDriveReplenish = (ws, projectId) => this.replenishBacklog(ws, projectId).then(() => undefined);
+    // Feedback-loop responders (ROADMAP v3): the rule engine's `reengage_run`
+    // action has no orchestrator reference of its own (same reasoning as
+    // onDriveRefill/onDriveReplenish above, in the other direction) — wired
+    // here since this is the one layer holding both.
+    if (this.ruleEngine) this.ruleEngine.reengageRun = (runId, note) => this.orchestrator.reengageOnFeedback(runId, note);
     this.lintConsult = deps.lintConsult ?? lintTask;
   }
 
