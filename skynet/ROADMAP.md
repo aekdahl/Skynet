@@ -472,8 +472,36 @@ inbound-trigger primitive, Skynet as an MCP server, GitHub Issues two-way sync) 
 - [ ] **Feedback-loop responders (route back to the *originating* run)** — a CI failure, a PR review comment, or a
   merge conflict re-engages the **same** agent that produced the branch (self-healing), not a fresh run.
   *(Agent Orchestrator-style; ties directly to the responders below.)*
-- [ ] **Interop surface (adopted)** — beyond `/mcp`, expose the fleet via an **OpenAI-compatible endpoint + REST**
-  so external tools can drive it as a model/service. *(claw-orchestrator-style; broadens who can call Skynet.)*
+- [x] **Interop surface (adopted).** Beyond `/mcp`, the fleet is already reachable via an OpenAI-compatible
+  endpoint and a plain REST job-submission API (`apps/server/src/interop/{openai,rest}.ts`, wired into
+  `index.ts` — confirmed live on `main` before this entry, code was already there). **OpenAI-compat**:
+  `GET /v1/models` lists the caller's projects as models; `POST /v1/chat/completions` turns the last
+  `user` message into a task (earlier turns fold into the task's `description` as context — "one
+  completion = one task", no server-side thread, since the wire format has no field naming an existing
+  Skynet run to resume), assigns it, and blocks (or streams as SSE, with the real `{runId,taskId}` handle
+  riding the FIRST chunk as a non-standard-but-additive field) until the run reaches `done`/`review`,
+  rendering the outcome — diff summary included — as the assistant's reply. **REST**: `GET /v1/projects`,
+  `GET /v1/runs` (filterable by `projectId`/`status`, paginated), `POST /v1/runs` (plain `{projectId,
+  text}` job submission, 201 + a run handle, no chat-message wrapper), `GET /v1/runs/:id` (optional
+  `?diff=true`). Both surfaces share `/mcp`'s exact auth (bearer service token) and project-scoping
+  (`mcp/project-scope.ts` — a project-scoped token only ever sees/targets its own projects; an
+  out-of-scope target reads as 404 "unknown model"/run-not-found rather than a 403 that would leak the
+  target's existence). **Found and closed**: despite being fully implemented, this had ZERO test coverage
+  anywhere in the repo (confirmed by grep before writing any) — `tests/interop.test.ts` now drives the
+  real Fastify routes + a real Orchestrator against a throwaway git repo (same harness shape as
+  `full-loop.test.ts`), not mocks: a real task+run created from a chat completion, prior-turn context
+  folding, SSE streaming shape, project-name matching, REST job submission + listing/pagination/filtering,
+  and project-scope enforcement on every route in both directions (a scoped token's own work is visible,
+  everything else reads as not-found). **A real bug caught while writing the harness, not in the shipped
+  code**: an early draft of the test file statically imported `registerApi`/`registerOpenAiCompat`/
+  `registerInteropRest` at the top of the file, which transitively load `config.ts` (reads
+  `SKYNET_INTEGRATION_REPO`/`SKYNET_WORKTREES_DIR` once into a plain object at module-EVAL time, not
+  lazily) BEFORE the test's own `beforeAll` had set those env vars — every "real diff" test silently
+  self-completed straight to `done` with no worktree, no branch, no HITL ever raised, since the
+  orchestrator was running against an unconfigured integration repo the whole time. Fixed by making every
+  server-side import dynamic inside `beforeAll` (same discipline `full-loop.test.ts`/
+  `merge-conflict-ask-agent.test.ts` already use, now documented in this file's own top comment for the
+  next person who reaches for a "just add one static import" shortcut).
 - [ ] **Candidate responders:** Sentry regression → fix PR · GitHub issue → PR · PR review · CI-failure
   fix · Dependabot/CVE patch+fix · PagerDuty/Datadog incident triage · support ticket → bug task.
 - [ ] Tier-2 API agents (Devin, Jules — see runner-catalog) plug in here as delegated remote workers.
