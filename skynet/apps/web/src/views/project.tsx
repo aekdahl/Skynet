@@ -30,6 +30,7 @@ import { SwDiagram } from "../components/subway-diagram";
 import { QueueCard } from "./queue";
 import { TimelineView } from "./home";
 import { RoadmapDocView } from "./project-roadmap";
+import { ProjectPlanView } from "./project-plan";
 import { ProjectMemoryView } from "./project-memory";
 import { ProjectQualityView } from "./project-quality";
 import { ProjectContextView } from "./project-context";
@@ -1740,10 +1741,10 @@ export function ProjectView({
   // Per-project lens (Kanban is the default; Archived shows soft-hidden tasks +
   // restore; Roadmap renders ROADMAP.md from the repo). Persisted per-project in
   // sessionStorage so switching back restores the last chosen lens.
-  const [lens, setLens] = useState<"kanban" | "roadmap" | "memory" | "context" | "coverage" | "rules" | "keys" | "feed" | "archived" | "health">(() => {
+  const [lens, setLens] = useState<"kanban" | "plan" | "roadmap" | "memory" | "context" | "coverage" | "rules" | "keys" | "feed" | "archived" | "health">(() => {
     if (typeof sessionStorage === "undefined") return "kanban";
     const v = sessionStorage.getItem(`skynet.proj.lens.${project.id}`);
-    return v === "roadmap" || v === "memory" || v === "context" || v === "coverage" || v === "rules" || v === "keys" || v === "feed" || v === "archived" || v === "health" ? v : "kanban";
+    return v === "plan" || v === "roadmap" || v === "memory" || v === "context" || v === "coverage" || v === "rules" || v === "keys" || v === "feed" || v === "archived" || v === "health" ? v : "kanban";
   });
   useEffect(() => {
     if (typeof sessionStorage !== "undefined")
@@ -2214,6 +2215,7 @@ export function ProjectView({
           {(
             [
               "kanban",
+              "plan",
               // Rules (Automation Builder, TASK 07) only makes sense over the
               // new board's mental model — hidden on the legacy 6-column
               // board, same gating as MomentumBoard itself below.
@@ -2236,7 +2238,7 @@ export function ProjectView({
               className={"lens-btn" + (lens === id ? " on" : "")}
               onClick={() => setLens(id)}
             >
-              {id === "kanban" ? "Kanban" : id === "rules" ? "Rules" : id === "keys" ? "Keys" : id === "roadmap" ? "Roadmap" : id === "memory" ? "Memory" : id === "context" ? "Context" : id === "coverage" ? "Coverage" : id === "feed" ? "Feed" : id === "health" ? "Health" : "Archived"}
+              {id === "kanban" ? "Kanban" : id === "plan" ? "Plan" : id === "rules" ? "Rules" : id === "keys" ? "Keys" : id === "roadmap" ? "Roadmap" : id === "memory" ? "Memory" : id === "context" ? "Context" : id === "coverage" ? "Coverage" : id === "feed" ? "Feed" : id === "health" ? "Health" : "Archived"}
               {id === "archived" && archivedTasks.length > 0 && (
                 <span className="lens-btn-count">{archivedTasks.length}</span>
               )}
@@ -2258,7 +2260,9 @@ export function ProjectView({
         )}
       </div>
 
-      {lens === "rules" && project.newBoardEnabled ? (
+      {lens === "plan" ? (
+        <ProjectPlanView project={project} />
+      ) : lens === "rules" && project.newBoardEnabled ? (
         <RulesTab project={project} />
       ) : lens === "keys" ? (
         <KeysBudgetPanel project={project} runs={runs} />

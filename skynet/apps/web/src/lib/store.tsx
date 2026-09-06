@@ -95,6 +95,11 @@ export interface StoreState {
   // is what an open autonomy dial watches to re-pull after a trip/lift/
   // override lands, from any operator or tab.
   autonomyRev: number;
+  // Bumps on any plan.upserted delta (Product Steward Phase 1) — the living
+  // Plan isn't held in the store either (one per project, fetched on demand
+  // like a RoadmapDoc), so the open Plan panel watches this to re-pull when
+  // it changes from another tab or (Phase 2+) the steward.
+  planRev: number;
   // The server's default approval level, so the create-project form can
   // pre-select what a new project would otherwise get. Undefined until the first
   // snapshot lands (or an older server that doesn't send it).
@@ -507,6 +512,10 @@ function reduce(state: StoreState, ev: ServerEvent): StoreState {
       // The breaker/override records live outside the store too — nudge an
       // open autonomy dial to re-fetch (see client.ts's getAutonomyDetent).
       return { ...state, autonomyRev: state.autonomyRev + 1 };
+    case "plan.upserted":
+      // The living Plan lives outside the store too (one per project) —
+      // nudge an open Plan panel to re-fetch, from any operator or tab.
+      return { ...state, planRev: state.planRev + 1 };
     default:
       return state;
   }
@@ -532,6 +541,7 @@ const EMPTY: StoreState = {
   wsPhase: "connecting",
   auditRev: 0,
   autonomyRev: 0,
+  planRev: 0,
   logDeltas: {},
 };
 
@@ -565,6 +575,7 @@ function fromSnapshot(snap: Snapshot): StoreState {
     // on mount anyway, so reset the revision rather than carrying it across.
     auditRev: 0,
     autonomyRev: 0,
+    planRev: 0,
     // Any in-flight typing preview predates this snapshot — drop it rather than
     // carry stale partial text across a reconnect.
     logDeltas: {},

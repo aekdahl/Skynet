@@ -46,6 +46,7 @@ import {
   type AutonomyOverride,
   type SourceRef,
   type Decision,
+  type Plan,
   type RoadmapDoc,
   type RoadmapLineClaim,
   type RoadmapProposal,
@@ -1126,6 +1127,20 @@ export function updateMilestone(
 }
 export function deleteMilestone(milestoneId: string) {
   return req<unknown>("DELETE", `/api/milestones/${milestoneId}`);
+}
+
+// ─── The living Plan (Product Steward Phase 1) ──────────────────────────────
+// One per project — the durable, versioned roadmap the steward/operator
+// maintains (docs/product-steward.md §2). Distinct from fetchProjectRoadmap
+// above, which reads raw ROADMAP.md text straight from a bound repo; this is
+// not repo-coupled and works for chat-only projects too.
+export function fetchProjectPlan(projectId: string) {
+  return req<Plan>("GET", `/api/projects/${projectId}/plan`);
+}
+/** `baseVersion` must match the Plan's current version or the write is
+ *  refused (409) — see UpdatePlanRequest's own doc comment. */
+export function updateProjectPlan(projectId: string, body: { markdown: string; baseVersion: number }) {
+  return req<Plan>("PATCH", `/api/projects/${projectId}/plan`, body);
 }
 // A project/task action the assistant proposes (confirm-first). Kept in sync with
 // AssistantAction in apps/server/src/project-assistant.ts; `summary` is the label.
