@@ -1,0 +1,73 @@
+name: Integration watch
+
+# Advisory only. Runs after every merge to main and checks whether the
+# just-merged commit touched files that another still-open PR also touches.
+# If so, comments on that PR — this is aimed squarely at the failure class
+# that kept surfacing this session: two independently-correct PRs composing
+# into a real bug (a dead-looking rule a later PR actually used, a required
+# field one PR added that a sibling's own construction site never got, a
+# stale doc claim) that's invisible in either PR's own diff and only shows up
+# once someone resolves the resulting merge conflict by hand.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+
+      - name: Notify affected open PRs
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { execSync } = require("child_process");
+
+            // Files the just-merged push actually changed. `before` is the
+            // zero-commit SHA on a repo's very first push — nothing to diff then.
+            const zero = "0000000000000000000000000000000000000000";
+            const before = context.payload.before;
+            if (!before || before === zero) return;
+            const mergedFiles = execSync(`git diff --name-only ${before} ${context.sha}`, { encoding: "utf8" })
+              .split("\n")
+              .filter(Boolean);
+            if (mergedFiles.length === 0) return;
+            const mergedSet = new Set(mergedFiles);
+
+            const openPrs = await github.paginate(github.rest.pulls.list, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: "open",
+              per_page: 100,
+            });
+
+            for (const pr of openPrs) {
+              const prFiles = await github.paginate(github.rest.pulls.listFiles, {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: pr.number,
+                per_page: 100,
+              });
+              const overlap = prFiles.map((f) => f.filename).filter((f) => mergedSet.has(f));
+              if (overlap.length === 0) continue;
+
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pr.number,
+                body:
+                  `**main just moved in files this PR also touches:**\n\n` +
+                  overlap.map((f) => `- \`${f}\``).join("\n") +
+                  `\n\nThis is exactly where cross-PR bugs like to hide — re-review after your next rebase, ` +
+                  `not just the parts of the diff you personally wrote.`,
+              });
+            }
