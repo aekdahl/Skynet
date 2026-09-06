@@ -7,6 +7,14 @@
 // before relaunching, and the Claude runner refuses a missing cwd with the
 // truthful reason. These pin all three layers: the provisioner's reattach, the
 // orchestrator's relaunch recovery, and the runner's honest guard.
+//
+// Also folds in the plain-reassign scenario from reassign-attribution.test.ts:
+// the board and subway attribute runs by `agentId`, so reassigning an
+// escalated run to a different runner must move the persisted run's agentId
+// too — otherwise it stays drawn under the (now idle) agent it was escalated
+// from, looking like a stray/duplicate station. It reuses this same
+// relaunch-recovery harness since a plain reassign (no worktree loss) drives
+// the identical orchestrator path.
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -180,6 +188,34 @@ describe("relaunchEscalated re-attaches a cleaned-up worktree", () => {
     expect(existsSync(join(relaunch.cwd!, "work.txt"))).toBe(true); // committed work preserved
     const log = (await store.getRun(run.id))?.log ?? [];
     expect(log.some((l) => l.line.includes("re-attached from branch"))).toBe(true);
+  });
+
+  // Folded in from reassign-attribution.test.ts: a PLAIN reassign (no worktree
+  // loss involved) still goes through this same relaunch path, and the board
+  // and subway attribute runs by `agentId` — so the persisted run must be
+  // updated to the new agent, otherwise it stays drawn under the agent it was
+  // escalated from (now idle), looking like a stray/duplicate station.
+  it("moves run.agentId from the escalated-from runner to the replacement", async () => {
+    // Two idle runners: r1 takes the task, r2 is the reassign target.
+    await store.putAgent({ id: "r1", workspaceId: DEFAULT_WORKSPACE, name: "r1", provider: "claude", model: "opus-4.8", status: "idle", idleSince: 0 });
+    await store.putAgent({ id: "r2", workspaceId: DEFAULT_WORKSPACE, name: "r2", provider: "claude", model: "opus-4.8", status: "idle", idleSince: 0 });
+    const project = await ops.createProject(DEFAULT_WORKSPACE, { name: "P", goal: "", repo: undefined });
+    const task = await ops.createTask(DEFAULT_WORKSPACE, project.id, { text: "do the thing" });
+    const run = await ops.assignTask(DEFAULT_WORKSPACE, project.id, task.id);
+    expect(run.agentId).toBe("r1");
+    await waitFor(async () => provider.events.has(run.id)); // worktree provisioned + started
+
+    // The agent escalates for help.
+    const esc = await escalate(run.id);
+
+    // Reassign → relaunch on a DIFFERENT runner; the persisted run must follow.
+    await ops.resolveHitl(DEFAULT_WORKSPACE, esc.id, { action: "reassign" }, "op-1");
+    await waitFor(async () => (await store.getRun(run.id))?.agentId === "r2");
+
+    const after = await store.getRun(run.id);
+    expect(after?.agentId).toBe("r2"); // re-attributed — no longer drawn under r1
+    expect(after?.status).toBe("running");
+    expect((await store.getAgent("r1"))?.status).toBe("idle"); // escalated-from runner freed
   });
 
   it("raises a truthful escalation (no relaunch) when the branch is gone too", async () => {
