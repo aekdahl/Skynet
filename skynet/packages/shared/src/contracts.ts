@@ -44,7 +44,7 @@ export type PlanStepState = z.infer<typeof PlanStepState>;
 // already approved and the merge itself succeeded — the merge commit is undone
 // (MergeEngine.process's bounce) pending this decision: approve retries the
 // merge+check, reject/modify bounces the agent to revise with the check output.
-export const HitlKind = z.enum(["approval", "question", "plan", "diff", "merge", "escalation", "verifier", "roadmap_edit"]);
+export const HitlKind = z.enum(["approval", "question", "plan", "diff", "merge", "escalation", "verifier", "roadmap_edit", "handoff"]);
 export type HitlKind = z.infer<typeof HitlKind>;
 
 /** Default single-tenant workspace until real provisioning lands. */
@@ -537,6 +537,12 @@ export type DraftCharterRequest = z.infer<typeof DraftCharterRequest>;
 
 // ─── Project · Task ───────────────────────────────────────────────────────
 
+// The three job functions a shipped Feature/Milestone can fan out to (see
+// Project.roleAgents / startFeatureShipHandoff). Fixed set, not
+// operator-extensible — each has its own dedicated prompt + apply path.
+export const HandoffRole = z.enum(["change-manager", "docs-writer", "release-comms"]);
+export type HandoffRole = z.infer<typeof HandoffRole>;
+
 export const Project = z.object({
   id: z.string(),
   workspaceId: z.string(),
@@ -753,6 +759,21 @@ export const Project = z.object({
   // queuing, and auto-promote when a slot frees. null = no limit (today's
   // behavior). Only meaningful when newBoardEnabled is on.
   queuedWipLimit: z.number().int().positive().nullable().default(null),
+  // Agent-to-agent handoff on feature completion (v2): when a Feature or
+  // Milestone flips to "shipped" (see startFeatureShipHandoff), each
+  // configured role fires a scoped, HITL-gated brief at a specific
+  // pre-assigned agent — an explicit per-project assignment, not a dynamic
+  // "pick an idle one" pool the way bake-off judging works, since a role is
+  // a standing job assignment the operator makes once, not a per-event
+  // eligibility scan. Each field is an agent id or null (that role is
+  // disabled for this project — the default for all three, opt-in).
+  roleAgents: z
+    .object({
+      changeManager: z.string().nullable().default(null),
+      docsWriter: z.string().nullable().default(null),
+      releaseComms: z.string().nullable().default(null),
+    })
+    .default({}),
 });
 export type Project = z.infer<typeof Project>;
 
@@ -1448,6 +1469,26 @@ export const HitlItem = z.object({
   // supersede that happens after this was raised is picked up for free.
   projectId: z.string().nullable().default(null),
   roadmapProposalId: z.string().nullable().default(null),
+  // `handoff` only (v2, feature-ship fan-out) — like `roadmap_edit` above,
+  // this has no TaskRun behind it (raised by startFeatureShipHandoff's bus
+  // subscriber, not a live agent run), so `runId` carries an inert
+  // `handoff:<this item's own id>` placeholder. Unlike roadmap_edit, the
+  // payload is frozen straight onto the item at raise time rather than
+  // living in its own re-fetchable entity — a rare, one-shot draft (one per
+  // shipped feature/milestone per role) has no ongoing lifecycle another
+  // actor could change out from under it the way a roadmap proposal's
+  // section can (supersede, conflict pairing), so there's nothing live to
+  // re-fetch; the same staleness-on-commit check the roadmap path relies on
+  // (comparing against the file's on-disk content) still applies via
+  // `handoffBaseline`. Only `handoffFilePath`/`handoffBaseline`/
+  // `handoffContent` are set for change-manager/docs-writer (file-writing
+  // roles); only `handoffDraftText` is set for release-comms (no file, no
+  // commit — approving just finalizes the draft for the operator to copy).
+  handoffRole: HandoffRole.nullable().default(null),
+  handoffFilePath: z.string().nullable().default(null),
+  handoffBaseline: z.string().nullable().default(null),
+  handoffContent: z.string().nullable().default(null),
+  handoffDraftText: z.string().nullable().default(null),
 });
 export type HitlItem = z.infer<typeof HitlItem>;
 
@@ -1879,6 +1920,17 @@ export const UpdateProjectRequest = z.object({
   alwaysGateCommands: z.array(z.string()).optional(),
   // See Project.ruleSafetyDefaults — whole-object replace.
   ruleSafetyDefaults: RuleSafety.optional(),
+  // See Project.roleAgents — whole-object replace, same convention as
+  // ruleSafetyDefaults/autoMerge above (reuses that exact object shape
+  // rather than a deep-partial — a caller touching any one role sends the
+  // whole object, echoing back the roles it isn't changing).
+  roleAgents: z
+    .object({
+      changeManager: z.string().nullable(),
+      docsWriter: z.string().nullable(),
+      releaseComms: z.string().nullable(),
+    })
+    .optional(),
 });
 export type UpdateProjectRequest = z.infer<typeof UpdateProjectRequest>;
 

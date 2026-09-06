@@ -27,6 +27,7 @@ import { recordPublicOrigin } from "./preview/public-origin.js";
 import { registerSecretsRoutes } from "./secrets/index.js";
 import { registerGithubRoutes, registerGithubWebhookRoutes, configureGithub, githubService } from "./github/index.js";
 import { startTaskSourceSync } from "./task-sync.js";
+import { startFeatureShipHandoff } from "./feature-ship-handoff.js";
 import { DEFAULT_WORKSPACE } from "@skynet/shared";
 import { registerEvalsRoutes } from "./evals/index.js";
 import { registerSimulationRoutes } from "./simulation/index.js";
@@ -84,6 +85,11 @@ async function main() {
   // Write task status changes back to their imported source of truth (GitHub
   // issues today). Off unless a project opts in (syncSourceStatus). Best-effort.
   startTaskSourceSync(bus, { store, log: (m) => console.log(m) });
+
+  // Agent-to-agent handoff on feature completion (v2): when a Feature/Milestone
+  // ships, fan out to each configured role-agent (Project.roleAgents). Off
+  // unless a project opts a role in. Best-effort, same as task-sync above.
+  startFeatureShipHandoff(bus, { store, orchestrator, log: (m) => console.log(m) });
 
   // Deploy-time convenience: if a GITHUB_TOKEN is present (the GCP self-host
   // loads it from Secret Manager) and the workspace has no GitHub connection
