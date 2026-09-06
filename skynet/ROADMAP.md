@@ -217,10 +217,19 @@ Ordered by priority (urgent bug → launch-wedge remainder → product debt → 
 - [~] **🔗 Per-project live preview — "see what it builds", any software.** Phase 1 (web/sites) shipped:
   project + per-run preview managers, descriptor→heuristic→agent-assisted recipe resolution
   (`.skynet/preview.json`), refresh-on-merge, and a resizable split-screen dock ⇄ modal reachable from a
-  phone via a `/p/<token>/` reverse proxy (Host-rewrite, HMR bridged). **Remaining:** Phase 2 (a
-  service-container runtime + auto-rebuild on merge, for apps with a server/API, not just static sites)
-  and Phase 3 (command/artifact preview kind — "run it and show the result", for non-web software).
-  Full design: [docs/live-preview.md](docs/live-preview.md).
+  phone via a `/p/<token>/` reverse proxy (Host-rewrite, HMR bridged). **Phase 3 shipped: the `command`
+  preview kind** — a `.skynet/preview.json` with `kind:"command"` runs a `command` to COMPLETION
+  (sandboxed + command-safety-gated, same as an install/build step) instead of spawning a server, and
+  the `LivePreviewModal` renders a result panel (exit code, always-visible output, declared `artifacts`
+  globs rendered inline by type — image/PDF embedded, everything else a download link) instead of an
+  iframe/device-frame. Artifacts are served from a new public capability-URL route
+  (`/preview-artifact/<token>/*`, mirroring `/p/<token>/`'s pattern — a plain `<img>`/`<iframe>` can't
+  attach the app's bearer session header) allowlisted to exactly the files that run reported, never an
+  arbitrary worktree file. `kind` defaults to `"service"` when a descriptor omits it — zero impact on
+  existing web/service previews. **Remaining:** Phase 2's service-container runtime (hosted/v1
+  isolation, vs. today's opt-in OS sandbox — the auto-rebuild-on-merge half already shipped) and
+  `kind:"static"` (build → serve `outputDir`, reusing the old W5 builder/route machinery). Full design:
+  [docs/live-preview.md](docs/live-preview.md).
 - [~] **🔁 Task ↔ source-of-truth sync.** Tasks imported from an external source should update the
   source when their Skynet status changes. Phase 1 (done): GitHub issues import + status writeback.
   Phase 2 (done): repo checklist files (`- [ ]` items import as tasks; completing one checks the box,

@@ -120,6 +120,50 @@ export async function runToCompletion(cmd: string, cwd: string, log: (line: stri
   });
 }
 
+export interface RunResult {
+  code: number | null;
+  timedOut: boolean;
+}
+
+/**
+ * Like `runToCompletion`, but RESOLVES (never rejects) with the exit code —
+ * for a caller where a non-zero exit is a normal, showable RESULT (a test
+ * run's failure, a linter's findings), not an infra error that should abort a
+ * `&&`-chained setup step. Used by the "command" preview kind (see
+ * docs/live-preview.md's Phase 3): the whole point is to run the operator's
+ * command and show what happened, pass or fail.
+ *
+ * Same mandatory hardening as `runToCompletion` — `assertApprovable` (still
+ * throws synchronously on a hard-DENIED command; this is a refusal to run at
+ * all, not a "the command ran and failed" result) and the forced OS
+ * write-sandbox — since this runs the exact same class of unreviewed-branch
+ * content (`.skynet/preview.json`'s `command`).
+ */
+export async function runCommand(cmd: string, cwd: string, log: (line: string) => void, timeoutMs: number, env?: NodeJS.ProcessEnv): Promise<RunResult> {
+  assertApprovable(cmd);
+  const wrapped = wrapForSandbox("/bin/sh", ["-c", cmd], { cwd, force: true });
+  return new Promise((res) => {
+    if (wrapped.note) log(wrapped.note);
+    const child = spawn(wrapped.bin, wrapped.args, { cwd, env: env ?? scrubbedEnv() });
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGKILL");
+    }, timeoutMs);
+    child.stdout?.on("data", (b) => log(b.toString()));
+    child.stderr?.on("data", (b) => log(b.toString()));
+    child.on("error", (err) => {
+      clearTimeout(timer);
+      log(`process error: ${err.message}`);
+      res({ code: null, timedOut: false });
+    });
+    child.on("exit", (code) => {
+      clearTimeout(timer);
+      res({ code, timedOut });
+    });
+  });
+}
+
 /** Make dependencies available in a worktree before running an install-gated
  *  command (a dev server, or a local `build` step). Fast path: symlink the
  *  operator's already-installed node_modules (desktop folder-bound projects
