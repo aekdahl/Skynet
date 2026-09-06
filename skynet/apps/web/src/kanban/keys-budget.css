@@ -70,6 +70,7 @@
 }
 @media (prefers-reduced-motion: reduce) { .kbb-chip { animation: none; } }
 .kbb-chip-remove { border: none; background: none; color: inherit; cursor: pointer; font-size: 12px; line-height: 1; padding: 0; }
+.kbb-chip-remove:hover { color: var(--ak-warn); }
 .kbb-chip-remove:focus-visible { outline: none; box-shadow: var(--ak-focus-ring); }
 .kbb-chip-add-wrap {
   display: inline-flex; align-items: center;
