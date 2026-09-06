@@ -91,6 +91,16 @@ export const config = {
   sessionTtlMs: Number(process.env.SESSION_TTL_MS ?? 12 * 60 * 60 * 1000),
   sessionTtlMfaMs: Number(process.env.SESSION_TTL_MFA_MS ?? 30 * 24 * 60 * 60 * 1000),
 
+  // Chat → canvas handoff (ROADMAP.md) — how long a hosted Telegram
+  // notification's deep link stays valid before a cold click has to fall
+  // back to a normal login. Deliberately NOT short like an MFA code (see
+  // auth/link-exchange.ts's doc comment): the token's keyspace is huge and
+  // single-use, so the real risk is staleness, not brute force — and HITL
+  // notifications are async by design (an operator may not check their phone
+  // for hours), so a 5-minute window would defeat the feature's own purpose.
+  // Default 24h.
+  handoffTtlMs: Number(process.env.SKYNET_HANDOFF_TTL_MS ?? 24 * 60 * 60 * 1000),
+
   // ── First operator (production login seed) ─────────────────────────────────
   // In dev/test the operator directory is seeded with the demo pair so the login
   // flow is demoable end-to-end. In PRODUCTION those shared demo accounts are

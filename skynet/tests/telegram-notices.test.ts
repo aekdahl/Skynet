@@ -4,7 +4,7 @@
 // pin-the-node-docker-image-to-a-d-1 needs attention").
 import { describe, it, expect } from "vitest";
 import type { HitlItem } from "@skynet/shared";
-import { gateNotice, decisionCardHtml, gateHead, gateKeyboard, reviewNotice, completedNotice, runLink, desktopRunLink } from "../apps/server/src/telegram/notices.js";
+import { gateNotice, decisionCardHtml, gateHead, gateKeyboard, reviewNotice, completedNotice, runLink, desktopRunLink, handoffLink, telegramOperatorId } from "../apps/server/src/telegram/notices.js";
 
 const UGLY_RUN_ID = "pin-the-node-docker-image-to-a-d-1";
 const UGLY_GATE_ID = "q-diff-pin-the-node-docker-image-to-a-d-1-20";
@@ -254,6 +254,17 @@ describe("deep links", () => {
 
   it("desktopRunLink builds a skynet:// OS-protocol link — no base URL, never undefined", () => {
     expect(desktopRunLink(UGLY_RUN_ID)).toBe(`skynet://agent/${UGLY_RUN_ID}`);
+  });
+
+  it("handoffLink builds a /handoff/<token> link, or nothing without a base URL", () => {
+    expect(handoffLink("https://skynet.example.com", "tok_abc")).toBe(
+      "https://skynet.example.com/handoff/tok_abc",
+    );
+    expect(handoffLink("", "tok_abc")).toBeUndefined();
+  });
+
+  it("telegramOperatorId is the one shared identity the bridge acts as", () => {
+    expect(telegramOperatorId("998877")).toBe("telegram:998877");
   });
 
   it("appends the link when given (and omits it otherwise)", () => {
