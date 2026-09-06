@@ -452,6 +452,29 @@ via a `spawn_worker` tool; risk-based escalation; worker→manager→project mer
   overspending" primitives this endgame needs.
   Full sketch: [docs/dev-team-blueprint.md](docs/dev-team-blueprint.md) (phased: Charter rides v1.5 ·
   CoS+Leads+QA ride v2 · Security/Spec/Scribe ride v1 governance + v3 triggers · Curator/retro ride v4/v5).
+- [ ] **Team Blueprint v0** — turn "start a manager" into a sized-team proposal (Gate G0). Today's
+  `assignManager` takes one area and spins up a single manager (see "Manager/worker UI" above); this
+  raises ONE `plan` HITL proposing "N area leads + M developers + QA on/off" sized to the project's
+  charter + module map, which the operator approves/edits/strips to a single dev before anything
+  hires. No new gate type — reuses `plan`; no new UI surface — replaces the current
+  `ManagerAreaPicker` with a real sizing proposal.
+- [ ] **QA role, surfaced** — ship the settings UI toggle for `Project.deepReview`/`.breakerReview`
+  (both already built server-side, PATCH-API-only today — see the batch-N item above), formalize a
+  dedicated QA role (an agent scoped to review, not just "whichever fleet agent is free"), and make
+  the verifier gate (tests green before human diff review) first-class in the pipeline — the
+  blueprint's G4.
+- [ ] **Chief-of-Staff-lite** — given an approved Charter, propose epics → milestones → tasks with
+  dependency order and honest estimate ranges as ONE `plan` HITL; approving creates the backlog.
+  Reuses existing Feature/Milestone/Task entities and the `plan` HITL machinery — no new schema.
+- [ ] **Standup digest** — the CoS posts a daily/per-session summary (shipped, in-flight,
+  blocked-on-you, spend vs. budget), riding the existing report/mass-inform seam and the cost
+  roll-ups `home-metrics.ts` already computes — no new aggregation.
+- [ ] **Team page** — a per-project page rendering the hired roles as an org chart (mandate, budget
+  burn, and delegation policy for each) — the "you can see the team" half of §5's operator experience.
+- [ ] **Delegated-gate Inbox/Audit filter, generalized** — extends the "Manager auto-resolves" Audit
+  filter (Manager/worker UI above, keyed on the literal `manager:<id>` operator-id prefix) to every
+  role-delegated gate as more roles land (`lead:<id>`, `qa:<id>`, `security:<id>`, …) — the audit trail
+  that keeps a shrinking Inbox honest.
 - **🔗 Product steward & the living Plan** — the concrete substrate under the north star: a
   first-class, **versioned Plan entity** (the durable roadmap the steward maintains — the proper
   replacement for the AI's throwaway `ROADMAP.md`/`PLAN.md` scratch files in the repo) plus a
@@ -477,6 +500,14 @@ inbound-trigger primitive, Skynet as an MCP server, GitHub Issues two-way sync) 
 - [ ] **Candidate responders:** Sentry regression → fix PR · GitHub issue → PR · PR review · CI-failure
   fix · Dependabot/CVE patch+fix · PagerDuty/Datadog incident triage · support ticket → bug task.
 - [ ] Tier-2 API agents (Devin, Jules — see runner-catalog) plug in here as delegated remote workers.
+- [ ] **Security Officer role** ([docs/dev-team-blueprint.md](docs/dev-team-blueprint.md) §2) — a
+  dedicated diff scanner (secrets, injection, dependency risk) wired to the existing prompt-injection
+  firewall + safety classifier, hard-blocking on findings; a role, not a new detection engine. Gate G5.
+- [ ] **Spec Analyst role** — formalizes Charter-drafting (already a one-shot call, shipped) into a
+  persistent role that also runs the task-linter (v1.5) on vague asks and raises clarifying
+  `question`s before work starts. Gates G-1/G1.
+- [ ] **SRE/Ops role** *(blocked on the inbound-trigger primitive above)* — watches CI/incidents/
+  alerts, files fix tasks with context, and routes failures back to the originating run.
 
 ## v4 — Moat Layer: Portable cross-vendor memory (M1)  🔗
 User-owned memory that no single vendor can match, because everything streams through Skynet.
@@ -501,6 +532,11 @@ spec's file format) — see [the archive](ROADMAP-ARCHIVE.md#v4--moat-layer-port
   operator-authored + decision-derived facts, add a Skynet-side curating LLM later. Spike writeup
   (pipeline shape, guardrails against a fabricating/over-generalizing corpus, eval approach, phasing):
   [docs/memory-distillation.md](docs/memory-distillation.md).
+- [ ] **Memory Curator role** ([docs/dev-team-blueprint.md](docs/dev-team-blueprint.md) §2) — the role
+  wrapper around the distillation work above: promotes approve-with-memory decisions and retro
+  outcomes (once the retro loop below ships) into portable facts, and syncs them into repo-native
+  files (the "manage repo-native memory too" bullet above) — same distillation intelligence, framed
+  as a persistent team member instead of a background job.
 
 ## v5 — Moat Layer: Agent fluency (M2)  🔬🔗
 Help users run **more agents with clearer tasks** — the flywheel (better results + more usage).
@@ -513,6 +549,13 @@ Help users run **more agents with clearer tasks** — the flywheel (better resul
   moat visible and compounds with v4.
 - [ ] 🔬 The coach is **LLM-based** (critiques tasks, proposes decompositions); open research on UX + quality.
 - [ ] Compounds with v4 — the coach learns from the workspace's own memory/history.
+- [ ] **Retro loop → CoS estimate calibration** ([docs/dev-team-blueprint.md](docs/dev-team-blueprint.md)
+  §4) — feeds actual tokens/time per task back into the Chief-of-Staff-lite's (v2) estimate ranges, so
+  milestone estimates get honest with use instead of staying guesses. The measurement half is the
+  "provably-improving fleet" bullet above; this is where the fleet's own planner consumes it.
+- [ ] **Elastic team scaling** — the CoS proposes scaling ("backlog 12 deep, 2 idle runners → hire 3
+  devs?") as a `plan` gate; roles idle past a TTL auto-retire (their memory persists — the team is
+  disposable, the knowledge isn't).
 
 ## v6 — Vendor migration
 Help a user **move from one vendor to another** (Claude ↔ Codex ↔ Gemini …): carry over the
