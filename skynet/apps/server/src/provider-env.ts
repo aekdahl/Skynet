@@ -38,6 +38,9 @@ export const PROVIDER_ENV_VARS: Record<ProviderId, readonly string[]> = {
   // string, defaulting to "kimi" with no prefix. google-genai/vertexai are not
   // reachable via this env channel (see kimi.ts), so they're omitted here.
   kimi: ["KIMI_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"],
+  // Aider is provider-agnostic (litellm-backed) like Hermes/OpenCode; defaulted
+  // to Anthropic per its own docs' examples — see aider.ts.
+  aider: ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "OPENROUTER_API_KEY"],
 };
 
 /** The primary API-key env var per provider (its value is injectable as the key). */

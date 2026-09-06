@@ -21,7 +21,7 @@ These run as a command-line process we can drive non-interactively. Ideal `runne
 | **Cursor Agent / Cursor CLI** | Cursor | ✅ adapter (CLI + background agents) |
 | **Copilot CLI / coding agent** | GitHub | ✅ adapter |
 | **OpenCode** | open source | ✅ adapter — provider-agnostic terminal agent; **ubiquitous** across the competitor field |
-| **Aider** | open source | ⭐ mature terminal pair-programmer; very automatable |
+| **Aider** | open source | ✅ adapter — headless via `--message`/`--yes-always`; **not yet live-verified** (no real install/key available when it landed), and `--yes-always` doesn't auto-run shell commands the model proposes ([issue #3903](https://github.com/Aider-AI/aider/issues/3903), open) — edits land, commands don't |
 | **OpenHands** (ex-OpenDevin) | open source | ⭐ headless agent runtime; strong fit |
 | **Goose** | Block | ⭐ open-source CLI agent, MCP-native |
 | **Amp** | Sourcegraph | ⭐ CLI agent |

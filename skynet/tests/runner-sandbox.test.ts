@@ -130,3 +130,17 @@ describe("kimi provider registration", () => {
     }
   });
 });
+
+describe("aider provider registration", () => {
+  it("is a valid ProviderId and appears in the default catalog", () => {
+    expect(ProviderId.safeParse("aider").success).toBe(true);
+    const entry = DEFAULT_PROVIDERS.find((p) => p.id === "aider");
+    expect(entry).toBeDefined();
+    expect(entry!.models.length).toBeGreaterThan(0);
+  });
+
+  // No dot-dir sandbox assertion here (unlike kimi's ~/.kimi-code above) —
+  // Aider's home-level footprint (a single ~/.aider.conf.yml, plus whatever
+  // litellm caches under ~/.cache) isn't confirmed live; it isn't asserted as
+  // whitelisted rather than guessed. See aider.ts's file header.
+});
