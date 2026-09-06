@@ -6,6 +6,7 @@ import * as api from "../lib/client";
 import { useEscapeLayer } from "../lib/escape-stack";
 import { Blocked, PrimaryButton } from "../components/empty";
 import { BakeoffPicker } from "../components/bakeoff-picker";
+import { ManagerAreaPicker } from "../components/manager-area-picker";
 import {
   agentsForProject,
   computeUsageRollup,
@@ -348,6 +349,7 @@ function TaskCard({
     queue,
     fleet,
     providers,
+    modules,
     features,
     milestones,
     solutionBriefs,
@@ -360,6 +362,7 @@ function TaskCard({
     reassignTaskAgent,
     archiveTask,
     assignTask,
+    assignManager,
     startBakeoff,
     transitionTask,
     moveTask,
@@ -426,6 +429,7 @@ function TaskCard({
   // fleet agent (startBakeoff resolves a model/credential template from one).
   const bakeoffProviders = providers.filter((p) => fleet.some((a) => a.provider === p.id));
   const [bakeoffOpen, setBakeoffOpen] = useState(false);
+  const [managerOpen, setManagerOpen] = useState(false);
   const dnd = useContext(BoardDnd);
   const dragging = dnd?.drag?.taskId === task.id;
   // Once a run exists, the eligibility ("any agent") is moot — surface WHO is
@@ -852,6 +856,32 @@ function TaskCard({
                 if (runs && runs.length > 0) {
                   window.dispatchEvent(new CustomEvent("skynet:open-bakeoff", { detail: { bakeoffId: runs[0]!.bakeoffId } }));
                 }
+              }}
+            />
+          )}
+          {/* "Start a manager" — docs/agent-hierarchy.md. The real UI for what
+              was previously only reachable as a raw assignManager({area}) API
+              call: this run gets a spawn_worker tool and can delegate real
+              worker TaskRuns of its own instead of doing every step alone. */}
+          {(s === "backlog" || s === "todo") && (
+            <Blocked disabled={noFleet} reason={noFleet ? "No agents configured — add one in Fleet before starting." : undefined}>
+              <button
+                className="kb-move kb-manager"
+                disabled={noFleet}
+                title={noFleet ? undefined : "Start under a manager agent that can spawn its own workers for this task."}
+                onClick={() => setManagerOpen(true)}
+              >
+                Manager ⚙
+              </button>
+            </Blocked>
+          )}
+          {managerOpen && (
+            <ManagerAreaPicker
+              modules={modules}
+              onCancel={() => setManagerOpen(false)}
+              onStart={async (area) => {
+                setManagerOpen(false);
+                await assignManager(pid, task.id, area);
               }}
             />
           )}

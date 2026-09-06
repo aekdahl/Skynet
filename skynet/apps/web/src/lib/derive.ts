@@ -243,6 +243,16 @@ export const providerOf = (agent: TaskRun, fleet: Agent[]): ProviderId => {
   return r ? r.provider : agent.provider;
 };
 
+// A run provisioned with role "manager" gets a real spawn_worker MCP tool
+// that provisions a first-class worker TaskRun under it (docs/agent-
+// hierarchy.md). No schema-level field distinguishes a manager-delegated
+// worker from an ordinary session fork — both just set TaskRun.parentId (see
+// apps/server/src/orchestrator.ts's spawnWorker) — so the one signal is
+// whether the PARENT run's fleet agent has role "manager". Mirrors
+// apps/server/src/derive/merge-target.ts's isManagerDelegated, client-side.
+export const isManagerAgent = (agentId: string | null | undefined, fleet: Agent[]): boolean =>
+  !!agentId && fleet.find((f) => f.id === agentId)?.role === "manager";
+
 // ─── cost/usage roll-ups (per-project header, per-runner in Fleet) ──────────
 // PURE, unit-tested — computed client-side from `runs` (not server-derived on
 // the snapshot, unlike e.g. parallelismNudge) because `runs` is kept live by

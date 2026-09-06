@@ -393,6 +393,15 @@ const ALLOW = new Set<string>([
   // in tests/gate-batching-server.test.ts; the pure grouping logic that
   // decides WHICH gates batch together is covered by tests/gate-batching.test.ts.
   "resolveHitlBatch",
+  // "Start a manager" (docs/agent-hierarchy.md) — starts a REAL manager agent
+  // (same acquire-a-runner cost/spend as assignTask, its journey-covered
+  // sibling on the identical endpoint), which can then spawn its own real
+  // worker TaskRuns; no offline journey fixture reproduces that live-fleet
+  // spend. The mechanism itself (spawn_worker, a worker's low-risk gate
+  // auto-resolving against its manager, the delegated merge target) is
+  // exercised against a real Orchestrator in tests/manager-auto-resolve.test.ts
+  // and tests/manager-merge-target.test.ts.
+  "assignManager",
 ]);
 
 describe("client API coverage", () => {

@@ -973,6 +973,11 @@ button.chip:hover { border-color: var(--faint); }
   border-bottom-left-radius: 16px;
 }
 .sw-fork { color: var(--violet); }
+/* A manager-delegated worker (spawn_worker, docs/agent-hierarchy.md) — same
+   sub-line slot as an ordinary fork (.sw-fork), distinct color so the two
+   origins read apart at a glance. */
+.sw-delegated { color: var(--info); }
+.sw-manager-mark { margin-left: 4px; color: var(--info); font-size: var(--fz-11); }
 /* START + END anchors — the first agent's frame; every track lives between them */
 .swb-anchor { position: absolute; transform: translate(-50%, -50%); width: 13px; height: 13px; border-radius: 50%; z-index: 2; }
 .swb-start { background: var(--accent); box-shadow: 0 0 0 4px color-mix(in oklch, var(--accent), transparent 82%); }
@@ -3746,6 +3751,11 @@ button.rb-proj:hover { color: var(--accent); }
   border-radius: 999px; padding: 1px var(--space-8); white-space: nowrap; flex: none; }
 .run-endpoint { font-size: var(--fz-10-5); color: var(--accent); border: 1px solid color-mix(in oklch, var(--accent), transparent 65%);
   border-radius: 999px; padding: 1px var(--space-8); white-space: nowrap; }
+/* Manager/worker hierarchy (docs/agent-hierarchy.md) — "worker" is every
+   agent's default, so only the exception (a manager, real spawn_worker tool)
+   gets badged, same reasoning as .fleet-endpoint just above. */
+.fleet-role-manager { font-size: var(--fz-10); color: var(--info); border: 1px solid color-mix(in oklch, var(--info), transparent 65%);
+  border-radius: 999px; padding: 1px var(--space-8); white-space: nowrap; flex: none; }
 
 /* Endpoint smoke test — a real probe run, reported as a checklist rather than a
    single verdict: a vendor can authenticate perfectly and still never emit a

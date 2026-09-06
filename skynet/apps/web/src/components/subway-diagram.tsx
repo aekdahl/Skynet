@@ -1,7 +1,7 @@
 import { Fragment, type ReactNode } from "react";
 import type { Project, Task, TaskRun } from "@skynet/shared";
 import { useStore } from "../lib/store";
-import { activeProjectRuns, projectQueue, runnerName } from "../lib/derive";
+import { activeProjectRuns, isManagerAgent, projectQueue, runnerName } from "../lib/derive";
 import { StatusDot } from "./common";
 
 // Subway — ONE MAP PER PROJECT (docs/subway-model.md). The first agent assigned
@@ -163,9 +163,16 @@ export function SwDiagram({
         const rn = head ? runnerName(head, fleet) : fleet.find((a) => a.id === t.agentId)?.name ?? t.agentId;
         const parentRn = p ? runnerName(p.runs[0]!, fleet) : "";
         const done = t.runs.filter((x) => x.status === "done").length;
-        // Sub-line: fork origin / model, else "N queued" for an idle agent with only a queue.
+        // A manager-delegated worker (spawn_worker, docs/agent-hierarchy.md)
+        // and an ordinary session fork both just set TaskRun.parentId — no
+        // schema field tells them apart, only whether the PARENT track's
+        // fleet agent has role "manager" (mirrors apps/server/src/derive/
+        // merge-target.ts's isManagerDelegated, client-side).
+        const delegated = !!p && isManagerAgent(p.agentId, fleet);
+        const isManager = isManagerAgent(t.agentId, fleet);
+        // Sub-line: fork/delegation origin, else model, else "N queued" for an idle agent with only a queue.
         const sub = p
-          ? "⑂ fork of " + parentRn
+          ? (delegated ? "⚙ delegated by " : "⑂ fork of ") + parentRn
           : head
             ? head.model
             : t.queued.length + " queued";
@@ -179,8 +186,11 @@ export function SwDiagram({
             >
               {head ? <StatusDot status={head.status} /> : <span className="sw-dot-idle" title="idle — nothing running yet" />}
               <span className="sw-task-text">
-                <span className="sw-tname">{rn}</span>
-                <span className={"sw-trunner mono" + (p ? " sw-fork" : "")}>
+                <span className="sw-tname">
+                  {rn}
+                  {isManager && <span className="sw-manager-mark" title="Manager agent — can spawn its own worker TaskRuns">⚙</span>}
+                </span>
+                <span className={"sw-trunner mono" + (delegated ? " sw-delegated" : p ? " sw-fork" : "")}>
                   {sub + (isComplete(t) ? " · merged ✓" : "")}
                 </span>
               </span>

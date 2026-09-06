@@ -581,6 +581,20 @@ function EndpointChip({ endpoint }: { endpoint: string | null }) {
   );
 }
 
+// Only the exception is badged (mirrors EndpointChip just above) — role
+// "worker" is the default and every agent today, so flagging it on every card
+// would be noise. A manager is the interesting minority: it got a real
+// spawn_worker MCP tool and can delegate real worker TaskRuns of its own
+// (docs/agent-hierarchy.md).
+function RoleChip({ role }: { role: Agent["role"] }) {
+  if (role !== "manager") return null;
+  return (
+    <span className="fleet-role-manager" title="Manager agent — can spawn its own worker TaskRuns">
+      ⚙ manager
+    </span>
+  );
+}
+
 function AgentCard({
   r,
   busy,
@@ -656,6 +670,7 @@ function AgentCard({
         <div className="fleet-meta">
           <span className="fleet-pname">{p.name}</span>
           <EndpointChip endpoint={endpoint} />
+          <RoleChip role={r.role} />
           <span className="fleet-model mono">{r.model}</span>
           <span className="fleet-histcount">
             {count} task{count === 1 ? "" : "s"}
@@ -761,6 +776,7 @@ function AgentRow({
             child lands in an implicit extra cell and wraps the actions onto
             their own line. */}
         <EndpointChip endpoint={endpoint} />
+        <RoleChip role={r.role} />
       </button>
       <span className="fleet-idle-tasks mono">
         {count} task{count === 1 ? "" : "s"}
