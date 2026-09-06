@@ -34,10 +34,10 @@ import {
 // open-ended surface. An operator/action name outside these lists is a no-op
 // (logged as evidence, never silently ignored, never a thrown error — a
 // misconfigured rule shouldn't crash the engine for every other rule too). ──
-export const RULE_CONDITION_OPS = ["state_equals", "label_contains", "time_since_signal_gt", "pr_merged", "checks_green"] as const;
+export const RULE_CONDITION_OPS = ["state_equals", "label_contains", "time_since_signal_gt", "pr_merged", "checks_green", "checks_red", "changes_requested"] as const;
 export type RuleConditionOp = (typeof RULE_CONDITION_OPS)[number];
 
-export const RULE_ACTION_TYPES = ["move_task", "add_label", "post_slack_nudge", "create_proposal"] as const;
+export const RULE_ACTION_TYPES = ["move_task", "add_label", "post_slack_nudge", "create_proposal", "reengage_run"] as const;
 export type RuleActionType = (typeof RULE_ACTION_TYPES)[number];
 
 // Exported for the backtest endpoint (operations.ts's backtestRule) — a
@@ -87,6 +87,10 @@ export function matchCondition(cond: RuleCondition, ctx: EvalContext): boolean {
       return ctx.event?.type === "github.signal" && ctx.event.kind === "pr_merged";
     case "checks_green":
       return ctx.event?.type === "github.signal" && ctx.event.kind === "check_succeeded";
+    case "checks_red":
+      return ctx.event?.type === "github.signal" && ctx.event.kind === "check_failed";
+    case "changes_requested":
+      return ctx.event?.type === "github.signal" && ctx.event.kind === "review_changes_requested";
     default:
       return false; // unknown operator — never silently match
   }
@@ -136,16 +140,26 @@ function renderTemplate(template: string, task: Task): string {
   });
 }
 
+/** The one live-orchestration seam the rule engine is allowed to reach
+ *  through — kept to exactly the method reengage_run needs, not the full
+ *  Orchestrator class, so this file's dependency surface stays as narrow as
+ *  its existing Store/Bus/Hub deps. */
+export interface RuleEngineOrchestrator {
+  reengageRun(runId: string, reason: string): Promise<void>;
+}
+
 export interface RuleEngineDeps {
   store: Store;
   hub: Hub;
   bus: Bus;
+  orchestrator: RuleEngineOrchestrator;
 }
 
 export class RuleEngine {
   private store: Store;
   private hub: Hub;
   private bus: Bus;
+  private orchestrator: RuleEngineOrchestrator;
   private unsub = new Map<string, () => void>(); // workspaceId → unsubscribe
   // Reentrancy guard: a taskId currently mid-evaluation in THIS call stack.
   // Executing an action (move_task) writes the task, which re-publishes
@@ -167,6 +181,7 @@ export class RuleEngine {
     this.store = deps.store;
     this.hub = deps.hub;
     this.bus = deps.bus;
+    this.orchestrator = deps.orchestrator;
   }
 
   /** Subscribe to every workspace currently in use. Safe to call more than
@@ -303,7 +318,7 @@ export class RuleEngine {
    *  swallowed one. */
   private async executeAction(rule: Rule, task: Task, action: RuleAction, evidence: string[]): Promise<Task> {
     try {
-      const result = await this.applyAction(action, task, task.projectId, task.workspaceId);
+      const result = await this.applyAction(action, task, task.projectId, task.workspaceId, rule, evidence);
       const transition: Transition = {
         id: `tr-${task.id}-${++this.seq}`,
         workspaceId: task.workspaceId,
@@ -377,7 +392,7 @@ export class RuleEngine {
    *  scope). Both record their intent as Transition evidence so they're
    *  still feed-visible; wiring a real mutation/webhook is a documented
    *  follow-up, not silently dropped. */
-  private async applyAction(action: RuleAction, task: Task, projectId: string, workspaceId: string): Promise<ActionResult> {
+  private async applyAction(action: RuleAction, task: Task, projectId: string, workspaceId: string, rule: Rule | undefined, evidence: string[]): Promise<ActionResult> {
     switch (action.type) {
       case "move_task": {
         const toState = moveTargetState(action);
@@ -393,6 +408,11 @@ export class RuleEngine {
         const template = paramString(action, "template");
         const rendered = renderTemplate(template, task);
         return { toState: null, evidence: [`slack nudge → #${channel}: ${rendered} — no Slack transport wired yet, recorded only`] };
+      }
+      case "reengage_run": {
+        if (!task.runId) return { toState: null, evidence: [`reengage_run: task has no run to reengage — skipped`] };
+        await this.orchestrator.reengageRun(task.runId, `Rule "${rule?.name ?? "unknown"}": ${evidence.join("; ")}`);
+        return { toState: null, evidence: [`re-engaged the originating run (${task.runId})`] };
       }
       case "create_proposal": {
         const params = (action.params ?? {}) as Record<string, unknown>;
@@ -463,7 +483,7 @@ export class RuleEngine {
     // operator-triggered "retry" instead of an accidental side effect of
     // readyAt staying in the past.
     try {
-      const result = await this.applyAction(pending.action, task, pending.projectId, task.workspaceId);
+      const result = await this.applyAction(pending.action, task, pending.projectId, task.workspaceId, rule, pending.evidence);
       const transitionId = `tr-${pending.id}`;
       const transition: Transition = {
         id: transitionId,

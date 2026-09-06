@@ -24,16 +24,33 @@ const waitFor = async (pred: () => Promise<boolean> | boolean, ms = 2000): Promi
 
 const PROJECT_ID = "p1";
 
+/** Records every call instead of touching real orchestration — the rule
+ *  engine's tests never spin up git/worktrees/agents (see the file header),
+ *  and reengage_run's only job is to call this one method with the right
+ *  args, which a stub proves just as well as the real Orchestrator. */
+function mkOrchestratorStub() {
+  const calls: { runId: string; reason: string }[] = [];
+  return {
+    orchestrator: {
+      reengageRun: async (runId: string, reason: string) => {
+        calls.push({ runId, reason });
+      },
+    },
+    reengageCalls: calls,
+  };
+}
+
 async function setup() {
   const store = new MemoryStore({ seed: false });
   const bus = new InProcessBus();
   const hub = new Hub(store, bus);
-  const engine = new RuleEngine({ store, hub, bus });
+  const { orchestrator, reengageCalls } = mkOrchestratorStub();
+  const engine = new RuleEngine({ store, hub, bus, orchestrator });
   await store.putProject({
     id: PROJECT_ID, workspaceId: DEFAULT_WORKSPACE, name: "P", goal: "", runIds: [], status: "active",
   } as Project);
   await engine.start();
-  return { store, bus, hub, engine };
+  return { store, bus, hub, engine, reengageCalls };
 }
 
 const mkTask = (over: Partial<Task> = {}): Task =>
@@ -585,5 +602,58 @@ describe("rule engine — failed action visibility + retry (TASK 13 hardening)",
   it("retryFailedAction throws a clear error for a rule/task that no longer exists", async () => {
     const { engine } = await setup();
     await expect(engine.retryFailedAction("nope", "also-nope")).rejects.toThrow(/no longer exists/);
+  });
+});
+
+describe("rule engine — reengage_run action (Feedback-loop responders)", () => {
+  const checkFailed = (over: Partial<Extract<ServerEvent, { type: "github.signal" }>> = {}): ServerEvent => ({
+    type: "github.signal", taskId: "t1", kind: "check_failed",
+    payload: { prNumber: 42, prUrl: "https://github.com/acme/app/pull/42", branch: "agent/x" },
+    ...over,
+  });
+
+  const reengageRule = (over: Partial<Rule> = {}): Rule => ({
+    id: "rule-reengage", workspaceId: DEFAULT_WORKSPACE, projectId: PROJECT_ID, name: "CI failed → resume agent",
+    when: "x", conditions: [{ field: "state", op: "checks_red", value: null }],
+    actions: [{ type: "reengage_run", params: {} }],
+    safety: { announceBeforeActing: false, undoWindowMin: 0, pauseAfterUndos: 3, excludePriorities: [] },
+    stats: { moves: 0, undos: 0, watchMatches: 0 }, state: "live", pausedReason: null,
+    createdAt: Date.now(), watchStartedAt: null, updatedAt: Date.now(), archived: false, ...over,
+  });
+
+  it("a check_failed signal calls orchestrator.reengageRun with the task's run id", async () => {
+    const { store, bus, reengageCalls } = await setup();
+    await store.putTask(mkTask({ runId: "r1" }));
+    await store.putRule(reengageRule());
+
+    bus.publish(DEFAULT_WORKSPACE, checkFailed());
+    await waitFor(() => reengageCalls.length > 0);
+
+    expect(reengageCalls[0]!.runId).toBe("r1");
+    expect(reengageCalls[0]!.reason).toContain("CI failed → resume agent");
+  });
+
+  it("a review_changes_requested signal matches the changes_requested condition too", async () => {
+    const { store, bus, reengageCalls } = await setup();
+    await store.putTask(mkTask({ runId: "r1" }));
+    await store.putRule(reengageRule({ conditions: [{ field: "state", op: "changes_requested", value: null }] }));
+
+    bus.publish(DEFAULT_WORKSPACE, checkFailed({ kind: "review_changes_requested" }));
+    await waitFor(() => reengageCalls.length > 0);
+
+    expect(reengageCalls[0]!.runId).toBe("r1");
+  });
+
+  it("a task with no run records evidence instead of calling the orchestrator", async () => {
+    const { store, bus, reengageCalls } = await setup();
+    await store.putTask(mkTask({ runId: null }));
+    await store.putRule(reengageRule());
+
+    bus.publish(DEFAULT_WORKSPACE, checkFailed());
+    await waitFor(async () => (await store.listTransitionsForTask("t1")).length > 0);
+
+    expect(reengageCalls).toHaveLength(0);
+    const [transition] = await store.listTransitionsForTask("t1");
+    expect(transition!.evidence.some((e) => e.includes("no run to reengage"))).toBe(true);
   });
 });

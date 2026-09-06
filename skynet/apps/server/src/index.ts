@@ -70,10 +70,14 @@ async function main() {
   const hub = new Hub(store, bus);
   const orchestrator = new Orchestrator(store, hub);
   // Momentum Rollout Phase 1b — the board-management layer alongside the
-  // orchestrator (reacts to signals, moves cards, writes Transitions; never
-  // touches agents/worktrees). Subscribing is inert on its own: it only acts
-  // once a project has at least one `state:"live"` Rule.
-  const ruleEngine = new RuleEngine({ store, hub, bus });
+  // orchestrator (reacts to signals, moves cards, writes Transitions). The
+  // orchestrator dep is exactly one seam wide (RuleEngineOrchestrator —
+  // reengageRun): the "Feedback-loop responders" primitive's reengage_run
+  // action re-engages a signal's originating run through it; every other
+  // action still never touches agents/worktrees directly. Subscribing is
+  // inert on its own: it only acts once a project has at least one
+  // `state:"live"` Rule.
+  const ruleEngine = new RuleEngine({ store, hub, bus, orchestrator });
   await ruleEngine.start();
   // The shared service layer behind both the HTTP API and the MCP server.
   const operations = new Operations({ store, hub, orchestrator, ruleEngine });

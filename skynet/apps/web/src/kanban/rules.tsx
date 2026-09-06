@@ -25,6 +25,8 @@ const CONDITION_OPS: Array<{ op: RuleCondition["op"]; label: string; needsValue:
   { op: "time_since_signal_gt", label: "hours since last signal >", needsValue: "hours" },
   { op: "pr_merged", label: "PR merged", needsValue: null },
   { op: "checks_green", label: "checks passed", needsValue: null },
+  { op: "checks_red", label: "checks failed", needsValue: null },
+  { op: "changes_requested", label: "changes requested", needsValue: null },
 ];
 
 const ACTION_TYPES: Array<{ type: RuleAction["type"]; label: string }> = [
@@ -32,6 +34,7 @@ const ACTION_TYPES: Array<{ type: RuleAction["type"]; label: string }> = [
   { type: "add_label", label: "add label" },
   { type: "post_slack_nudge", label: "post Slack nudge" },
   { type: "create_proposal", label: "create proposal" },
+  { type: "reengage_run", label: "resume the originating agent" },
 ];
 
 const PROPOSAL_KINDS: ProposalKind[] = ["draft_task", "suggested_subtask", "suggested_rule", "suggested_reassignment", "stall_nudge"];
@@ -83,6 +86,10 @@ export function describeCondition(cond: RuleCondition): string {
       return "PR merged";
     case "checks_green":
       return "checks passed";
+    case "checks_red":
+      return "checks failed";
+    case "changes_requested":
+      return "changes requested";
     default:
       return cond.op;
   }
@@ -98,6 +105,8 @@ export function describeAction(action: RuleAction): string {
       return `post Slack nudge to #${paramStr(action, "channel")}`;
     case "create_proposal":
       return `create a "${((action.params as { kind?: string } | null)?.kind) ?? "…"}" proposal`;
+    case "reengage_run":
+      return "resume the originating agent";
     default:
       return action.type;
   }

@@ -398,7 +398,7 @@ describe("live events via the rule engine", () => {
     const store = new MemoryStore();
     const bus = new InProcessBus();
     const hub = new Hub(store, bus);
-    const engine = new RuleEngine({ store, hub, bus });
+    const engine = new RuleEngine({ store, hub, bus, orchestrator: { reengageRun: async () => {} } });
     await store.putProject({ id: PROJECT_ID, workspaceId: DEFAULT_WORKSPACE, name: "P", goal: "", runIds: [], status: "active" } as Project);
     await engine.start();
     const events = recordEvents(bus, DEFAULT_WORKSPACE);
@@ -476,8 +476,8 @@ describe("HTTP: pending rule actions (Activity Feed)", () => {
     const store = new MemoryStore({ seed: false });
     const bus = new InProcessBus();
     const hub = new Hub(store, bus);
-    const engine = new RuleEngine({ store, hub, bus });
     const orchestrator = new Orchestrator(store, hub, new NullProvider());
+    const engine = new RuleEngine({ store, hub, bus, orchestrator });
     const ops = new Operations({ store, hub, orchestrator, ruleEngine: engine });
     const app = Fastify();
     await registerApi(app, { operations: ops, orchestrator });
@@ -554,8 +554,8 @@ describe("HTTP: retry a failed rule action", () => {
     const store = new MemoryStore({ seed: false });
     const bus = new InProcessBus();
     const hub = new Hub(store, bus);
-    const engine = new RuleEngine({ store, hub, bus });
     const orchestrator = new Orchestrator(store, hub, new NullProvider());
+    const engine = new RuleEngine({ store, hub, bus, orchestrator });
     const ops = new Operations({ store, hub, orchestrator, ruleEngine: engine });
     const app = Fastify();
     await registerApi(app, { operations: ops, orchestrator });
