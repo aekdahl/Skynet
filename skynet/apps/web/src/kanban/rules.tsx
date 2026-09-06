@@ -25,6 +25,8 @@ const CONDITION_OPS: Array<{ op: RuleCondition["op"]; label: string; needsValue:
   { op: "time_since_signal_gt", label: "hours since last signal >", needsValue: "hours" },
   { op: "pr_merged", label: "PR merged", needsValue: null },
   { op: "checks_green", label: "checks passed", needsValue: null },
+  { op: "checks_failed", label: "checks failed", needsValue: null },
+  { op: "changes_requested", label: "review requested changes", needsValue: null },
 ];
 
 const ACTION_TYPES: Array<{ type: RuleAction["type"]; label: string }> = [
@@ -32,6 +34,7 @@ const ACTION_TYPES: Array<{ type: RuleAction["type"]; label: string }> = [
   { type: "add_label", label: "add label" },
   { type: "post_slack_nudge", label: "post Slack nudge" },
   { type: "create_proposal", label: "create proposal" },
+  { type: "resume_run", label: "resume the agent" },
 ];
 
 const PROPOSAL_KINDS: ProposalKind[] = ["draft_task", "suggested_subtask", "suggested_rule", "suggested_reassignment", "stall_nudge"];
@@ -83,6 +86,10 @@ export function describeCondition(cond: RuleCondition): string {
       return "PR merged";
     case "checks_green":
       return "checks passed";
+    case "checks_failed":
+      return "checks failed";
+    case "changes_requested":
+      return "review requested changes";
     default:
       return cond.op;
   }
@@ -98,6 +105,8 @@ export function describeAction(action: RuleAction): string {
       return `post Slack nudge to #${paramStr(action, "channel")}`;
     case "create_proposal":
       return `create a "${((action.params as { kind?: string } | null)?.kind) ?? "…"}" proposal`;
+    case "resume_run":
+      return "resume the agent to fix it";
     default:
       return action.type;
   }
@@ -609,7 +618,7 @@ export function RulesTab({ project }: { project: Project }) {
       {projectRules.length === 0 ? (
         <p className="rb-card-hint">
           No rules yet. A rule watches for a signal (a task's state, a GitHub PR/check event, staleness) and reacts —
-          moving the card, adding a label, nudging Slack, or drafting a proposal. Build one above.
+          moving the card, adding a label, nudging Slack, drafting a proposal, or resuming the agent that owns the PR. Build one above.
         </p>
       ) : (
         <div className="rb-rule-list">

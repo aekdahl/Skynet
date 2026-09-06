@@ -34,10 +34,18 @@ import {
 // open-ended surface. An operator/action name outside these lists is a no-op
 // (logged as evidence, never silently ignored, never a thrown error — a
 // misconfigured rule shouldn't crash the engine for every other rule too). ──
-export const RULE_CONDITION_OPS = ["state_equals", "label_contains", "time_since_signal_gt", "pr_merged", "checks_green"] as const;
+export const RULE_CONDITION_OPS = [
+  "state_equals",
+  "label_contains",
+  "time_since_signal_gt",
+  "pr_merged",
+  "checks_green",
+  "checks_failed",
+  "changes_requested",
+] as const;
 export type RuleConditionOp = (typeof RULE_CONDITION_OPS)[number];
 
-export const RULE_ACTION_TYPES = ["move_task", "add_label", "post_slack_nudge", "create_proposal"] as const;
+export const RULE_ACTION_TYPES = ["move_task", "add_label", "post_slack_nudge", "create_proposal", "resume_run"] as const;
 export type RuleActionType = (typeof RULE_ACTION_TYPES)[number];
 
 // Exported for the backtest endpoint (operations.ts's backtestRule) — a
@@ -87,6 +95,10 @@ export function matchCondition(cond: RuleCondition, ctx: EvalContext): boolean {
       return ctx.event?.type === "github.signal" && ctx.event.kind === "pr_merged";
     case "checks_green":
       return ctx.event?.type === "github.signal" && ctx.event.kind === "check_succeeded";
+    case "checks_failed":
+      return ctx.event?.type === "github.signal" && ctx.event.kind === "check_failed";
+    case "changes_requested":
+      return ctx.event?.type === "github.signal" && ctx.event.kind === "review_changes_requested";
     default:
       return false; // unknown operator — never silently match
   }
@@ -140,12 +152,23 @@ export interface RuleEngineDeps {
   store: Store;
   hub: Hub;
   bus: Bus;
+  /** Re-engages the run behind an open PR (Orchestrator.reworkReadyPr) — the
+   *  transport behind the `resume_run` action. A plain callback, not a typed
+   *  Orchestrator/Operations reference, deliberately: this engine "has no
+   *  business touching" worktree/git internals directly (see
+   *  sweepStallDetection's own note on the same boundary), and Operations
+   *  already imports RuleEngine, so holding a typed Operations/Orchestrator
+   *  reference here risks a cycle. Optional so existing tests/configurations
+   *  that construct RuleEngine standalone keep working — resume_run then
+   *  records "not wired" evidence instead of throwing. */
+  resumeRun?: (workspaceId: string, runId: string, guidance: string, comment?: string) => Promise<void>;
 }
 
 export class RuleEngine {
   private store: Store;
   private hub: Hub;
   private bus: Bus;
+  private resumeRun?: (workspaceId: string, runId: string, guidance: string, comment?: string) => Promise<void>;
   private unsub = new Map<string, () => void>(); // workspaceId → unsubscribe
   // Reentrancy guard: a taskId currently mid-evaluation in THIS call stack.
   // Executing an action (move_task) writes the task, which re-publishes
@@ -167,6 +190,7 @@ export class RuleEngine {
     this.store = deps.store;
     this.hub = deps.hub;
     this.bus = deps.bus;
+    this.resumeRun = deps.resumeRun;
   }
 
   /** Subscribe to every workspace currently in use. Safe to call more than
@@ -303,7 +327,7 @@ export class RuleEngine {
    *  swallowed one. */
   private async executeAction(rule: Rule, task: Task, action: RuleAction, evidence: string[]): Promise<Task> {
     try {
-      const result = await this.applyAction(action, task, task.projectId, task.workspaceId);
+      const result = await this.applyAction(action, task, task.projectId, task.workspaceId, evidence);
       const transition: Transition = {
         id: `tr-${task.id}-${++this.seq}`,
         workspaceId: task.workspaceId,
@@ -376,8 +400,17 @@ export class RuleEngine {
    *  exist anywhere in this codebase yet (verified before choosing this
    *  scope). Both record their intent as Transition evidence so they're
    *  still feed-visible; wiring a real mutation/webhook is a documented
-   *  follow-up, not silently dropped. */
-  private async applyAction(action: RuleAction, task: Task, projectId: string, workspaceId: string): Promise<ActionResult> {
+   *  follow-up, not silently dropped. `resume_run` (the ROADMAP's "feedback-
+   *  loop responders" primitive) DOES have real transport — see its own case
+   *  below and `RuleEngineDeps.resumeRun` — since Orchestrator.reworkReadyPr
+   *  already exists and is exactly the right shape. */
+  private async applyAction(
+    action: RuleAction,
+    task: Task,
+    projectId: string,
+    workspaceId: string,
+    evidence: string[],
+  ): Promise<ActionResult> {
     switch (action.type) {
       case "move_task": {
         const toState = moveTargetState(action);
@@ -409,6 +442,23 @@ export class RuleEngine {
           resolvedAt: null,
         });
         return { toState: null, evidence: [`created a "${kindParsed.data}" proposal`] };
+      }
+      case "resume_run": {
+        // The feedback-loop primitive: re-engage the SAME agent/run that owns
+        // this task's PR instead of leaving a CI failure or a "changes
+        // requested" review for a human to notice and re-prompt by hand.
+        // Reuses the run's existing worktree/branch (Orchestrator.
+        // reviseAfterReview via reworkReadyPr) — not a fresh run.
+        if (!task.runId) return { toState: null, evidence: ["resume_run: no run linked to this task — skipped"] };
+        if (!this.resumeRun) return { toState: null, evidence: ["resume_run: not wired up in this deployment — skipped"] };
+        const trigger = evidence[0] ?? "a monitored signal";
+        const guidance = `Skynet detected ${trigger}. Your previous work is already in this PR's branch — investigate and push only the changes needed to resolve it.`;
+        const comment = `Skynet detected ${trigger} and is re-engaging the agent to fix it.`;
+        // Let a throw here (no open PR, no worktree, …) propagate to
+        // executeAction's catch — same "real failure, real Transition,
+        // retryable" path create_proposal's own upsertProposal call gets.
+        await this.resumeRun(workspaceId, task.runId, guidance, comment);
+        return { toState: null, evidence: [`resumed run ${task.runId} to address: ${trigger}`] };
       }
       default:
         return { toState: null, evidence: [`unknown action type "${action.type}" — skipped`] };
@@ -463,7 +513,7 @@ export class RuleEngine {
     // operator-triggered "retry" instead of an accidental side effect of
     // readyAt staying in the past.
     try {
-      const result = await this.applyAction(pending.action, task, pending.projectId, task.workspaceId);
+      const result = await this.applyAction(pending.action, task, pending.projectId, task.workspaceId, pending.evidence);
       const transitionId = `tr-${pending.id}`;
       const transition: Transition = {
         id: transitionId,
