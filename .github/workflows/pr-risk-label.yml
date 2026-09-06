@@ -1,0 +1,87 @@
+name: PR risk label
+
+# Advisory only — never blocks merge. Flags a PR touching sensitive paths (per
+# skynet/docs/sensitive-paths.json, the same source apps/server/src/orchestrator.ts
+# reads for its own ready-to-merge/diff-review evidence) or crossing a size
+# threshold, and asks a human to consider running /code-review ultra on it —
+# that mode is billed/consent-gated, so it can only be suggested here, not
+# auto-triggered.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  label:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Classify and label
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require("fs");
+            const path = "skynet/docs/sensitive-paths.json";
+            const rules = JSON.parse(fs.readFileSync(path, "utf8"));
+            const sensitiveArea = new RegExp(rules.sensitiveAreaPattern, "i");
+            const requiresHuman = rules.requiresHumanGlobs.map(({ label, pattern }) => ({
+              label,
+              re: new RegExp(pattern),
+            }));
+            const manifests = new Set(rules.dependencyManifests);
+
+            const files = await github.paginate(github.rest.pulls.listFiles, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+              per_page: 100,
+            });
+            const paths = files.map((f) => f.filename);
+
+            const reasons = [];
+            for (const p of paths) {
+              if (sensitiveArea.test(p)) reasons.push(`sensitive area: \`${p}\``);
+              for (const { label, re } of requiresHuman) if (re.test(p)) reasons.push(`fixed policy path: ${label}`);
+              const base = p.split("/").pop() ?? p;
+              if (manifests.has(base)) reasons.push(`dependency manifest: \`${p}\``);
+            }
+            const totalDeletions = files.reduce((sum, f) => sum + f.deletions, 0);
+            if (paths.length > 40) reasons.push(`touches ${paths.length} files (> 40)`);
+            if (totalDeletions > 200) reasons.push(`${totalDeletions} deletions (> 200)`);
+
+            const unique = [...new Set(reasons)];
+            if (unique.length === 0) return;
+
+            // addLabels 404s if the label doesn't exist yet — ensure it first
+            // (idempotent: swallow the 422 "already_exists" on a repeat run).
+            await github.rest.issues.createLabel({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              name: "needs-ultra-review",
+              color: "B60205",
+              description: "Touches sensitive/large-blast-radius code — consider /code-review ultra before merging",
+            }).catch(() => {});
+
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              labels: ["needs-ultra-review"],
+            });
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body:
+                "**High-risk PR** — this touches:\n\n" +
+                unique.map((r) => `- ${r}`).join("\n") +
+                `\n\nConsider running \`/code-review ultra ${context.issue.number}\` before merging.`,
+            });

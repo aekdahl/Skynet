@@ -52,6 +52,7 @@ import { providerUsableFromEnv } from "./provider-env.js";
 import { assessProjectDrive } from "./drive.js";
 import { projectCredential } from "./project-credential.js";
 import { decideAutoMerge, DEFAULT_AUTO_MERGE_POLICY, GATE_REASON_TEXT, POLICY_MERGE_REASON } from "./merge-policy.js";
+import sensitivePaths from "../../../docs/sensitive-paths.json" with { type: "json" };
 
 /** How long before a project's board may be re-pulled from its source again. */
 const REFILL_COOLDOWN_MS = 15 * 60 * 1000;
@@ -499,9 +500,11 @@ function fleetTaskCreatedAt(task: Task): number {
 // worktree + GitHub push just to reach it.
 
 /** Sensitive areas — a change touching these reads as higher-risk on the
- *  ready-to-merge card (matched against module ids AND file paths, case-insensitive). */
-const SENSITIVE_AREA =
-  /(auth|login|session|token|secret|credential|password|payment|billing|charge|invoice|migration|schema|infra|deploy|terraform|k8s|kubernetes|security|permission|rbac)/i;
+ *  ready-to-merge card (matched against module ids AND file paths, case-insensitive).
+ *  Sourced from docs/sensitive-paths.json — the same file
+ *  .github/workflows/pr-risk-label.yml reads, so the two "what counts as
+ *  sensitive" definitions (server evidence vs. CI advisory label) can't drift. */
+const SENSITIVE_AREA = new RegExp(sensitivePaths.sensitiveAreaPattern, "i");
 
 /** The actual file paths (plus any matching module ids, folded in as synthetic
  *  "module: …" entries when no individual file name matches) that tripped the
@@ -526,16 +529,10 @@ export function mergeTouchesTests(files: string[]): boolean {
 // reviewer sees it at every stage, not just one. Display-only here — this
 // mirrors, not replaces, the merge-guardrails path-policy that decides what
 // actually blocks an auto-merge.
-const REQUIRES_HUMAN_PATTERNS: { label: string; re: RegExp }[] = [
-  { label: "migrations/**", re: /(^|\/)migrations\// },
-  { label: ".github/workflows/**", re: /^\.github\/workflows\// },
-  { label: "auth/**", re: /(^|\/)auth\// },
-];
-const DEPENDENCY_MANIFESTS = new Set([
-  "package.json", "package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "pnpm-lock.yaml",
-  "go.mod", "go.sum", "Cargo.toml", "Cargo.lock", "requirements.txt", "Pipfile", "Pipfile.lock",
-  "pyproject.toml", "poetry.lock", "composer.json", "composer.lock", "Gemfile", "Gemfile.lock",
-]);
+const REQUIRES_HUMAN_PATTERNS: { label: string; re: RegExp }[] = sensitivePaths.requiresHumanGlobs.map(
+  ({ label, pattern }) => ({ label, re: new RegExp(pattern) }),
+);
+const DEPENDENCY_MANIFESTS = new Set(sensitivePaths.dependencyManifests);
 
 /** The specific glob/category labels a diff's file list trips against the
  *  fixed "always needs a human" policy list — the evidence behind the
@@ -2890,7 +2887,6 @@ export class Orchestrator {
       model: runner.model,
       branch,
       modules,
-      bakeoffId: null,
       progress: 0,
       plan: [],
       usage: null,
