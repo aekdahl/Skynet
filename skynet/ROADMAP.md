@@ -224,8 +224,10 @@ Ordered by priority (urgent bug → launch-wedge remainder → product debt → 
 - [~] **🔁 Task ↔ source-of-truth sync.** Tasks imported from an external source should update the
   source when their Skynet status changes. Phase 1 (done): GitHub issues import + status writeback.
   Phase 2 (done): repo checklist files (`- [ ]` items import as tasks; completing one checks the box,
-  committed via the GitHub Contents API). **Remaining:** Phase 3, external/webhook sources
-  (Linear/Jira) + optional two-way sync. Full design: [docs/task-source-sync.md](docs/task-source-sync.md).
+  committed via the GitHub Contents API). Phase 3 (generic webhook slice done): an `external`-sourced
+  task POSTs its transitions to a project-configured, optionally HMAC-signed webhook URL — no
+  dedicated third-party API. **Remaining:** dedicated Linear/Jira adapters (real API + readback) and
+  optional two-way sync. Full design: [docs/task-source-sync.md](docs/task-source-sync.md).
 - [~] **Desktop code-signing & notarization** *(split out of v0 #9, which ships beta unsigned)* — sign
   the macOS build (Apple Developer ID + hardened runtime + entitlements + notarization) so Gatekeeper
   opens it cleanly and **mac auto-update works** (it silently no-ops on an unsigned build today); sign
