@@ -24,6 +24,7 @@ const PROVIDER_BIN: Partial<Record<ProviderId, string>> = {
   hermes: process.env.SKYNET_HERMES_BIN || "hermes",
   opencode: process.env.SKYNET_OPENCODE_BIN || "opencode",
   kimi: process.env.SKYNET_KIMI_BIN || "kimi",
+  aider: process.env.SKYNET_AIDER_BIN || "aider",
 };
 
 const INSTALL_HINT: Record<ProviderId, string> = {
@@ -35,13 +36,15 @@ const INSTALL_HINT: Record<ProviderId, string> = {
   hermes: "Install the Hermes Agent CLI (`hermes`, on PATH) and set a provider key (e.g. OPENROUTER_API_KEY).",
   opencode: "Install with `npm i -g opencode-ai` and authenticate (`opencode auth login`), or set a provider key (e.g. ANTHROPIC_API_KEY).",
   kimi: "Install with the official script (`curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash`) and authenticate (`kimi login`), or set a provider key (KIMI_API_KEY, ANTHROPIC_API_KEY, or OPENAI_API_KEY).",
+  aider: "Install with `python -m pip install aider-install && aider-install` (or `pipx install aider-chat`) and set a provider key (e.g. ANTHROPIC_API_KEY).",
 };
 
 // Providers whose CLI is auto-installable via a package manager the server can
 // run for the operator. Only npm is supported today — brew installs need
-// interactive password prompts, and cursor/kimi are each a `curl | bash` script
-// (a shell install the npm-only, no-shell installer deliberately doesn't run).
-// Those stay null and rely on the docs link. FIXED constants, never
+// interactive password prompts, cursor/kimi are each a `curl | bash` script,
+// and aider is a `pip`/`pipx` install (a shell/non-npm install the npm-only
+// installer deliberately doesn't run). Those stay null and rely on the docs
+// link. FIXED constants, never
 // user-derived: shells out through execFile with a static argv (no shell
 // interpolation), and the UI displays the exact command verbatim before running.
 const INSTALL_COMMAND: Partial<Record<ProviderId, { packageManager: "npm"; command: string }>> = {
@@ -62,6 +65,7 @@ const DOCS_URL: Partial<Record<ProviderId, string>> = {
   hermes: "https://hermes-agent.nousresearch.com/",
   opencode: "https://opencode.ai/docs/",
   kimi: "https://moonshotai.github.io/kimi-code/",
+  aider: "https://aider.chat/docs/scripting.html",
 };
 
 // Where to create or find the API key for each provider — linked directly from
@@ -79,6 +83,7 @@ const KEY_URL: Partial<Record<ProviderId, string>> = {
   hermes: "https://openrouter.ai/settings/keys",
   opencode: "https://console.anthropic.com/settings/keys",
   kimi: "https://platform.kimi.ai/console/api-keys",
+  aider: "https://console.anthropic.com/settings/keys",
 };
 
 /** Is `bin` resolvable on the server's PATH? Cheap synchronous scan. */

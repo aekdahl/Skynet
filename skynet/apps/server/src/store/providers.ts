@@ -21,6 +21,8 @@ const PROVIDER_ENV_KEY: Record<ProviderId, string | undefined> = {
   // Kimi Code's own native backend is the primary/default credential — see
   // provider-env.ts.
   kimi: process.env.KIMI_API_KEY,
+  // Aider is provider-agnostic too; defaulted to Anthropic — see provider-env.ts.
+  aider: process.env.ANTHROPIC_API_KEY,
 };
 
 // Each provider carries its static requirements + a live binOnPath probe (what
