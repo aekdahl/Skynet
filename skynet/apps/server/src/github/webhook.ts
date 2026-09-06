@@ -76,12 +76,17 @@ export function parseGithubSignal(event: string, payload: unknown): GithubSignal
   if (event === "pull_request_review") {
     if (action !== "submitted") return null;
     const pr = p.pull_request as { number?: number; html_url?: string } | undefined;
-    const review = p.review as { state?: string } | undefined;
+    const review = p.review as { state?: string; body?: string } | undefined;
     if (!pr?.number || !review?.state) return null;
     const kind: GithubSignalKind | null =
       review.state === "approved" ? "review_approved" : review.state === "changes_requested" ? "review_changes_requested" : null;
     if (!kind) return null;
-    return { repo, prNumber: pr.number, kind, payload: { prNumber: pr.number, prUrl: pr.html_url ?? "", reviewState: review.state } };
+    return {
+      repo,
+      prNumber: pr.number,
+      kind,
+      payload: { prNumber: pr.number, prUrl: pr.html_url ?? "", reviewState: review.state, reviewBody: review.body ?? "" },
+    };
   }
 
   if (event === "check_run") {

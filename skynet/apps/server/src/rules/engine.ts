@@ -34,10 +34,18 @@ import {
 // open-ended surface. An operator/action name outside these lists is a no-op
 // (logged as evidence, never silently ignored, never a thrown error — a
 // misconfigured rule shouldn't crash the engine for every other rule too). ──
-export const RULE_CONDITION_OPS = ["state_equals", "label_contains", "time_since_signal_gt", "pr_merged", "checks_green"] as const;
+export const RULE_CONDITION_OPS = [
+  "state_equals",
+  "label_contains",
+  "time_since_signal_gt",
+  "pr_merged",
+  "checks_green",
+  "check_failed",
+  "review_changes_requested",
+] as const;
 export type RuleConditionOp = (typeof RULE_CONDITION_OPS)[number];
 
-export const RULE_ACTION_TYPES = ["move_task", "add_label", "post_slack_nudge", "create_proposal"] as const;
+export const RULE_ACTION_TYPES = ["move_task", "add_label", "post_slack_nudge", "create_proposal", "reengage_run"] as const;
 export type RuleActionType = (typeof RULE_ACTION_TYPES)[number];
 
 // Exported for the backtest endpoint (operations.ts's backtestRule) — a
@@ -87,6 +95,10 @@ export function matchCondition(cond: RuleCondition, ctx: EvalContext): boolean {
       return ctx.event?.type === "github.signal" && ctx.event.kind === "pr_merged";
     case "checks_green":
       return ctx.event?.type === "github.signal" && ctx.event.kind === "check_succeeded";
+    case "check_failed":
+      return ctx.event?.type === "github.signal" && ctx.event.kind === "check_failed";
+    case "review_changes_requested":
+      return ctx.event?.type === "github.signal" && ctx.event.kind === "review_changes_requested";
     default:
       return false; // unknown operator — never silently match
   }
@@ -162,6 +174,13 @@ export class RuleEngine {
   // streak after a restart is the accepted cost of not persisting this.
   private undoHistory = new Map<string, number[]>();
   private seq = 0;
+  // External hook, wired by Operations (mirrors Orchestrator's own
+  // onDriveRefill/onDriveReplenish callback idiom) — the rule engine has no
+  // orchestrator reference of its own, so `reengage_run` calls back through
+  // this rather than taking on the orchestrator's full surface. Unset in any
+  // test/context that never wires it — reengage_run then no-ops (see
+  // applyAction's own check), never throws.
+  reengageRun?: (runId: string, note: string) => Promise<{ engaged: boolean; reason?: string }>;
 
   constructor(deps: RuleEngineDeps) {
     this.store = deps.store;
@@ -303,7 +322,7 @@ export class RuleEngine {
    *  swallowed one. */
   private async executeAction(rule: Rule, task: Task, action: RuleAction, evidence: string[]): Promise<Task> {
     try {
-      const result = await this.applyAction(action, task, task.projectId, task.workspaceId);
+      const result = await this.applyAction(action, task, task.projectId, task.workspaceId, evidence);
       const transition: Transition = {
         id: `tr-${task.id}-${++this.seq}`,
         workspaceId: task.workspaceId,
@@ -377,7 +396,7 @@ export class RuleEngine {
    *  scope). Both record their intent as Transition evidence so they're
    *  still feed-visible; wiring a real mutation/webhook is a documented
    *  follow-up, not silently dropped. */
-  private async applyAction(action: RuleAction, task: Task, projectId: string, workspaceId: string): Promise<ActionResult> {
+  private async applyAction(action: RuleAction, task: Task, projectId: string, workspaceId: string, evidence: string[]): Promise<ActionResult> {
     switch (action.type) {
       case "move_task": {
         const toState = moveTargetState(action);
@@ -409,6 +428,16 @@ export class RuleEngine {
           resolvedAt: null,
         });
         return { toState: null, evidence: [`created a "${kindParsed.data}" proposal`] };
+      }
+      case "reengage_run": {
+        if (!task.runId) return { toState: null, evidence: [`reengage_run: task has no run`] };
+        if (!this.reengageRun) return { toState: null, evidence: [`reengage_run: not wired`] };
+        const note = evidence[evidence.length - 1] ?? "Feedback arrived on this PR.";
+        const result = await this.reengageRun(task.runId, note);
+        return {
+          toState: null,
+          evidence: [result.engaged ? `re-engaged run ${task.runId} — ${note}` : `reengage_run: skipped — ${result.reason}`],
+        };
       }
       default:
         return { toState: null, evidence: [`unknown action type "${action.type}" — skipped`] };
@@ -463,7 +492,7 @@ export class RuleEngine {
     // operator-triggered "retry" instead of an accidental side effect of
     // readyAt staying in the past.
     try {
-      const result = await this.applyAction(pending.action, task, pending.projectId, task.workspaceId);
+      const result = await this.applyAction(pending.action, task, pending.projectId, task.workspaceId, pending.evidence);
       const transitionId = `tr-${pending.id}`;
       const transition: Transition = {
         id: transitionId,
@@ -805,7 +834,16 @@ function describeTrigger(event: ServerEvent): string {
   switch (event.type) {
     case "github.signal": {
       const prNumber = event.payload.prNumber;
-      return `github.signal:${event.kind}${prNumber != null ? ` (PR #${prNumber})` : ""}`;
+      const suffix = prNumber != null ? ` (PR #${prNumber})` : "";
+      if (event.kind === "check_failed") {
+        const name = event.payload.checkName;
+        return `CI check "${name ?? "?"}" failed${suffix}`;
+      }
+      if (event.kind === "review_changes_requested") {
+        const body = event.payload.reviewBody;
+        return `Reviewer requested changes${suffix}${body ? `: ${body}` : ""}`;
+      }
+      return `github.signal:${event.kind}${suffix}`;
     }
     case "task.upserted":
       return `task.upserted → ${event.task.state}`;

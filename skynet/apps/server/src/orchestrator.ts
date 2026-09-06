@@ -765,6 +765,10 @@ export class Orchestrator {
   // idle again by the time reassign runs and would otherwise just get
   // re-picked as its own "replacement".
   private escalations = new Map<string, { git?: GitContext; baseRef?: string; taskId: string | null; source: EscalationSource; agentId?: string | null }>();
+  // Reentrancy guard for reengageOnFeedback: a duplicate/retried GitHub
+  // webhook delivery for the same run must not fire two overlapping
+  // relaunches into the same worktree.
+  private reengaging = new Set<string>();
   // Per-run failure counter (onFailed): past config.runMaxFailures the run is
   // escalated instead of parked in `review`. Cleared on success/resolution.
   private failCounts = new Map<string, number>();
@@ -3956,7 +3960,7 @@ export class Orchestrator {
    * or drifts the resumed worktree's base just because there was no prior
    * escalation to carry that context forward.
    */
-  private async relaunchEscalated(runId: string, guidance: string, reassign: boolean, targetAgentId?: string): Promise<void> {
+  private async relaunchEscalated(runId: string, guidance: string, reassign: boolean, targetAgentId?: string, feedbackNote?: string): Promise<void> {
     const run = await this.store.getRun(runId);
     const ctx = this.escalations.get(runId);
     if (!run) return;
@@ -4084,7 +4088,7 @@ export class Orchestrator {
     // Kanban redesign, stage 1: brief a reassigned agent with a REAL summary
     // of what the prior agent tried, not just "the work is in the directory"
     // — grounded on the actual log, best-effort (see draftHandoffSummary).
-    const handoffSummary = reassign ? await this.draftHandoffSummary(run, task?.text ?? run.name) : null;
+    const handoffSummary = reassign || feedbackNote ? await this.draftHandoffSummary(run, task?.text ?? run.name) : null;
     const handoffNote = handoffSummary ? `\n\nSummary of the prior agent's work so far:\n\n${handoffSummary}` : "";
     const prompt = buildAgentContext({
       project,
@@ -4099,11 +4103,13 @@ export class Orchestrator {
       // re-reading the entire repo to rediscover what was already known. Cheap
       // insurance against the expensive case.
       handoff: run.handoff?.summary,
-      body: targetAgentId
-        ? `An operator manually reassigned this task to you mid-run — the previous agent wasn't stuck, they just chose to switch who's working it. Its work so far is already in the working directory (branch ${run.branch}).${handoffNote}${gitStateNote}${guidance ? `\n\nOperator guidance:\n\n${guidance}` : ""}\n\nReview what's there, then continue and finish the task. If you get stuck, escalate (AskUserQuestion with header "ESCALATE").`
-        : reassign
-          ? `You are taking over a task another agent escalated because it got stuck. Its work so far is already in the working directory (branch ${run.branch}).${handoffNote}${gitStateNote}${guidance ? `\n\nOperator guidance:\n\n${guidance}` : ""}\n\nReview what's there, then continue and finish the task. If you also get stuck, escalate (AskUserQuestion with header "ESCALATE").`
-          : `You escalated this task for help, and the operator responded:\n\n${guidance || "(no specific guidance — use your best judgement, or escalate again if still blocked)"}\n\nYour work so far is already in the working directory (branch ${run.branch}).${gitStateNote} Continue with this guidance and finish, or escalate again (AskUserQuestion with header "ESCALATE") if you're still blocked.`,
+      body: feedbackNote
+        ? `${feedbackNote}\n\nYour previous output is already in the working directory (branch ${run.branch}).${handoffNote}${gitStateNote}\n\nAddress this, then push a fix — or escalate (AskUserQuestion with header "ESCALATE") if you're stuck.`
+        : targetAgentId
+          ? `An operator manually reassigned this task to you mid-run — the previous agent wasn't stuck, they just chose to switch who's working it. Its work so far is already in the working directory (branch ${run.branch}).${handoffNote}${gitStateNote}${guidance ? `\n\nOperator guidance:\n\n${guidance}` : ""}\n\nReview what's there, then continue and finish the task. If you get stuck, escalate (AskUserQuestion with header "ESCALATE").`
+          : reassign
+            ? `You are taking over a task another agent escalated because it got stuck. Its work so far is already in the working directory (branch ${run.branch}).${handoffNote}${gitStateNote}${guidance ? `\n\nOperator guidance:\n\n${guidance}` : ""}\n\nReview what's there, then continue and finish the task. If you also get stuck, escalate (AskUserQuestion with header "ESCALATE").`
+            : `You escalated this task for help, and the operator responded:\n\n${guidance || "(no specific guidance — use your best judgement, or escalate again if still blocked)"}\n\nYour work so far is already in the working directory (branch ${run.branch}).${gitStateNote} Continue with this guidance and finish, or escalate again (AskUserQuestion with header "ESCALATE") if you're still blocked.`,
     });
     // Reflect the (re)acquired runner on the persisted run: a reassign moves the
     // run to a DIFFERENT agent, and the board/subway attribute runs by agentId —
@@ -4115,11 +4121,13 @@ export class Orchestrator {
     if (task) await this.hub.patchTask(task.id, { state: "ongoing" });
     await this.hub.runLog(
       runId,
-      targetAgentId
-        ? `manually reassigned to ${acq.id} mid-run`
-        : reassign
-          ? "reassigned to another runner after escalation"
-          : "resuming after escalation with operator guidance",
+      feedbackNote
+        ? "re-engaged after PR feedback"
+        : targetAgentId
+          ? `manually reassigned to ${acq.id} mid-run`
+          : reassign
+            ? "reassigned to another runner after escalation"
+            : "resuming after escalation with operator guidance",
     );
     try {
       const handle = await provider.start(
@@ -7392,6 +7400,39 @@ export class Orchestrator {
     if (live) await live.handle.resume().catch(() => undefined);
     await this.hub.runStatus(runId, "running");
     return this.store.getRun(runId);
+  }
+
+  /**
+   * Feedback-loop responders (ROADMAP v3) — route a CI-failure or PR-review
+   * signal back to the run that produced the branch, re-engaging it via
+   * `relaunchEscalated`'s existing reattach-worktree/resume-session machinery
+   * instead of starting fresh. Called from the rule engine's `reengage_run`
+   * action (RuleEngine.reengageRun, wired in Operations), which is itself
+   * only reachable through an operator-authored, opted-in Rule — this method
+   * has no gate of its own beyond "is this run actually eligible right now".
+   *
+   * Only `review`/`done` runs qualify: `running`/`waiting`/`paused` already
+   * have someone (agent or human) on them, and interrupting that with a
+   * possibly-stale CI ping would be worse than doing nothing. `mergedAt` is a
+   * cheap belt-and-braces check — publishGithubSignal resolves by open PR
+   * number, so a signal for an already-merged PR shouldn't reach here, but a
+   * merge racing a check_run delivery isn't impossible.
+   */
+  async reengageOnFeedback(runId: string, note: string): Promise<{ engaged: boolean; reason?: string }> {
+    if (this.reengaging.has(runId)) return { engaged: false, reason: "already re-engaging" };
+    const run = await this.store.getRun(runId);
+    if (!run) return { engaged: false, reason: "run not found" };
+    if (run.mergedAt) return { engaged: false, reason: "already merged" };
+    if (run.status === "running" || run.status === "waiting" || run.status === "paused") {
+      return { engaged: false, reason: `run is ${run.status} — already being worked` };
+    }
+    this.reengaging.add(runId);
+    try {
+      await this.relaunchEscalated(runId, "", false, undefined, note);
+      return { engaged: true };
+    } finally {
+      this.reengaging.delete(runId);
+    }
   }
 
   /** Operator "stop / remove": halt execution, free the runner, mark the agent done. */
