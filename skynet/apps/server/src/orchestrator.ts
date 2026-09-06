@@ -676,7 +676,7 @@ export function computeFeatureMergeBriefing(input: {
 /** Why a run got halted and handed to a human — see `escalate()`/`raiseEscalationCard()`.
  *  "agent" is agent-driven (the run itself called AskUserQuestion with header
  *  "ESCALATE") and is set directly in `raise()`, never via `escalate()`. */
-type EscalationSource = "timeout" | "failures" | "conflict" | "turns" | "stalled" | "billing" | "agent" | "stuck-review" | "paused";
+type EscalationSource = "timeout" | "failures" | "conflict" | "turns" | "stalled" | "billing" | "agent" | "stuck-review" | "paused" | "signal";
 
 /**
  * A model-ALIAS resolution failure — mapModel (claude.ts) hands the bundled
@@ -3607,6 +3607,16 @@ export class Orchestrator {
       .join("\n\n");
   }
 
+  /** Entry point for the rule engine's github.signal-driven responder (the
+   *  "Feedback-loop responders" primitive) — the ONE place outside this class
+   *  allowed to trigger an escalation. Thin wrapper over the same escalate()
+   *  path the stall reaper already uses automatically (reapStaleAgents), so a
+   *  CI failure / changes-requested review re-engages the SAME run exactly
+   *  like a stall does — same worktree/branch, same handoff-summary resume. */
+  async reengageRun(runId: string, reason: string): Promise<void> {
+    await this.escalate(runId, reason, "signal");
+  }
+
   private async escalate(runId: string, reason: string, source: EscalationSource): Promise<void> {
     if (this.escalations.has(runId)) return; // already escalated — don't re-raise
     const run = await this.store.getRun(runId);
@@ -3690,7 +3700,9 @@ export class Orchestrator {
                     ? "Done — awaiting your review"
                     : source === "paused"
                       ? "Resume failed — needs a human"
-                      : "Run keeps failing — needs a human",
+                      : source === "signal"
+                        ? "New signal on this run — resume to respond"
+                        : "Run keeps failing — needs a human",
       why: reason,
       // Every other source means something actually went wrong (timeout,
       // failures, a conflict, ran dry). stuck-review means the opposite: the
