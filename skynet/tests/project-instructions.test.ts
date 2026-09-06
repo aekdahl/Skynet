@@ -98,6 +98,59 @@ describe("statusContext with project instructions", () => {
   });
 });
 
+// Governance-to-SOTA — Steward-side approve-in-flow: OPEN GATES gives the
+// model a real id to resolve_hitl against (see ProjectActionContext.gates's
+// doc comment in assistant.ts) — without this section the action is dead
+// code, since the model would have nothing but an invented id to propose.
+describe("statusContext with open HITL gates", () => {
+  const baseProject: Project = {
+    id: "p1",
+    workspaceId: DEFAULT_WORKSPACE,
+    name: "AgentFactory",
+    goal: "build agents fast",
+    runIds: [],
+    status: "active",
+    autonomy: true,
+    approvalLevel: "trusted",
+    approvalRules: [],
+    repoPath: null,
+    gitBacked: false,
+    instructions: null,
+  };
+
+  it("omits OPEN GATES when there are none", () => {
+    const ctx = statusContext(baseProject, [], []);
+    expect(ctx).not.toContain("OPEN GATES");
+  });
+
+  it("lists an open gate with its id, kind, title, and risk", () => {
+    const gate = {
+      id: "g-1", workspaceId: DEFAULT_WORKSPACE, runId: "r-1", bakeoffId: null, kind: "approval" as const,
+      title: "Deploy to prod", why: "w", risk: "high", raisedAt: 1, expiresAt: null, resolvedAt: null, resolution: null,
+      command: "deploy", options: null, recommended: null, steps: null, diff: null, output: null, rationale: null, flags: [],
+      sourceBranchOverride: null, projectId: null, roadmapProposalId: null,
+    };
+    const ctx = statusContext(baseProject, [], [], [], [], [], [gate]);
+    expect(ctx).toContain("OPEN GATES");
+    expect(ctx).toContain("[g-1]");
+    expect(ctx).toContain("approval");
+    expect(ctx).toContain("Deploy to prod");
+    expect(ctx).toContain("high risk");
+  });
+
+  it("numbers a question gate's options so 'option 2' maps unambiguously", () => {
+    const gate = {
+      id: "g-2", workspaceId: DEFAULT_WORKSPACE, runId: "r-1", bakeoffId: null, kind: "question" as const,
+      title: "Which DB?", why: "w", risk: "low", raisedAt: 1, expiresAt: null, resolvedAt: null, resolution: null,
+      command: null, options: ["Postgres", "MySQL"], recommended: null, steps: null, diff: null, output: null, rationale: null, flags: [],
+      sourceBranchOverride: null, projectId: null, roadmapProposalId: null,
+    };
+    const ctx = statusContext(baseProject, [], [], [], [], [], [gate]);
+    expect(ctx).toContain("1. Postgres");
+    expect(ctx).toContain("2. MySQL");
+  });
+});
+
 // ── 3) Operations — create/update normalization + persistence ───────────
 
 class NullBus implements Bus {
