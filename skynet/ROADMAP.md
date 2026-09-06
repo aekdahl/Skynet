@@ -237,10 +237,18 @@ Ordered by priority (urgent bug → launch-wedge remainder → product debt → 
   Apple Developer ID cert (Apple Developer Program enrollment, $99/yr) + a Windows code-signing cert
   and adding both as repo secrets — a paid/human step, not engineering. Last remaining GTM blocker on
   the committed release.
-- [ ] 🏢 **Scale + containerized runner:** Redis multi-replica fan-out; **GKE Jobs for runners** — one
-  container per agent, completing the v0 sandbox item's deferred half: memory/CPU caps (cgroups) and a
-  network egress allowlist (proxy). The command-deny, worktree write-confinement, and runtime cap
-  already ship locally. Hosted-only — not needed for the local desktop release.
+- [~] 🏢 **Scale + containerized runner.** 🚧 **In progress** (network-egress-allowlist slice only) —
+  branch `product/runner-egress-allowlist`; claiming this so other agents don't pick it up
+  concurrently. **Correction while claiming:** Redis multi-replica fan-out is NOT actually outstanding
+  — `RedisBus` (`apps/server/src/bus.redis.ts`) and `RedisSessionStore`
+  (`apps/server/src/auth/sessions.redis.ts`) already ship, selected via `BUS=redis`; this line was
+  stale roadmap drift, corrected here rather than re-implemented. Genuinely remaining: **GKE Jobs for
+  runners** — one container per agent (hosted-only, needs a real GKE cluster to implement/verify,
+  out of scope for this pass) — and completing the v0 sandbox item's deferred half: memory/CPU caps
+  (cgroups, Linux-only, also deferred — unverifiable without a Linux host) and a **network egress
+  allowlist (proxy)**, which THIS pass implements and ships locally (not hosted-only — works for any
+  Skynet instance, desktop included) since it needs no cloud infra, just a local forward-proxy
+  process. The command-deny, worktree write-confinement, and runtime cap already ship locally.
 - [ ] 🔗⛓ **Structural agent-hierarchy hooks** — `role`, `familyOf`→root, worker→manager merge (cheap,
   additive; from [docs/agent-hierarchy.md](docs/agent-hierarchy.md)). Cheap groundwork for v2; not
   urgent on its own since nothing consumes it yet.
