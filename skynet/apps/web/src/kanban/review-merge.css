@@ -72,6 +72,10 @@
 .btn-human:hover {
   filter: brightness(1.08);
 }
+.btn-human:focus-visible {
+  outline: none;
+  box-shadow: var(--ak-focus-ring);
+}
 .btn-human:disabled {
   opacity: 0.5;
   cursor: not-allowed;
