@@ -21,3 +21,9 @@ coverage/
 /test-results/
 /blob-report/
 /playwright/.cache/
+
+# MFA recovery material — auth/mfa.ts writes these next to the data file
+# (dirname(config.dbPath), which is apps/server/ in a bare dev run). A plaintext
+# file of live recovery codes must never be committed; a `git add -A` did once.
+mfa-recovery.json
+mfa-recovery-codes.txt
