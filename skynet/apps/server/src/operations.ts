@@ -113,6 +113,7 @@ import { git as gitExec } from "./preview/worktree.js";
 import { ASSISTANT_MODEL, oneShotText } from "@skynet/runner-sdk/claude";
 import { flyDeploy, type FlyDeployState } from "./fly/deploy.js";
 import { githubService, parseRepoRef } from "./github/index.js";
+import type { SentryIssueSignal } from "./sentry/index.js";
 import { parseChecklist } from "./tasks/checklist.js";
 import { lintTask } from "./task-linter.js";
 import { reconcileSourceState } from "./task-sync.js";
@@ -1315,6 +1316,11 @@ export class Operations {
       // Runner-key confinement is opt-in and set later in project settings —
       // a fresh project runs on any workspace key until narrowed.
       enabledRunnerCredentialIds: [],
+      // No custom MCP tools granted at creation — an explicit per-project
+      // grant set later in settings (see Project.mcpServerIds).
+      mcpServerIds: [],
+      // No Sentry binding at creation — set later in project settings.
+      sentryProject: null,
       // Source-of-truth write-back is opt-in (outward-facing) — enabled in settings,
       // or right here when the creation form asks for an issue import (below).
       syncSourceStatus: !!(repo && input.importGithubIssues),
@@ -1802,6 +1808,37 @@ export class Operations {
         text: event.issue.title,
         description: event.issue.body || undefined,
         source: { kind: "github_issue", repo: event.repo, number: event.issue.number, url: event.issue.url },
+      });
+      created++;
+    }
+    return { created };
+  }
+
+  /**
+   * The Sentry instance of the same v3 "inbound-trigger" primitive as
+   * {@link handleGithubIssueEvent} above, and structured identically: called
+   * from the verified webhook route (sentry/webhook.ts) — signature
+   * verification already happened there, so this only does the domain work.
+   * No workspace context arrives with a Sentry webhook either, so it fans out
+   * across every workspace's projects bound to that Sentry org+project
+   * (usually exactly one). A project's `sentryProject` being non-null IS the
+   * opt-in (no separate boolean, unlike GitHub's `syncSourceStatus` — see
+   * Project.sentryProject's doc comment). Dedup key is the Sentry issue id, so
+   * a redelivered webhook for the same issue is a no-op.
+   */
+  async handleSentryIssueEvent(signal: SentryIssueSignal): Promise<{ created: number }> {
+    const projects = (await this.store.listAllProjects()).filter(
+      (p) => p.sentryProject?.org === signal.org && p.sentryProject?.project === signal.project,
+    );
+    let created = 0;
+    for (const project of projects) {
+      const existing = await this.store.listTasks(project.workspaceId);
+      const already = existing.some((t) => t.projectId === project.id && t.source?.kind === "sentry_issue" && t.source.issueId === signal.issueId);
+      if (already) continue;
+      await this.createTask(project.workspaceId, project.id, {
+        text: signal.title,
+        description: signal.culprit || undefined,
+        source: { kind: "sentry_issue", org: signal.org, project: signal.project, issueId: signal.issueId, shortId: signal.shortId, url: signal.url },
       });
       created++;
     }

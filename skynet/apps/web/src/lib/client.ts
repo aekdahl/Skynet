@@ -14,6 +14,8 @@ import {
   type SafetyPolicy,
   type SecretMeta,
   type SecretAuditEntry,
+  type McpServerMeta,
+  type CreateMcpServerRequest,
   type Project,
   type ProjectCharter,
   type ProjectContextEntry,
@@ -873,6 +875,26 @@ export function setCredentialOrgOwned(id: string, orgOwned: boolean) {
 // key) — answers "why did this provider suddenly show not connected".
 export function fetchSecretAudit() {
   return req<{ audit: SecretAuditEntry[] }>("GET", "/api/secrets/audit");
+}
+
+// Custom MCP servers (Integrations) — the "scoped tools" roadmap "Tools via
+// MCP" gives an agent to act back into the operator's own services (GitHub/
+// Sentry/Slack/anything speaking MCP). Never returns a stored env/header
+// value, only metadata — see McpServerMeta.
+export function fetchMcpServers() {
+  return req<{ servers: McpServerMeta[] }>("GET", "/api/mcp-servers");
+}
+export function createMcpServer(body: CreateMcpServerRequest) {
+  return req<{ server: McpServerMeta }>("POST", "/api/mcp-servers", body);
+}
+export function deleteMcpServer(id: string) {
+  return req<unknown>("DELETE", `/api/mcp-servers/${id}`);
+}
+
+// Whether the inbound Sentry webhook (sentry/webhook.ts) is configured on
+// this server — drives the "not configured" warning in Integrations.
+export function fetchSentryStatus() {
+  return req<{ configured: boolean }>("GET", "/api/sentry/status");
 }
 
 // ─── Service tokens (MCP / programmatic access) ────────────────────────────

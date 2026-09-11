@@ -9,6 +9,37 @@ import type {
   Usage,
 } from "@skynet/shared";
 
+/**
+ * One user-configured MCP server this run may call — resolved (decrypted) by
+ * the orchestrator from the project's `mcpServerIds` (see
+ * apps/server/src/mcp-servers/service.ts), so a runner never sees a store id,
+ * only the concrete spec, same "orchestrator resolves, runner just executes"
+ * contract as `apiKey`/`baseUrl` above. `stdio` launches a local command
+ * (env vars only reach that one subprocess); `remote` calls a URL (Sentry's
+ * own MCP server, for example, is remote — `https://mcp.sentry.dev/mcp`).
+ *
+ * SECURITY: a write-capable server here (e.g. a real GitHub PAT) lets the
+ * agent act OUTSIDE Skynet's own git-operation guardrails (PR-only writes,
+ * no-force-push, the module allowlist) — those wrap Skynet's own git code
+ * path, not arbitrary MCP tool calls a runner CLI makes. Accepted tradeoff,
+ * same trust model as every integration in docs/integrations-catalog.md (the
+ * operator's own credentials); the existing per-tool-call HITL approval gate
+ * (already governing browser MCP tool calls below) is the mitigation.
+ */
+export type McpServerSpec =
+  | { name: string; transport: "stdio"; command: string; args: string[]; env?: Record<string, string> }
+  | { name: string; transport: "remote"; url: string; headers?: Record<string, string> };
+
+/** Reserved MCP server names no user-configured server may use — collides
+ *  with the always-on browser server (cli-runner.ts's `BROWSER_MCP_NAME`) or
+ *  (Claude only) the manager's in-process spawn_worker server (claude.ts's
+ *  `MANAGER_MCP_NAME`). Enforced authoritatively at MCP-server *creation*
+ *  time (apps/server/src/mcp-servers/service.ts); the per-vendor checks
+ *  further down the pipeline are defense in depth. Spelled out as literal
+ *  strings here (not derived from either file's own constant) so this stays
+ *  a plain type module with no cross-file coupling. */
+export const RESERVED_MCP_NAMES = new Set(["browser", "skynet-manager"]);
+
 /** What the orchestrator hands a provider to start an agent on a task. */
 export interface StartSpec {
   runId: string;
@@ -69,6 +100,16 @@ export interface StartSpec {
    * actions still gate through the normal HITL approval flow.
    */
   browser?: boolean;
+  /**
+   * Opt-in: user-configured MCP servers this run may call, resolved by the
+   * orchestrator from the project's `mcpServerIds` (empty/absent = none, the
+   * default — unchanged behavior). See `McpServerSpec` above for the shape and
+   * the security note. Claude, Codex, Gemini, Cursor, and Copilot all wire
+   * these in, merged alongside the `browser` server where both are set (see
+   * cli-runner.ts's `mergeMcpConfig`/`userMcpServerEntries`); Hermes, Kimi, and
+   * OpenCode have no MCP mechanism today and ignore this field.
+   */
+  mcpServers?: McpServerSpec[] | null;
   /**
    * Opt-in: start this run in the Claude Agent SDK's plan mode
    * (`permissionMode: "plan"`) — the agent must propose a plan and call
