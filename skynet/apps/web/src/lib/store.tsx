@@ -220,6 +220,10 @@ export interface Store extends StoreState {
       // clears it. See Project.sentryProject.
       sentryProject?: { org: string; project: string } | null;
       syncSourceStatus?: boolean;
+      // Phase 3 generic webhook destination/secret; null clears each back to
+      // "not configured" / "unsigned". See Project.externalWebhookUrl.
+      externalWebhookUrl?: string | null;
+      externalWebhookSecret?: string | null;
       // Branch to stack runs/PRs onto; null clears back to the global default.
       baseBranch?: string | null;
       // Where the Roadmap tab reads its doc from; null clears back to the

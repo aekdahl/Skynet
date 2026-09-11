@@ -73,9 +73,9 @@ can gate `close`/`comment` through the existing approval machinery later.
 
 ## Direction
 
-Phase 1 is **one-way** (Skynet → source) on status change. Two-way (re-import when
-the source changes, with conflict handling via `sourceRev`) is a bigger loop —
-deferred; the field reserves the seam.
+Every phase so far is **one-way** (Skynet → source) on status change. Two-way
+(re-import when the source changes, with conflict handling via `sourceRev`) is a
+bigger loop — deferred; the field reserves the seam.
 
 ## Phasing
 
@@ -86,8 +86,18 @@ deferred; the field reserves the seam.
    unchecks it), committed via the GitHub Contents API (single-file commit under
    the project's account). GitHub-repo-backed projects; a local-worktree / PR
    variant + `status:` frontmatter are future refinements.
-3. **external / webhook** — Linear/Jira adapters or a generic outbound webhook
-   (`{task, from, to, prUrl}`); optional two-way.
+3. **external / webhook** *(generic webhook done; Linear/Jira adapters +
+   two-way remain)* — a task carrying `source.kind === "external"` (system/id/
+   url — set at creation via `CreateTaskRequest.source`, e.g. by a future
+   Linear/Jira importer or by hand today) POSTs `{taskId, text, from, to,
+   source, prUrl}` to `Project.externalWebhookUrl` on transition, optionally
+   HMAC-SHA256-signed (`Project.externalWebhookSecret`, `X-Skynet-Signature-256`
+   header — same scheme as GitHub's inbound signature) so the receiver can
+   verify it. No third-party API on Skynet's side, so no readback: manual
+   resync (`reconcileSourceState`) is a deliberate no-op for this kind — only
+   `writeBack`'s transition-time POST covers it. A dedicated Linear/Jira
+   adapter (real API, real readback, real two-way sync) is a separate,
+   heavier follow-up this generic webhook doesn't attempt.
 
 ## Reuses
 
