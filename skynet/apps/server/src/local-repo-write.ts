@@ -18,8 +18,12 @@ import { gitBin } from "./git-bin.js";
 const exec = promisify(execFile);
 
 /** The only paths this helper will ever write — a fixed allowlist, never
- *  arbitrary caller input, mirroring the read side's ROADMAP_PATHS. */
-export const WRITABLE_REPO_PATHS = new Set(["ROADMAP.md", "docs/ROADMAP.md"]);
+ *  arbitrary caller input, mirroring the read side's ROADMAP_PATHS.
+ *  CHANGELOG.md/README.md added for the feature-ship handoff's
+ *  change-manager/docs-writer roles (see feature-handoff.ts's
+ *  HANDOFF_TARGET_FILE — same fixed-target-per-role scoping this allowlist
+ *  already enforces for roadmap edits). */
+export const WRITABLE_REPO_PATHS = new Set(["ROADMAP.md", "docs/ROADMAP.md", "CHANGELOG.md", "README.md"]);
 
 /** Memory v0's own writable prefix — `.skynet/memory/workspace.md` plus every
  *  scope-specific file under `projects/`/`areas/`/`agents/` (see
