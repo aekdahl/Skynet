@@ -162,6 +162,7 @@ describe("the tick writes the driver state", () => {
     const hub = new Hub(store, new NullBus());
     orch = new Orchestrator(store, hub);
     ops = new Operations({ store, hub, orchestrator: orch });
+    orch.onDriveReplenish = async () => undefined;
   });
 
   const drive = async (id: string) => (await store.getProject(id))?.drive ?? null;
