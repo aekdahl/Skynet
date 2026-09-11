@@ -65,7 +65,7 @@ Items are ranked PMF > Platform > Product within each batch:
 | | 3 | ✅ Memory v0 phase 1 — shipped, PR #656 (see v1.5 section) | Platform |
 | | 4 | Memory v0 phase 2 — decision-derived fact capture from `hitl_audit` | Platform |
 | | 5 | Manager/worker UI — Subway/Roster lines + an Inbox filter for the shipped `spawn_worker` hierarchy (see v2 section) | Platform |
-| | 6 | deep-review / breaker-review settings UI toggle (both already built, PATCH-API-only today) | PMF |
+| | 6 | ✅ deep-review / breaker-review settings UI toggle — already shipped (PR #487, refined #530), not PATCH-API-only | PMF |
 | | 7 | Mass inform — Fleet/Project UI (multi-select + whole-project) | Product |
 | | 8 | ✅ First-run onboarding telemetry — shipped, PR #653 | PMF |
 | **N+1** | 1 | Cross-vendor consensus runs (same task, 2+ agents, auto-diff) — unblocked now that provider breadth has landed | Platform |
