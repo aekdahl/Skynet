@@ -112,15 +112,19 @@ describe("parseGithubSignal", () => {
       action: "submitted", repository: repo,
       pull_request: { number: 42, html_url: "u" }, review: { state: "approved" },
     });
-    expect(s).toEqual({ repo: "acme/app", prNumber: 42, kind: "review_approved", payload: { prNumber: 42, prUrl: "u", reviewState: "approved" } });
+    expect(s).toEqual({
+      repo: "acme/app", prNumber: 42, kind: "review_approved",
+      payload: { prNumber: 42, prUrl: "u", reviewState: "approved", reviewBody: "" },
+    });
   });
 
-  it("pull_request_review submitted+changes_requested → review_changes_requested", () => {
+  it("pull_request_review submitted+changes_requested → review_changes_requested, carrying the review body", () => {
     const s = parseGithubSignal("pull_request_review", {
       action: "submitted", repository: repo,
-      pull_request: { number: 42, html_url: "u" }, review: { state: "changes_requested" },
+      pull_request: { number: 42, html_url: "u" }, review: { state: "changes_requested", body: "please add a test for the empty-input case" },
     });
     expect(s?.kind).toBe("review_changes_requested");
+    expect(s?.payload.reviewBody).toBe("please add a test for the empty-input case");
   });
 
   it("pull_request_review — ignores a non-submitted action (e.g. dismissed) and an uninteresting state (e.g. commented)", () => {
