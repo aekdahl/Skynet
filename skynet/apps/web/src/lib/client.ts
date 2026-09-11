@@ -1176,7 +1176,8 @@ export interface AssistantAction {
     | "start_feature"
     | "process_backlog"
     | "pause_key"
-    | "resume_key";
+    | "resume_key"
+    | "resolve_hitl";
   summary: string;
   taskId?: string;
   text?: string;
@@ -1215,6 +1216,12 @@ export interface AssistantAction {
   del?: number;
   baselineHash?: string;
   baselineSha?: string;
+  // resolve_hitl: the gate being acted on and how. `guidance` is required for
+  // modify, `optionIndex` (0-based) for option; approve/reject need neither.
+  hitlId?: string;
+  resolveAction?: "approve" | "reject" | "modify" | "option";
+  guidance?: string;
+  optionIndex?: number;
 }
 // Global Steward chat (the sidebar dock). `projectId` focuses the page you're on
 // (full project assistant + actions); omit it for a workspace-wide answer. The

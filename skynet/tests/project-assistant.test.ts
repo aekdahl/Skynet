@@ -24,6 +24,10 @@ const ctx: ProjectActionContext = {
   ],
   features: [{ id: "f-1", name: "Checkout" }],
   milestones: [{ id: "m-1", name: "Public beta" }],
+  gates: [
+    { id: "g-1", kind: "approval", title: "Deploy to prod", risk: "high", options: null },
+    { id: "g-2", kind: "question", title: "Which DB?", risk: "low", options: ["Postgres", "MySQL"] },
+  ],
 };
 
 describe("validateProjectAction — whitelist + project-scoped id resolution", () => {
@@ -341,5 +345,63 @@ describe("validateProjectAction — execution intents (S10)", () => {
   it("process_backlog's summary notes the autonomy-off side effect", () => {
     const r = validateProjectAction({ kind: "process_backlog" }, { ...ctx, autonomy: false });
     expect(r?.summary).toMatch(/autonomy is off/);
+  });
+});
+
+// Governance-to-SOTA — Steward-side approve-in-flow: resolve_hitl is the SAME
+// approve/reject/modify/option decision the Inbox and Telegram already resolve,
+// reached from chat. Every id must resolve against ctx.gates (a REAL open gate),
+// never an id the model invented — mirroring every task/feature/agent check above.
+describe("validateProjectAction — resolve_hitl (Governance-to-SOTA approve-in-flow)", () => {
+  it("approve resolves a known gate, no extra fields needed", () => {
+    const a = validateProjectAction({ kind: "resolve_hitl", hitlId: "g-1", resolveAction: "approve" }, ctx);
+    expect(a).toMatchObject({ kind: "resolve_hitl", hitlId: "g-1", resolveAction: "approve" });
+    expect(a?.summary).toMatch(/approve/i);
+    expect(a?.summary).toContain("Deploy to prod");
+  });
+
+  it("reject resolves a known gate", () => {
+    const a = validateProjectAction({ kind: "resolve_hitl", hitlId: "g-1", resolveAction: "reject" }, ctx);
+    expect(a).toMatchObject({ kind: "resolve_hitl", hitlId: "g-1", resolveAction: "reject" });
+    expect(a?.summary).toMatch(/reject/i);
+  });
+
+  it("refuses an unknown hitlId — never invents a gate", () => {
+    expect(validateProjectAction({ kind: "resolve_hitl", hitlId: "ghost", resolveAction: "approve" }, ctx)).toBeNull();
+  });
+
+  it("refuses when ctx has no gates at all (caller never fetched them)", () => {
+    const { gates: _g, ...noGates } = ctx;
+    expect(validateProjectAction({ kind: "resolve_hitl", hitlId: "g-1", resolveAction: "approve" }, noGates)).toBeNull();
+  });
+
+  it("modify requires non-empty guidance — a modify with nothing to say is a no-op, not an action", () => {
+    expect(validateProjectAction({ kind: "resolve_hitl", hitlId: "g-1", resolveAction: "modify" }, ctx)).toBeNull();
+    expect(validateProjectAction({ kind: "resolve_hitl", hitlId: "g-1", resolveAction: "modify", guidance: "  " }, ctx)).toBeNull();
+    const a = validateProjectAction({ kind: "resolve_hitl", hitlId: "g-1", resolveAction: "modify", guidance: "use a canary rollout" }, ctx);
+    expect(a).toMatchObject({ kind: "resolve_hitl", hitlId: "g-1", resolveAction: "modify", guidance: "use a canary rollout" });
+    expect(a?.summary).toContain("use a canary rollout");
+  });
+
+  it("option resolves a 0-based index into the gate's own options list", () => {
+    const a = validateProjectAction({ kind: "resolve_hitl", hitlId: "g-2", resolveAction: "option", optionIndex: 1 }, ctx);
+    expect(a).toMatchObject({ kind: "resolve_hitl", hitlId: "g-2", resolveAction: "option", optionIndex: 1 });
+    expect(a?.summary).toContain("MySQL");
+  });
+
+  it("option refuses an out-of-range or non-integer index", () => {
+    expect(validateProjectAction({ kind: "resolve_hitl", hitlId: "g-2", resolveAction: "option", optionIndex: 2 }, ctx)).toBeNull();
+    expect(validateProjectAction({ kind: "resolve_hitl", hitlId: "g-2", resolveAction: "option", optionIndex: -1 }, ctx)).toBeNull();
+    expect(validateProjectAction({ kind: "resolve_hitl", hitlId: "g-2", resolveAction: "option", optionIndex: 1.5 }, ctx)).toBeNull();
+    expect(validateProjectAction({ kind: "resolve_hitl", hitlId: "g-2", resolveAction: "option" }, ctx)).toBeNull();
+  });
+
+  it("option refuses on a gate with no options (e.g. a plain approval gate)", () => {
+    expect(validateProjectAction({ kind: "resolve_hitl", hitlId: "g-1", resolveAction: "option", optionIndex: 0 }, ctx)).toBeNull();
+  });
+
+  it("refuses an unknown resolveAction", () => {
+    expect(validateProjectAction({ kind: "resolve_hitl", hitlId: "g-1", resolveAction: "reassign" }, ctx)).toBeNull();
+    expect(validateProjectAction({ kind: "resolve_hitl", hitlId: "g-1" }, ctx)).toBeNull();
   });
 });
