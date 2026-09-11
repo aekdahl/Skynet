@@ -135,6 +135,8 @@
   font-size: 10px;
 }
 .di-hintbar-dismiss { margin-left: auto; background: none; border: none; color: var(--ak-text-faint); cursor: pointer; }
+.di-hintbar-dismiss:hover { color: var(--ak-text-primary); }
+.di-hintbar-dismiss:focus-visible { outline: none; box-shadow: var(--ak-focus-ring); }
 
 .di-skel { display: flex; flex-direction: column; gap: var(--ak-sp-10); padding: var(--ak-sp-8) 0; }
 
@@ -280,6 +282,7 @@
   cursor: pointer;
 }
 .di-open-link:hover { color: var(--ak-human); }
+.di-open-link:focus-visible { outline: none; box-shadow: var(--ak-focus-ring); }
 
 .di-audit-link { font-size: 12.5px; color: var(--ak-text-secondary); }
 
@@ -302,6 +305,7 @@
   cursor: pointer;
 }
 .di-batch-toggle:hover { color: var(--ak-text-secondary); }
+.di-batch-toggle:focus-visible { outline: none; box-shadow: var(--ak-focus-ring); }
 .di-batch-members { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--ak-sp-4); }
 .di-batch-member {
   display: flex; align-items: center; gap: var(--ak-sp-8);
@@ -314,6 +318,8 @@
 .di-batch-member-task { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .di-batch-member-wait { color: var(--ak-text-faint); }
 .di-link-btn { background: none; border: none; padding: 0; color: var(--ak-human); font-size: 12.5px; cursor: pointer; text-decoration: underline; }
+.di-link-btn:hover { color: color-mix(in oklch, var(--ak-human), white 15%); }
+.di-link-btn:focus-visible { outline: none; box-shadow: var(--ak-focus-ring); }
 
 /* ── roadmap_edit card (TASK 30) ──────────────────────────────────────────
    A machine changing the roadmap becomes a governed Inbox decision — same

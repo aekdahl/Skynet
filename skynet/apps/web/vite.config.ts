@@ -39,6 +39,14 @@ export default defineConfig({
         target: `ws://localhost:${apiPort}`,
         ws: true,
       },
+      // Inbound webhooks (GitHub, Sentry — mounted outside /api, their HMAC
+      // signature is their own auth) so the URL Integrations shows the
+      // operator to paste into a provider (built from window.location.origin)
+      // is correct in dev too, not just in the single-origin production build.
+      "/webhooks": {
+        target: `http://localhost:${apiPort}`,
+        changeOrigin: true,
+      },
     },
   },
 });

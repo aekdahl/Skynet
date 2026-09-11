@@ -18,6 +18,7 @@ export const ProviderId = z.enum([
   "hermes",
   "opencode",
   "kimi",
+  "aider",
 ]);
 export type ProviderId = z.infer<typeof ProviderId>;
 
@@ -44,7 +45,7 @@ export type PlanStepState = z.infer<typeof PlanStepState>;
 // already approved and the merge itself succeeded — the merge commit is undone
 // (MergeEngine.process's bounce) pending this decision: approve retries the
 // merge+check, reject/modify bounces the agent to revise with the check output.
-export const HitlKind = z.enum(["approval", "question", "plan", "diff", "merge", "escalation", "verifier", "roadmap_edit"]);
+export const HitlKind = z.enum(["approval", "question", "plan", "diff", "merge", "escalation", "verifier", "roadmap_edit", "handoff"]);
 export type HitlKind = z.infer<typeof HitlKind>;
 
 /** Default single-tenant workspace until real provisioning lands. */
@@ -537,6 +538,12 @@ export type DraftCharterRequest = z.infer<typeof DraftCharterRequest>;
 
 // ─── Project · Task ───────────────────────────────────────────────────────
 
+// The three job functions a shipped Feature/Milestone can fan out to (see
+// Project.roleAgents / startFeatureShipHandoff). Fixed set, not
+// operator-extensible — each has its own dedicated prompt + apply path.
+export const HandoffRole = z.enum(["change-manager", "docs-writer", "release-comms"]);
+export type HandoffRole = z.infer<typeof HandoffRole>;
+
 export const Project = z.object({
   id: z.string(),
   workspaceId: z.string(),
@@ -701,10 +708,33 @@ export const Project = z.object({
   // MCP token may only create runners with these keys. EMPTY = every key in the
   // workspace (the default — unchanged behavior); a non-empty list confines it.
   enabledRunnerCredentialIds: z.array(z.string()).default([]),
+  // Which custom MCP servers (see McpServerMeta) this project's agents get, by
+  // id. Empty = none (default) — unlike enabledRunnerCredentialIds, empty here
+  // is NOT "everything": an MCP tool is an explicit grant (it can act on the
+  // operator's own Sentry/GitHub/Slack), never an ambient default a new
+  // project inherits silently.
+  mcpServerIds: z.array(z.string()).default([]),
+  // Sentry project binding for the inbound webhook trigger (sentry/webhook.ts)
+  // — new/regressed issues on this Sentry project become a Skynet task. null =
+  // this project doesn't receive Sentry-issue tasks; being non-null IS the
+  // opt-in (no separate boolean, same effect as syncSourceStatus below but
+  // expressed as "bound or not").
+  sentryProject: z.object({ org: z.string(), project: z.string() }).nullable().default(null),
   // Opt-in: write task status changes back to their imported source of truth
   // (e.g. close/comment the GitHub issue on done). Outward-facing, so off by
   // default. See docs/task-source-sync.md.
   syncSourceStatus: z.boolean().default(false),
+  // Phase 3 write-back destination (docs/task-source-sync.md): a task sourced
+  // externally (TaskSource.kind === "external", e.g. a Linear/Jira issue) POSTs
+  // its state transitions here as {taskId, text, from, to, source, prUrl}.
+  // Gated by `syncSourceStatus` same as the other sinks. null = not configured
+  // — no external write-back happens even for an externally-sourced task.
+  externalWebhookUrl: z.string().nullable().default(null),
+  // Optional shared secret used to HMAC-sign the outbound webhook body (same
+  // sha256 scheme as GitHub's inbound X-Hub-Signature-256 — see
+  // github/webhook.ts's verifySignature) so the receiver can confirm a payload
+  // actually came from this Skynet instance. null = sent unsigned.
+  externalWebhookSecret: z.string().nullable().default(null),
   // Which stored Fly.io credential this project's `Deploy to Fly.io` action
   // authenticates with — a secret-store credential id of a `fly` API token.
   // null → the workspace's default Fly connection. Same shape as
@@ -753,6 +783,21 @@ export const Project = z.object({
   // queuing, and auto-promote when a slot frees. null = no limit (today's
   // behavior). Only meaningful when newBoardEnabled is on.
   queuedWipLimit: z.number().int().positive().nullable().default(null),
+  // Agent-to-agent handoff on feature completion (v2): when a Feature or
+  // Milestone flips to "shipped" (see startFeatureShipHandoff), each
+  // configured role fires a scoped, HITL-gated brief at a specific
+  // pre-assigned agent — an explicit per-project assignment, not a dynamic
+  // "pick an idle one" pool the way bake-off judging works, since a role is
+  // a standing job assignment the operator makes once, not a per-event
+  // eligibility scan. Each field is an agent id or null (that role is
+  // disabled for this project — the default for all three, opt-in).
+  roleAgents: z
+    .object({
+      changeManager: z.string().nullable().default(null),
+      docsWriter: z.string().nullable().default(null),
+      releaseComms: z.string().nullable().default(null),
+    })
+    .default({}),
 });
 export type Project = z.infer<typeof Project>;
 
@@ -799,6 +844,17 @@ export type CreateProjectContextEntryRequest = z.infer<typeof CreateProjectConte
 // carried for the task's life. `syncedAt`/`sourceRev` reserve a future two-way sync.
 export const TaskSource = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("github_issue"), repo: z.string(), number: z.number().int(), url: z.string().default("") }),
+  // The Sentry inbound-trigger's task source (sentry/webhook.ts's
+  // handleSentryIssueEvent) — org+project slug identify which Sentry project,
+  // issueId is the dedup key for a redelivered webhook.
+  z.object({
+    kind: z.literal("sentry_issue"),
+    org: z.string(),
+    project: z.string(),
+    issueId: z.string(),
+    shortId: z.string().default(""),
+    url: z.string().default(""),
+  }),
   z.object({ kind: z.literal("repo_file"), path: z.string(), anchor: z.string().default("") }), // Phase 2
   z.object({ kind: z.literal("external"), system: z.string(), id: z.string(), url: z.string().default("") }), // Phase 3
   // Self-replenishing backlog (v1 "autonomous sweep"): a task the fleet itself
@@ -1201,6 +1257,41 @@ export const Milestone = z.object({
 });
 export type Milestone = z.infer<typeof Milestone>;
 
+// ─── Plan: the living, versioned roadmap (docs/product-steward.md §2) ─────
+// One per project — the durable replacement for the throwaway ROADMAP.md/
+// PLAN.md scratch files an AI keeps in a repo today. Not repo-coupled: it
+// lives in Skynet and works for chat-only (non-git) projects too. Phase 1
+// (this) is the entity + a project-view panel, operator-maintained; Phase 2
+// (docs/product-steward.md §3) adds an `edit_plan` MCP tool so a steward
+// agent can propose changes under the existing author scope, HITL-gated.
+//
+// Deliberately does NOT embed its own milestone list — the project already
+// has a first-class `Milestone` entity that `Task`/`Feature` link into
+// (see Milestone above); duplicating that inside Plan would just be two
+// competing "milestone" concepts. The project-view panel renders this
+// markdown alongside the project's real Milestones instead (wrap, don't
+// rebuild — §6). Optimistic concurrency (`version` + `UpdatePlanRequest.
+// baseVersion` below) is the "Plan authorship conflicts" open question's
+// answer: a version check on write, not last-writer-wins-silently.
+export const Plan = z.object({
+  projectId: z.string(), // no separate id — one per project, same as RoadmapDoc
+  workspaceId: z.string(),
+  markdown: z.string().default(""),
+  version: z.number().int(),
+  updatedBy: z.string(), // "steward:<agentId>" (Phase 2+) or an operator id
+  updatedAt: Timestamp,
+});
+export type Plan = z.infer<typeof Plan>;
+
+export const UpdatePlanRequest = z.object({
+  markdown: z.string(),
+  // The version this edit was drafted against — the write is refused
+  // (PlanVersionConflictError → 409) if the Plan moved since, so a stale
+  // edit can't silently clobber a change made in another tab/by the steward.
+  baseVersion: z.number().int(),
+});
+export type UpdatePlanRequest = z.infer<typeof UpdatePlanRequest>;
+
 // ─── SolutionBrief: the persistent pre-work planning doc ─────────────────
 // A human-authored (or human-approved) design doc for a chunk of work, BEFORE
 // any task/run exists for it — "what are we building and why, what did we
@@ -1448,6 +1539,26 @@ export const HitlItem = z.object({
   // supersede that happens after this was raised is picked up for free.
   projectId: z.string().nullable().default(null),
   roadmapProposalId: z.string().nullable().default(null),
+  // `handoff` only (v2, feature-ship fan-out) — like `roadmap_edit` above,
+  // this has no TaskRun behind it (raised by startFeatureShipHandoff's bus
+  // subscriber, not a live agent run), so `runId` carries an inert
+  // `handoff:<this item's own id>` placeholder. Unlike roadmap_edit, the
+  // payload is frozen straight onto the item at raise time rather than
+  // living in its own re-fetchable entity — a rare, one-shot draft (one per
+  // shipped feature/milestone per role) has no ongoing lifecycle another
+  // actor could change out from under it the way a roadmap proposal's
+  // section can (supersede, conflict pairing), so there's nothing live to
+  // re-fetch; the same staleness-on-commit check the roadmap path relies on
+  // (comparing against the file's on-disk content) still applies via
+  // `handoffBaseline`. Only `handoffFilePath`/`handoffBaseline`/
+  // `handoffContent` are set for change-manager/docs-writer (file-writing
+  // roles); only `handoffDraftText` is set for release-comms (no file, no
+  // commit — approving just finalizes the draft for the operator to copy).
+  handoffRole: HandoffRole.nullable().default(null),
+  handoffFilePath: z.string().nullable().default(null),
+  handoffBaseline: z.string().nullable().default(null),
+  handoffContent: z.string().nullable().default(null),
+  handoffDraftText: z.string().nullable().default(null),
 });
 export type HitlItem = z.infer<typeof HitlItem>;
 
@@ -1871,7 +1982,15 @@ export const UpdateProjectRequest = z.object({
   // Which provider keys the project may run on (secret-store credential ids;
   // empty = all keys). See Project.enabledRunnerCredentialIds.
   enabledRunnerCredentialIds: z.array(z.string()).optional(),
+  // Which custom MCP servers the project may use. See Project.mcpServerIds.
+  mcpServerIds: z.array(z.string()).optional(),
+  // Sentry org/project slug binding for the inbound webhook trigger; null
+  // clears it (this project stops receiving Sentry-issue tasks). See
+  // Project.sentryProject.
+  sentryProject: z.object({ org: z.string(), project: z.string() }).nullable().optional(),
   syncSourceStatus: z.boolean().optional(), // write status changes back to the source of truth
+  externalWebhookUrl: z.string().nullable().optional(), // see Project.externalWebhookUrl; null clears → not configured
+  externalWebhookSecret: z.string().nullable().optional(), // see Project.externalWebhookSecret; null clears → unsigned
   roadmapPath: z.string().nullable().optional(), // see Project.roadmapPath; null clears → default candidates
   newBoardEnabled: z.boolean().optional(), // see Project.newBoardEnabled
   queuedWipLimit: z.number().int().positive().nullable().optional(), // see Project.queuedWipLimit; null clears → no limit
@@ -1879,6 +1998,17 @@ export const UpdateProjectRequest = z.object({
   alwaysGateCommands: z.array(z.string()).optional(),
   // See Project.ruleSafetyDefaults — whole-object replace.
   ruleSafetyDefaults: RuleSafety.optional(),
+  // See Project.roleAgents — whole-object replace, same convention as
+  // ruleSafetyDefaults/autoMerge above (reuses that exact object shape
+  // rather than a deep-partial — a caller touching any one role sends the
+  // whole object, echoing back the roles it isn't changing).
+  roleAgents: z
+    .object({
+      changeManager: z.string().nullable(),
+      docsWriter: z.string().nullable(),
+      releaseComms: z.string().nullable(),
+    })
+    .optional(),
 });
 export type UpdateProjectRequest = z.infer<typeof UpdateProjectRequest>;
 
@@ -2249,6 +2379,66 @@ export const CreateCredentialRequest = z.object({
   baseUrl: z.string().nullable().optional(),
 });
 export type CreateCredentialRequest = z.infer<typeof CreateCredentialRequest>;
+
+// ─── Custom MCP servers ─────────────────────────────────────────────────────
+// A workspace-scoped tool an operator wires up so an agent can act BACK into
+// one of the operator's own services during a run (a GitHub/Sentry/Slack MCP
+// server, or anything else speaking MCP) — not a CredentialProvider (those are
+// "one bearer token + one endpoint" for a known LLM/git/fly provider; an MCP
+// server is a named launch spec, stdio or remote, that may need several
+// secrets). See docs/integrations-catalog.md and ROADMAP.md's "Tools via MCP".
+//
+// SECURITY: granting a write-capable MCP server (e.g. a real GitHub PAT) lets
+// an agent act OUTSIDE Skynet's own git-operation guardrails (PR-only writes,
+// no-force-push, the module allowlist) — those wrap Skynet's own git code
+// path, not arbitrary MCP tool calls a runner CLI makes on the agent's behalf.
+// Accepted tradeoff, same trust model as every integration here: it runs on
+// the user's own credentials, and the existing per-tool-call HITL approval
+// gate (already governing browser MCP tool calls) is the mitigation.
+export const McpServerTransport = z.enum(["stdio", "remote"]);
+export type McpServerTransport = z.infer<typeof McpServerTransport>;
+
+/** Safe, returnable metadata for a configured MCP server — never the secret
+ *  env/header VALUES, only their key names (same "safe to show" precedent as
+ *  SecretMeta.last4). */
+export const McpServerMeta = z.object({
+  id: z.string(),
+  workspaceId: z.string(),
+  name: z.string(),
+  transport: McpServerTransport,
+  // stdio only:
+  command: z.string().default(""),
+  args: z.array(z.string()).default([]),
+  envKeys: z.array(z.string()).default([]),
+  // remote only:
+  url: z.string().default(""),
+  headerKeys: z.array(z.string()).default([]),
+  updatedAt: Timestamp,
+  updatedBy: z.string(),
+});
+export type McpServerMeta = z.infer<typeof McpServerMeta>;
+
+/** Body for adding a custom MCP server. Discriminated on `transport` — a
+ *  stdio server launches a local command, a remote one calls a URL (Sentry's
+ *  own MCP server, `https://mcp.sentry.dev/mcp`, is remote). No edit/rotate
+ *  endpoint in v1 — remove and re-add to change one (same as GithubAccounts/
+ *  FlyAccounts' own add/remove-only UX). */
+export const CreateMcpServerRequest = z.discriminatedUnion("transport", [
+  z.object({
+    transport: z.literal("stdio"),
+    name: z.string().min(1).max(60),
+    command: z.string().min(1),
+    args: z.array(z.string()).default([]),
+    env: z.record(z.string(), z.string()).default({}),
+  }),
+  z.object({
+    transport: z.literal("remote"),
+    name: z.string().min(1).max(60),
+    url: z.string().min(1),
+    headers: z.record(z.string(), z.string()).default({}),
+  }),
+]);
+export type CreateMcpServerRequest = z.infer<typeof CreateMcpServerRequest>;
 
 /** Result of a live verify against the vendor (or its CLI-auth account
  *  endpoint) — a real, cheap call confirming the key actually authenticates.

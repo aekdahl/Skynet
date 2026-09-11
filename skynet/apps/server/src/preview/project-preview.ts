@@ -21,23 +21,25 @@
 
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync, lstatSync, readFileSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { get as httpGet } from "node:http";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { wrapForSandbox } from "@skynet/runner-sdk/sandbox";
 import { ASSISTANT_MODEL, oneShotRepoAssistant } from "@skynet/runner-sdk/claude";
 import { assertApprovable, scrubbedEnv } from "../command-safety.js";
 import { secretService } from "../secrets/index.js";
 import { publicOrigin } from "./public-origin.js";
+import { mimeFor } from "./route.js";
 import {
   ensureDeps as sharedEnsureDeps,
   git as sharedGit,
   installCmd as sharedInstallCmd,
   prepareWorktree as sharedPrepareWorktree,
   readDescriptorRaw,
+  runCommand as sharedRunCommand,
   runToCompletion as sharedRunToCompletion,
 } from "./worktree.js";
 
@@ -199,13 +201,53 @@ export type PreviewSource = "main" | "merged" | "latest";
 // merge needs an actual restart (optionally preceded by a rebuild) instead of
 // relying on a dev-server file-watcher. Only an EXPLICIT `.skynet/preview.json`
 // descriptor can opt a recipe into "service" — the package.json heuristic and
-// the agent-assist path always resolve "web". See docs/live-preview.md.
-export type PreviewKind = "web" | "service";
+// the agent-assist path always resolve "web".
+// Phase 3: "command" — no server, no port, no URL. Run a command to
+// COMPLETION and surface its exit code + any declared artifacts (a report, an
+// image, a produced file) instead of iframing anything. Also EXPLICIT-only —
+// "is this a CLI tool" isn't safely inferable the way "is this a web app" is,
+// so only a `.skynet/preview.json` descriptor can select it. See
+// docs/live-preview.md.
+export type PreviewKind = "web" | "service" | "command";
+
+/** The subset of `.skynet/preview.json` this manager reads — untyped at the
+ *  file-read boundary (worktree.ts's readDescriptorRaw), narrowed here. */
+interface PreviewDescriptor {
+  dev?: string;
+  start?: string;
+  port?: number;
+  install?: string;
+  kind?: string;
+  build?: string;
+  healthPath?: string;
+  /** kind: "command" only — the command to run to completion. */
+  command?: string;
+  /** kind: "command" only — glob patterns (repo-relative) for files it
+   *  produces. Untyped at this layer (raw JSON); narrowed to string[] where
+   *  it's consumed (resolveRecipeStatic). */
+  artifacts?: unknown;
+}
+
+export interface PreviewArtifact {
+  /** Repo-relative path (the same shape a `.skynet/preview.json` `artifacts`
+   *  glob pattern is matched against). */
+  path: string;
+  size: number;
+  mime: string;
+  /** Where the web UI fetches the actual bytes from — a capability URL
+   *  keyed by this preview's own unguessable `token` (`/preview-artifact/
+   *  <token>/<path>`), NOT the workspace-authenticated `/api/…` surface: a
+   *  plain `<img>`/`<iframe>` can't attach the app's bearer session header,
+   *  so this mirrors the existing `/p/<token>/` dev-server proxy's pattern
+   *  (the token itself IS the auth) rather than inventing a second one. */
+  url: string;
+}
 
 export interface PreviewRecipe {
   /** The command line to start the server, e.g. "npm run dev". */
   cmd: string;
-  /** Where the app will listen; injected as PORT and used to health-check. */
+  /** Where the app will listen; injected as PORT and used to health-check.
+   *  Meaningless for `kind: "command"` (no server, no port). */
   port: number;
   source: "descriptor" | "heuristic" | "agent";
   /** The underlying script body when `cmd` is an `npm run <script>` wrapper
@@ -223,6 +265,9 @@ export interface PreviewRecipe {
   /** Health-check path, default "/". Lets a service whose root route isn't a
    *  200 (an API with no "/" handler, auth-gated root, …) still be probed. */
   healthPath?: string;
+  /** Glob patterns (repo-relative) for files the command produces — only ever
+   *  set when `kind === "command"`. See collectArtifacts. */
+  artifacts?: string[];
 }
 
 export interface PreviewState {
@@ -240,6 +285,11 @@ export interface PreviewState {
   // "service" restarts (optionally rebuilding) on every merge instead of
   // relying on HMR — see docs/live-preview.md's Phase 2 section.
   kind: PreviewKind;
+  // "command" kind only (null for "web"/"service"): the finished run's exit
+  // code and any declared artifacts it produced. See docs/live-preview.md's
+  // Phase 3 section.
+  exitCode: number | null;
+  artifacts: PreviewArtifact[];
 }
 
 interface Live {
@@ -295,6 +345,9 @@ interface Live {
   // in-flight one finishes, so a merge that arrives mid-rebuild is never
   // silently dropped.
   rebuildPending?: boolean;
+  // Phase 3 (command kind) — see PreviewRecipe.artifacts / PreviewState.
+  exitCode?: number | null;
+  artifacts?: PreviewArtifact[];
 }
 
 /** What to start — the parameterization shared by project + run previews. */
@@ -427,6 +480,80 @@ export function parsePreviewPorts(text: string): Array<{ port: number; strong: b
   return out;
 }
 
+/**
+ * Minimal glob matcher for `.skynet/preview.json`'s `artifacts` patterns
+ * (`dist/*.png`, `coverage/report.html`, `out/**\/*.json`) — this codebase
+ * hand-rolls small pure matchers rather than pulling a dependency (see
+ * `parsePreviewPorts`/`injectViteBase`); no glob library exists in
+ * package.json/the lockfile. `*` matches within one path segment; `**`
+ * crosses segments (including zero — `a/**\/*.png` also matches `a/x.png`);
+ * everything else is literal. PURE — unit-tested.
+ */
+export function matchGlob(pattern: string, relPath: string): boolean {
+  const esc = (s: string) => s.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+  const re = esc(pattern)
+    .replace(/\*\*\//g, " ") // "**/" (incl. leading) → zero-or-more-dirs-then-slash
+    .replace(/\/\*\*/g, "") // "/**" (trailing) → slash-then-zero-or-more-dirs
+    .replace(/\*\*/g, ".*") // any remaining bare "**" → any chars at all
+    .replace(/\*/g, "[^/]*") // single "*" → exactly one path segment
+    .replace(/ /g, "(?:.*/)?")
+    .replace(//g, "(?:/.*)?");
+  return new RegExp(`^${re}$`).test(relPath);
+}
+
+// Bounds a command-kind artifact scan so a pathologically large repo can
+// never hang a preview finishing up.
+const ARTIFACT_SCAN_CAP = 5000;
+
+/** `path/segments/like this.png` → the matching `/preview-artifact/<token>/`
+ *  capability URL, each segment percent-encoded individually (so a literal
+ *  "/" stays a path separator instead of becoming %2F). */
+function artifactUrl(token: string, relPath: string): string {
+  return `/preview-artifact/${token}/${relPath.split("/").map(encodeURIComponent).join("/")}`;
+}
+
+/**
+ * Walk `dir` (skipping `.git`/`node_modules`) collecting every file whose
+ * repo-relative path matches one of `patterns` (see matchGlob) — the files a
+ * "command"-kind recipe declared as its output. `token` is the OWNING
+ * preview's own unguessable token, baked into each artifact's `url` (see
+ * PreviewArtifact.url's own comment for why). Bounded by ARTIFACT_SCAN_CAP.
+ * Exported for unit testing.
+ */
+export function collectArtifacts(dir: string, patterns: string[], token: string): PreviewArtifact[] {
+  if (!patterns.length) return [];
+  const out: PreviewArtifact[] = [];
+  let scanned = 0;
+  const walk = (abs: string, rel: string) => {
+    if (scanned >= ARTIFACT_SCAN_CAP) return;
+    let entries: string[];
+    try {
+      entries = readdirSync(abs);
+    } catch {
+      return;
+    }
+    for (const name of entries) {
+      if (scanned >= ARTIFACT_SCAN_CAP) return;
+      if (name === ".git" || name === "node_modules") continue;
+      scanned++;
+      const absChild = join(abs, name);
+      const relChild = rel ? `${rel}/${name}` : name;
+      let st: ReturnType<typeof statSync>;
+      try {
+        st = statSync(absChild);
+      } catch {
+        continue;
+      }
+      if (st.isDirectory()) walk(absChild, relChild);
+      else if (st.isFile() && patterns.some((pat) => matchGlob(pat, relChild))) {
+        out.push({ path: relChild, size: st.size, mime: mimeFor(relChild), url: artifactUrl(token, relChild) });
+      }
+    }
+  };
+  walk(dir, "");
+  return out;
+}
+
 export class ProjectPreviewManager {
   private previews = new Map<string, Live>();
   // Cache an agent-proposed recipe per project so a restart (or a run preview of
@@ -452,7 +579,12 @@ export class ProjectPreviewManager {
   /** A serializable snapshot for the API/UI. */
   state(key: string): PreviewState {
     const p = this.previews.get(key);
-    if (!p) return { status: "idle", url: null, port: null, recipe: null, error: null, logs: [], startedAt: null, source: "merged", combined: null, kind: "web" };
+    if (!p) {
+      return {
+        status: "idle", url: null, port: null, recipe: null, error: null, logs: [], startedAt: null,
+        source: "merged", combined: null, kind: "web", exitCode: null, artifacts: [],
+      };
+    }
     p.lastTouched = Date.now(); // polling status counts as "watching" → defers idle stop
     // Public origin known (hosted) → hand back the proxied `/p/<token>/` URL so
     // the preview is reachable from a phone; else the loopback URL (desktop, same
@@ -474,6 +606,8 @@ export class ProjectPreviewManager {
       source: p.source,
       combined: p.combined ?? null,
       kind: p.kind ?? "web",
+      exitCode: p.exitCode ?? null,
+      artifacts: p.artifacts ?? [],
     };
   }
 
@@ -484,6 +618,34 @@ export class ProjectPreviewManager {
    *  stopped, or not yet past the "starting" phase). */
   dirFor(key: string): string | undefined {
     return this.previews.get(key)?.dir;
+  }
+
+  /** Resolve a command-kind artifact's absolute path + mime for the public
+   *  `/preview-artifact/<token>/*` route (route.ts) — keyed by the preview's
+   *  own unguessable TOKEN, not a workspace-authenticated project/run id:
+   *  mirrors `proxyTargetForToken`'s pattern just below, for the same reason
+   *  (a plain `<img>`/`<iframe>` can't attach the app's bearer session
+   *  header — see PreviewArtifact.url's own comment). ONLY a path THIS RUN'S
+   *  OWN reported `artifacts` list names is ever reachable — never an
+   *  arbitrary worktree file: a command-kind worktree is a full repo
+   *  checkout that can hold `.env`/`.git` internals/secrets in source, so
+   *  only files the descriptor explicitly declared (via glob) AND that this
+   *  run actually produced are servable. Path-traversal-guarded the same way
+   *  route.ts's safeFile() is (defense in depth — relPath already comes from
+   *  the allowlist above). Counts as "watching" (defers the idle stop). */
+  artifactForToken(token: string, relPath: string): { absPath: string; mime: string } | null {
+    for (const p of this.previews.values()) {
+      if (p.token !== token) continue;
+      const hit = p.artifacts?.find((a) => a.path === relPath);
+      if (!hit) return null;
+      const base = resolve(p.dir);
+      const target = resolve(base, relPath);
+      if (target !== base && !target.startsWith(base + sep)) return null; // traversal guard
+      if (!existsSync(target) || !statSync(target).isFile()) return null;
+      p.lastTouched = Date.now();
+      return { absPath: target, mime: hit.mime };
+    }
+    return null;
   }
 
   /** The live loopback port + path mode for a preview proxy token — used by the
@@ -519,12 +681,8 @@ export class ProjectPreviewManager {
   }
 
   /** Read `.skynet/preview.json` if present (tolerant of a malformed file). */
-  private readDescriptor(
-    dir: string,
-  ): { dev?: string; start?: string; port?: number; install?: string; kind?: string; build?: string; healthPath?: string } | null {
-    return readDescriptorRaw(dir) as
-      | { dev?: string; start?: string; port?: number; install?: string; kind?: string; build?: string; healthPath?: string }
-      | null;
+  private readDescriptor(dir: string): PreviewDescriptor | null {
+    return readDescriptorRaw(dir) as PreviewDescriptor | null;
   }
 
   /** package.json's `scripts[name]` body, if the file and script both exist. */
@@ -544,6 +702,23 @@ export class ProjectPreviewManager {
   private resolveRecipeStatic(dir: string, port: number): PreviewRecipe | null {
     const d = this.readDescriptor(dir);
     if (d) {
+      // "command" kind is explicit-only, same as "service" — but unlike
+      // "service" (which just falls through to the web dev-server path when
+      // its `dev`/`start` is missing), a descriptor that EXPLICITLY asks for
+      // kind:"command" with nothing to run is an authoring mistake that must
+      // surface clearly, not silently fall through to the package.json
+      // heuristic/agent-assist below — both only ever propose a WEB dev
+      // server, which would silently produce the wrong kind entirely.
+      if (d.kind === "command") {
+        const cmd = d.command || d.start || d.dev;
+        if (!cmd) {
+          throw new Error(
+            '.skynet/preview.json declares kind:"command" but has no "command" (or "start"/"dev") field naming what to run',
+          );
+        }
+        const artifacts = Array.isArray(d.artifacts) ? d.artifacts.filter((x): x is string => typeof x === "string") : [];
+        return { cmd, port: d.port ?? port, source: "descriptor", kind: "command", artifacts };
+      }
       const cmd = d.dev || d.start;
       if (cmd) {
         // A human/agent-authored descriptor can itself be an `npm run <script>`
@@ -1048,12 +1223,45 @@ export class ProjectPreviewManager {
         if (this.previews.get(spec.key) !== p) return this.state(spec.key); // superseded during build
       }
 
-      await this.runRecipe(p);
+      // Phase 3 (command kind): no server, no port, no health check — the
+      // command's exit code + declared artifacts ARE the preview.
+      if (recipe.kind === "command") await this.runCommandOnce(p);
+      else await this.runRecipe(p);
     } catch (err) {
       p.status = "failed";
       p.error = (err as Error).message;
     }
     return this.state(spec.key);
+  }
+
+  /** Run a "command"-kind recipe to completion — see PreviewRecipe/PreviewKind
+   *  and docs/live-preview.md's Phase 3. Shared by the initial start
+   *  (startSpec) and a re-run after refresh() folds in new merged work.
+   *  `p.status` must already be "starting" when called. Never itself throws
+   *  a hard-DENY (assertApprovable, via sharedRunCommand) — that propagates
+   *  to the caller's own try/catch, same as any other startSpec failure. */
+  private async runCommandOnce(p: Live): Promise<void> {
+    const recipe = p.recipe!;
+    const cmd = this.reconcileEmbeddedInstalls(p, recipe.cmd);
+    this.log(p, `▸ ${cmd}`);
+    // previewInstallEnv(), not previewEnv() — a command-kind run is a
+    // one-shot, agent-branch-content command (like a build step), not the
+    // long-lived dev/service process previewEnv's broader denylist model is
+    // for. See previewInstallEnv's own doc comment.
+    const { code, timedOut } = await sharedRunCommand(cmd, p.dir, (l) => this.log(p, l), BUILD_TIMEOUT_MS, previewInstallEnv());
+    if (this.previews.get(p.key) !== p) return; // superseded mid-run
+    p.exitCode = timedOut ? null : code;
+    p.artifacts = collectArtifacts(p.dir, recipe.artifacts ?? [], p.token);
+    if (timedOut) {
+      p.status = "failed";
+      p.error = `\`${cmd}\` timed out after ${Math.round(BUILD_TIMEOUT_MS / 1000)}s`;
+    } else if (code === 0) {
+      p.status = "live"; // "finished" for a command kind — see PreviewState's own doc comment
+      this.armIdle(p.key, p); // bound resource use the same as a live web/service preview
+    } else {
+      p.status = "failed";
+      p.error = previewExitReason(code, p.logs);
+    }
   }
 
   /** Reconcile embedded installs → inject Vite base/fs-allow → spawn the
@@ -1248,6 +1456,22 @@ export class ProjectPreviewManager {
         // (optionally preceded by a rebuild) to serve the new code. "web"
         // previews keep relying on the dev server's own file-watcher, unchanged.
         if (p.kind === "service") this.armRebuild(p);
+        // "command": no server to restart at all — a merge means "the code
+        // changed, run it again" (there's no HMR/rebuild concept for a
+        // one-shot command). Re-run synchronously (unlike "service"'s
+        // debounced rebuild — a command run is a bounded one-shot with no
+        // "in-flight request" to protect against interrupting).
+        else if (p.kind === "command") {
+          p.status = "starting";
+          try {
+            await this.runCommandOnce(p);
+          } catch (err) {
+            if (this.previews.get(key) === p) {
+              p.status = "failed";
+              p.error = (err as Error).message;
+            }
+          }
+        }
       }
     }
     p.lastTouched = Date.now();
@@ -1430,7 +1654,10 @@ export class ProjectPreviewManager {
       await rm(p.dir, { recursive: true, force: true }).catch(() => undefined);
       this.previews.delete(key);
     }
-    return { status: "stopped", url: null, port: null, recipe: null, error: null, logs: [], startedAt: null, source: "merged", combined: null, kind: "web" };
+    return {
+      status: "stopped", url: null, port: null, recipe: null, error: null, logs: [], startedAt: null,
+      source: "merged", combined: null, kind: "web", exitCode: null, artifacts: [],
+    };
   }
 
   /** Auto-stop a preview nothing has polled in IDLE_MS (bounds resource use). */

@@ -446,6 +446,10 @@ export const KIND_META: Record<HitlKind, { label: string; color: string }> = {
   // reaching the legacy per-project queue.tsx (untouched by this task) just
   // needs a non-crashing, sensible-enough label/color, not the full anatomy.
   roadmap_edit: { label: "ROADMAP EDIT", color: "var(--info)" },
+  // v2 — same "non-crashing, sensible-enough" carve-out for the legacy
+  // per-project queue.tsx as roadmap_edit above; the rich card lives in
+  // kanban/inbox.tsx's HandoffCard.
+  handoff: { label: "HANDOFF", color: "var(--info)" },
 };
 
 /** A `stuck-review` escalation (orchestrator.ts's reapStuckReviews) means the

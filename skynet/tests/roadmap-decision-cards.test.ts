@@ -11,6 +11,14 @@
 // (a completely separate commit path — updateProjectRoadmap) — confirmed
 // here as "no roadmap_edit HITL from that path", not re-derived by an actor
 // check inside proposeRoadmapChange itself.
+//
+// The underlying Rule 3 (supersede) and Rule 4 (contradictory proposals
+// held) state-transition semantics — held_conflict, conflictsWith, row
+// counts, supersede mechanics — are fully covered by
+// roadmap-proposal-governance.test.ts. This file only re-derives those
+// scenarios far enough to exercise the HITL/Inbox-layer delta on top: is a
+// card raised, is a stale card dismissed, do queue-item flags come out
+// right (same cross-reference pattern as roadmap-doc-view-routes.test.ts).
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -267,11 +275,15 @@ describe("Rule 4 conflict card — held_conflict raises exactly one new HITL, di
     const aItem = (await store.listQueue(DEFAULT_WORKSPACE)).find((q) => q.roadmapProposalId === a.id)!;
     expect(aItem.resolvedAt).toBeNull();
 
-    const b = await ops.proposeRoadmapChange(DEFAULT_WORKSPACE, "p1", {
+    // Rule 4's held_conflict outcome itself (state, conflictsWith, row count)
+    // is fully covered by roadmap-proposal-governance.test.ts's "Rule 4 —
+    // contradictory proposals held" test; only the HITL/Inbox-layer delta is
+    // asserted below — does B's proposal dismiss A's card and raise exactly
+    // one replacement card, carrying the right flags.
+    await ops.proposeRoadmapChange(DEFAULT_WORKSPACE, "p1", {
       agentId: "agent-b", section: sectionId, headline: "Drop First item, add Y instead",
       diff: { added: ["- [ ] Y"], removed: ["- [ ] First item"], context }, reasoning: "Y is the right call",
     });
-    expect(b.state).toBe("held_conflict");
 
     // A's original card is dismissed — it's no longer a plain "approve this".
     const aItemAfter = await store.getHitl(aItem.id);
@@ -282,14 +294,6 @@ describe("Rule 4 conflict card — held_conflict raises exactly one new HITL, di
     const openRoadmapItems = (await store.listQueue(DEFAULT_WORKSPACE)).filter((q) => q.kind === "roadmap_edit" && !q.resolvedAt);
     expect(openRoadmapItems).toHaveLength(1);
     expect(openRoadmapItems[0]!.flags).toContain("has_deletion");
-
-    // The live-fetch anchor: fetching it returns the held_conflict proposal,
-    // and its conflictsWith resolves the other side — exactly what the web
-    // card's own live-fetch does to render both sides of the pair.
-    const anchor = await ops.getRoadmapProposal(DEFAULT_WORKSPACE, "p1", openRoadmapItems[0]!.roadmapProposalId!);
-    expect(anchor.state).toBe("held_conflict");
-    const otherId = anchor.id === a.id ? b.id : a.id;
-    expect(anchor.conflictsWith).toContain(otherId);
   });
 
   it("resolveRoadmapConflict 'choose' applies the picked side (real commit) and rejects the other", async () => {
@@ -366,7 +370,10 @@ describe("Rule 3 supersede dismisses its open card too", () => {
     git("commit", "-m", "human edit");
     await ops.syncProjectRoadmap(DEFAULT_WORKSPACE, "p1", { commitSha: "sha-human" });
 
-    expect((await store.getRoadmapProposal(proposal.id))?.state).toBe("superseded");
+    // The supersede mechanics themselves (proposal state → "superseded") are
+    // covered by roadmap-proposal-governance.test.ts's "Rule 3 — the repo
+    // wins" test; the delta this file owns is the HITL/Inbox side effect —
+    // does supersede also dismiss the now-stale roadmap_edit card.
     const itemAfter = await store.getHitl(item.id);
     expect(itemAfter?.resolvedAt).not.toBeNull();
     expect(itemAfter?.resolution?.action).toBe("dismiss");
