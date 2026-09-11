@@ -73,10 +73,6 @@
   border: none;
   border-radius: var(--ak-radius-sm);
   background: transparent;
-  font: inherit;
-  text-align: left;
-  color: inherit;
-  cursor: pointer;
 }
 .hd-stalled-row:hover { background: color-mix(in oklch, var(--ak-warn), transparent 88%); }
 .hd-stalled-row:focus-visible { outline: none; box-shadow: var(--ak-focus-ring); }

@@ -4,13 +4,18 @@
   --raised: #171B23;
   --line: #232936;
   --line-soft: #1B202B;
+  /* Text-contrast ramp: --text (body reading) → --muted (secondary) → --faint
+     (decorative). Checked against --bg (#0B0D11) — see tests/color-contrast.test.ts,
+     which reads these values back out of this file so the ratios below can
+     never silently drift from what's actually shipped:
+       --text   16.43:1  comfortable sustained reading (clears WCAG AAA 7:1)
+       --muted   7.88:1  secondary labels (clears AA 4.5:1 with headroom)
+       --faint   3.13:1  timestamps / ornamental only, not for body copy
+     (--ink, a near-duplicate "body reading" tone at 13.65:1, was retired in
+     favor of --text — the same role, already in wider use, and actually
+     higher-contrast, so folding onto it was a strict improvement not a
+     compromise.) */
   --text: #E9ECF2;
-  /* Text-contrast ramp: ink (body reading) → muted (secondary) → faint (decorative).
-     Ratios vs --bg (#0B0D11):
-       --ink   ~14:1  comfortable sustained reading
-       --muted  ~8.2:1  secondary labels — was #8B93A5 (~6.6:1, at the WCAG AAA floor)
-       --faint  ~3.2:1  timestamps / ornamental only, not for body copy */
-  --ink: #D4D8E4;
   --muted: #9DA5B8;
   --faint: #596172;
   --accent: #FFB224;
@@ -84,7 +89,19 @@
   --btn-danger-fg:          var(--danger);
   --btn-danger-hover-border: var(--danger);
   --btn-danger-focus-ring:  var(--danger);
-  --btn-disabled-opacity:   0.4;
+  /* A second, INTENTIONALLY different danger treatment: a filled CTA (confirm-
+     dialog delete buttons) rather than the outline style above (inline danger
+     actions like a toolbar Stop button) — not a bug to unify away. */
+  --btn-danger-solid-bg:      var(--danger);
+  --btn-danger-solid-fg:      #fff;
+  --btn-danger-solid-hover-bg: color-mix(in oklch, var(--danger), white 8%);
+  /* Disabled = obviously inert, not a dim/broken version of the live button —
+     neutral grey, never dim-amber, and it drops its hover (see the .btn:disabled
+     rule below, which covers both a native disabled attribute and
+     aria-disabled="true" with the same look). */
+  --btn-disabled-bg:        var(--panel);
+  --btn-disabled-fg:        var(--faint);
+  --btn-disabled-border:    var(--line);
   --btn-loading-opacity:    0.72;
   /* One shared focus treatment for free-text/select inputs that swap the ring
      for a border-color cue (a full outline ring on a full-width text field
@@ -114,6 +131,17 @@
   --ak-border-subtle: #14161B;
   --ak-hairline: #1A1D23;
   --ak-track: #2A2F37;
+  /* This surface's own text-contrast ramp — checked against --ak-canvas
+     (#08090B), its base background, the same way the app's main --text/
+     --muted/--faint ramp above is checked against --bg. Values are fixed
+     (see the handoff note above), but the ratios are real, not asserted —
+     tests/color-contrast.test.ts reads them back out of this file:
+       --ak-text-primary    17.14:1
+       --ak-text-secondary  10.67:1
+       --ak-text-muted       6.19:1  (still ≥4.5:1 against every elevated
+                                       --ak-surface-* card background, worst
+                                       case ~5.6:1 on --ak-surface-3)
+       --ak-text-faint       3.38:1  decorative/labels only, not body copy */
   --ak-text-primary: #ECEEF1;
   --ak-text-secondary: #B9BEC6;
   --ak-text-muted: #8A9099;
@@ -700,13 +728,29 @@ kbd {
 .btn-danger { color: var(--btn-danger-fg); }
 .btn-danger:hover { border-color: var(--btn-danger-hover-border); }
 .btn-danger:focus-visible { outline-color: var(--btn-danger-focus-ring); }
-/* disabled — native :disabled and aria-disabled both handled */
+/* disabled — native :disabled and aria-disabled="true" get the SAME neutral-
+   grey, obviously-inert look and both drop their hover; opacity is 1 on
+   purpose (a blocked button isn't a dim/broken version of the live one). */
 .btn:disabled,
-.btn[aria-disabled="true"] { opacity: var(--btn-disabled-opacity); cursor: not-allowed; }
+.btn[aria-disabled="true"] {
+  cursor: not-allowed;
+  background: var(--btn-disabled-bg);
+  color: var(--btn-disabled-fg);
+  border-color: var(--btn-disabled-border);
+}
+.btn:disabled:hover,
+.btn[aria-disabled="true"]:hover { border-color: var(--btn-disabled-border); }
+.btn-primary:disabled,
+.btn-primary[aria-disabled="true"] { background: var(--raised); color: var(--muted); border-color: var(--line); }
 /* loading — pointer-events:none blocks double-submit; spinner icon lives in JSX */
 .btn.loading,
 .btn[aria-busy="true"] { opacity: var(--btn-loading-opacity); pointer-events: none; }
 @media (prefers-reduced-motion: reduce) { .btn:active { transform: none; } }
+/* Shared "reset native button chrome, keep it a real <button> for a11y" base
+   — previously reimplemented independently in each of these 5 places. */
+.mb-card, .mb-card-clickzone, .gv-card, .hd-stalled-row, .rg-card-link {
+  font: inherit; color: inherit; text-align: left; cursor: pointer;
+}
 .rec {
   font-family: var(--font-mono); font-size: var(--fz-11); letter-spacing: 0.1em; text-transform: uppercase;
   background: rgba(0,0,0,0.25); border-radius: 3px; padding: 2px var(--space-4);
@@ -792,7 +836,7 @@ kbd {
 .log-detail { margin: var(--space-4) 0 var(--space-4) var(--space-12); padding: var(--space-8) var(--space-8); background: var(--bg); border: 1px solid var(--line-soft); border-radius: 6px; color: var(--muted); white-space: pre-wrap; word-break: break-word; max-height: 280px; overflow: auto; font-size: var(--fz-11-5); }
 /* Conversation turns inside the log — operator + agent bubbles interleaved with
    telemetry, so the log reads as one timeline you can also talk in. */
-.log-turn { display: flex; flex-direction: column; gap: 3px; max-width: 88%; margin: var(--space-4) 0; padding: var(--space-8) var(--space-12); border-radius: 10px; font-family: var(--font-ui); font-size: var(--fz-13); line-height: 1.5; color: var(--ink); white-space: pre-wrap; word-break: break-word; }
+.log-turn { display: flex; flex-direction: column; gap: 3px; max-width: 88%; margin: var(--space-4) 0; padding: var(--space-8) var(--space-12); border-radius: 10px; font-family: var(--font-ui); font-size: var(--fz-13); line-height: 1.5; color: var(--text); white-space: pre-wrap; word-break: break-word; }
 .log-turn-agent { align-self: flex-start; background: var(--raised); border: 1px solid var(--line-soft); }
 .log-turn-you { align-self: flex-end; background: color-mix(in oklch, var(--accent), transparent 88%); border: 1px solid color-mix(in oklch, var(--accent), transparent 70%); }
 .log-who { font-size: var(--fz-11); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
@@ -801,7 +845,7 @@ kbd {
 /* Agent prose (chat turns / the final answer) rendered as markdown inside the log:
    marker-less lines that carry **bold** / `code` / - bullets. Tight margins so it
    sits like a log entry, not a document. */
-.log-prose { margin: var(--space-4) 0; font-size: var(--fz-13); line-height: 1.5; color: var(--ink); word-break: break-word; }
+.log-prose { margin: var(--space-4) 0; font-size: var(--fz-13); line-height: 1.5; color: var(--text); word-break: break-word; }
 .log-md { white-space: normal; }
 .log-md .md { font-size: var(--fz-13); line-height: 1.5; color: inherit; }
 .log-md .md > :first-child { margin-top: 0; }
@@ -1447,7 +1491,7 @@ button.kb-done:hover { opacity: 1; }
   font-size: var(--fz-12-5); color: var(--muted);
 }
 .proj-approval-label { font-size: var(--fz-11); color: var(--muted); letter-spacing: 0.03em; }
-.proj-approval-select { font-size: var(--fz-12); padding: 0; border: none; background: none; color: var(--ink); cursor: pointer; }
+.proj-approval-select { font-size: var(--fz-12); padding: 0; border: none; background: none; color: var(--text); cursor: pointer; }
 /* Full autonomy is live: the diff-review gate is unattended — flag it, don't
    let it blend in with the other (always human-gated-somewhere) levels. */
 .proj-approval-danger { border-color: color-mix(in oklch, var(--danger), transparent 40%); }
@@ -1456,18 +1500,18 @@ button.kb-done:hover { opacity: 1; }
 /* Daily budget — a plain number input sitting in the same pill as the
    approval-level select above, just with a "$" prefix instead of a chevron. */
 .proj-budget-prefix { color: var(--muted); }
-.proj-budget-input { width: 64px; font-size: var(--fz-12); padding: 0; border: none; background: none; color: var(--ink); }
+.proj-budget-input { width: 64px; font-size: var(--fz-12); padding: 0; border: none; background: none; color: var(--text); }
 .proj-budget-input::placeholder { color: var(--faint); }
 .proj-budget-input::-webkit-outer-spin-button, .proj-budget-input::-webkit-inner-spin-button { margin-left: var(--space-4); }
 /* Project runner-key confinement — a compact <details> popover in the header. */
 .proj-keys { position: relative; }
-.proj-keys-summary { display: inline-flex; align-items: center; gap: var(--space-4); height: 36px; padding: 0 var(--space-12); box-sizing: border-box; font-size: var(--fz-12); border-radius: 8px; border: 1px solid var(--line); background: var(--raised); color: var(--ink); cursor: pointer; list-style: none; }
+.proj-keys-summary { display: inline-flex; align-items: center; gap: var(--space-4); height: 36px; padding: 0 var(--space-12); box-sizing: border-box; font-size: var(--fz-12); border-radius: 8px; border: 1px solid var(--line); background: var(--raised); color: var(--text); cursor: pointer; list-style: none; }
 .proj-keys-summary::-webkit-details-marker { display: none; }
 .proj-keys-value { color: var(--muted); }
 .proj-keys[open] .proj-keys-summary { border-color: var(--accent); }
 .proj-keys-menu { position: absolute; right: 0; top: calc(100% + 4px); z-index: 20; min-width: 220px; max-height: 320px; overflow-y: auto; display: flex; flex-direction: column; gap: var(--space-4); padding: var(--space-8); border-radius: 10px; border: 1px solid var(--line); background: var(--panel); box-shadow: 0 10px 30px rgb(0 0 0 / 0.35); }
 .proj-keys-hint { font-size: var(--fz-11); color: var(--muted); margin-bottom: var(--space-4); line-height: 1.4; }
-.proj-keys-item { display: flex; align-items: center; gap: var(--space-8); font-size: var(--fz-12-5); color: var(--ink); cursor: pointer; padding: 2px 0; }
+.proj-keys-item { display: flex; align-items: center; gap: var(--space-8); font-size: var(--fz-12-5); color: var(--text); cursor: pointer; padding: 2px 0; }
 .proj-keys-item input { flex: none; }
 .proj-keys-name { flex: 1; }
 .proj-keys-fp { font-size: var(--fz-11); color: var(--muted); }
@@ -1604,7 +1648,7 @@ button.kb-done:hover { opacity: 1; }
 .settings-verify-dismiss:hover { opacity: 1; }
 /* Extra named credentials (a second key for a provider) */
 .settings-cred { display: flex; flex-direction: column; gap: var(--space-4); padding-top: var(--space-8); border-top: 1px dashed var(--line-soft); }
-.settings-cred-name { font-size: var(--fz-13); color: var(--ink); }
+.settings-cred-name { font-size: var(--fz-13); color: var(--text); }
 .settings-cred-last4 { color: var(--muted); font-size: var(--fz-11); }
 .settings-cred-add { align-self: flex-start; color: var(--muted); }
 .settings-cred-new { gap: var(--space-8); }
@@ -1836,8 +1880,8 @@ button.kb-done:hover { opacity: 1; }
 .confirm-title { margin: 0 0 var(--space-8); font-size: calc(var(--fs) + 3px); font-weight: 650; letter-spacing: -0.01em; }
 .confirm-body { font-size: var(--fs); color: var(--muted); line-height: 1.55; text-wrap: pretty; }
 .confirm-actions { display: flex; justify-content: flex-end; gap: var(--space-8); margin-top: var(--space-20); }
-.btn.confirm-danger { background: var(--danger); border-color: var(--danger); color: #fff; }
-.btn.confirm-danger:hover { filter: brightness(1.08); border-color: var(--danger); }
+.btn.confirm-danger { background: var(--btn-danger-solid-bg); border-color: var(--btn-danger-solid-bg); color: var(--btn-danger-solid-fg); }
+.btn.confirm-danger:hover { background: var(--btn-danger-solid-hover-bg); border-color: var(--btn-danger-solid-hover-bg); }
 /* useChoice() — a 3+-way decision (e.g. reset vs. keep the work) instead of a
    plain yes/no; each option is its own full-width card so its consequence
    (the hint line) reads clearly rather than being crammed into a button label. */
@@ -2227,18 +2271,6 @@ button.ad-hist-row:hover { border-color: var(--border); background: var(--raised
 .ad-hist-time { flex: none; font-size: var(--fz-11); color: var(--muted); }
 .btn-retire { color: var(--danger); }
 .btn-retire:hover:not(:disabled) { border-color: color-mix(in oklch, var(--danger), transparent 50%); }
-/* Disabled = obviously inert, not a dim/broken version of the live button. A
-   blocked button goes neutral grey (never dim-amber) and drops its hover. */
-.btn:disabled {
-  cursor: not-allowed;
-  opacity: 1;
-  background: var(--panel);
-  color: var(--faint);
-  border-color: var(--line);
-  filter: none;
-}
-.btn:disabled:hover { border-color: var(--line); filter: none; }
-.btn-primary:disabled { background: var(--raised); color: var(--muted); border-color: var(--line); }
 
 /* Blocked-CTA pattern: primary button with its reason directly beneath, at
    readable contrast (--muted, not faint mono). */
@@ -2283,7 +2315,7 @@ button.ad-hist-row:hover { border-color: var(--border); background: var(--raised
 /* ─── Home dashboard (Momentum Rollout Phase 22) ───────────────────────────
    Same container width as .home-bar above, own top-level class so the
    dashboard's own grid/cards aren't coupled to the greeting bar's layout. */
-.hm-greeting { font-size: var(--fz-14); color: var(--ink); line-height: 1.5; margin: 0; }
+.hm-greeting { font-size: var(--fz-14); color: var(--text); line-height: 1.5; margin: 0; }
 /* The needs-you clause — the one span the greeting sentence calls out for
    attention. --warn (not --danger): it's an ambient "worth a look" flag,
    consistent with KIND_META's own approval/escalation coloring, not an
@@ -2893,7 +2925,7 @@ button.rb-proj:hover { color: var(--accent); }
 .asst-welcome p { color: var(--muted); font-size: var(--fz-13-5); margin: 0 0 var(--space-8); }
 .asst-sugg { display: flex; flex-wrap: wrap; gap: var(--space-8); }
 .asst-chip { font-family: var(--font-ui); font-size: var(--fz-12-5); color: var(--muted); background: var(--raised); border: 1px solid var(--line); border-radius: 20px; padding: var(--space-4) var(--space-12); cursor: pointer; }
-.asst-chip:hover { color: var(--ink); border-color: var(--faint); }
+.asst-chip:hover { color: var(--text); border-color: var(--faint); }
 /* TASK 21 — chat bubbles: operator right-aligned (human-bg/border, tail at
    bottom-right), Steward left-aligned (surface-2, tail at bottom-left). The
    bubble styling lives on .asst-text/.asst-md (the content element) rather
@@ -2904,7 +2936,7 @@ button.rb-proj:hover { color: var(--accent); }
 .asst-who { font-size: var(--fz-11); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
 .asst-user .asst-who { color: var(--accent); }
 .asst-text {
-  font-size: var(--fz-13-5); line-height: 1.5; color: var(--ink); white-space: pre-wrap; word-break: break-word;
+  font-size: var(--fz-13-5); line-height: 1.5; color: var(--text); white-space: pre-wrap; word-break: break-word;
   padding: var(--space-8) var(--space-12);
 }
 .asst-user .asst-text {
@@ -2921,17 +2953,17 @@ button.rb-proj:hover { color: var(--accent); }
 /* Assistant replies render as markdown — tighten the doc-scale spacing so it
    reads as a compact chat bubble, and drop the pre-wrap (blocks handle layout). */
 .asst-md { white-space: normal; }
-.asst-md .md { font-size: var(--fz-13-5); line-height: 1.55; color: var(--ink); }
+.asst-md .md { font-size: var(--fz-13-5); line-height: 1.55; color: var(--text); }
 .asst-md .md > :first-child { margin-top: 0; }
 .asst-md .md > :last-child { margin-bottom: 0; }
-.asst-md .md p { margin: var(--space-4) 0; color: var(--ink); }
+.asst-md .md p { margin: var(--space-4) 0; color: var(--text); }
 /* Second (and later) paragraph reads as elaboration, not the headline claim —
    dimmed to text-secondary so the first line stays the thing that's scanned. */
 .asst-md .md p:nth-of-type(n+2) { color: var(--ak-text-secondary); }
 .asst-md .md h1 { font-size: var(--fz-15); margin: var(--space-8) 0 var(--space-4); }
 .asst-md .md h2 { font-size: var(--fz-14); margin: var(--space-12) 0 var(--space-4); padding-top: var(--space-8); }
 .asst-md .md h3 { font-size: var(--fz-13-5); margin: var(--space-8) 0 var(--space-4); }
-.asst-md .md ul, .asst-md .md ol { margin: var(--space-4) 0; padding-left: var(--space-16); color: var(--ink); }
+.asst-md .md ul, .asst-md .md ol { margin: var(--space-4) 0; padding-left: var(--space-16); color: var(--text); }
 .asst-md .md li { margin: 3px 0; }
 .asst-md .md hr { margin: var(--space-8) 0; }
 .asst-think { color: var(--muted); font-style: italic; padding: var(--space-8) var(--space-12); animation: asst-think-pulse 2s ease-in-out infinite; }
@@ -3017,7 +3049,7 @@ button.rb-proj:hover { color: var(--accent); }
 .asst-confirm2-row { display: flex; align-items: baseline; gap: var(--space-8); }
 .asst-confirm2-row-body { display: flex; flex-direction: column; gap: var(--space-4); min-width: 0; flex: 1; }
 .asst-confirm2-num { flex: none; font-size: var(--fz-11); color: var(--ak-text-faint); }
-.asst-confirm2-label { font-size: var(--fz-12-5); color: var(--ink); }
+.asst-confirm2-label { font-size: var(--fz-12-5); color: var(--text); }
 .asst-confirm2-label-resolved { color: var(--muted); }
 .asst-confirm2-actions { display: flex; justify-content: flex-end; gap: var(--space-4); margin-top: 2px; }
 .asst-confirm2-both { background: var(--ak-human); border-color: var(--ak-human); }
@@ -3026,7 +3058,7 @@ button.rb-proj:hover { color: var(--accent); }
 .asst-propose-group { display: flex; flex-direction: column; gap: var(--space-4); }
 .asst-propose-all { display: flex; align-items: center; gap: var(--space-8); margin-top: var(--space-4); }
 .asst-propose-all-label { font-size: var(--fz-11); letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); flex: 1; }
-.asst-propose-label { font-size: var(--fz-12-5); color: var(--ink); flex: 1; min-width: 0; }
+.asst-propose-label { font-size: var(--fz-12-5); color: var(--text); flex: 1; min-width: 0; }
 .asst-propose-actions { display: flex; gap: var(--space-4); }
 .asst-propose-done { font-size: var(--fz-12-5); color: var(--ok); }
 .asst-propose-done.muted { color: var(--muted); }
