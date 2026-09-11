@@ -20,13 +20,16 @@ import { registerOpenAiCompat } from "./interop/openai.js";
 import { registerInteropRest } from "./interop/rest.js";
 import { registerWs } from "./ws.js";
 import { registerStatic } from "./static.js";
-import { registerPreview, backfillPreviews, kickoffPreviewBuilds } from "./preview/index.js";
+import { registerPreview, registerPreviewArtifactRoute, backfillPreviews, kickoffPreviewBuilds } from "./preview/index.js";
 import { projectPreview } from "./preview/project-preview.js";
 import { registerLivePreviewProxy } from "./preview/preview-proxy.js";
 import { recordPublicOrigin } from "./preview/public-origin.js";
 import { registerSecretsRoutes } from "./secrets/index.js";
+import { registerMcpServerRoutes } from "./mcp-servers/index.js";
 import { registerGithubRoutes, registerGithubWebhookRoutes, configureGithub, githubService } from "./github/index.js";
+import { registerSentryWebhookRoutes, registerSentryStatusRoutes } from "./sentry/index.js";
 import { startTaskSourceSync } from "./task-sync.js";
+import { startFeatureShipHandoff } from "./feature-ship-handoff.js";
 import { DEFAULT_WORKSPACE } from "@skynet/shared";
 import { registerEvalsRoutes } from "./evals/index.js";
 import { registerSimulationRoutes } from "./simulation/index.js";
@@ -84,6 +87,11 @@ async function main() {
   // Write task status changes back to their imported source of truth (GitHub
   // issues today). Off unless a project opts in (syncSourceStatus). Best-effort.
   startTaskSourceSync(bus, { store, log: (m) => console.log(m) });
+
+  // Agent-to-agent handoff on feature completion (v2): when a Feature/Milestone
+  // ships, fan out to each configured role-agent (Project.roleAgents). Off
+  // unless a project opts a role in. Best-effort, same as task-sync above.
+  startFeatureShipHandoff(bus, { store, orchestrator, log: (m) => console.log(m) });
 
   // Deploy-time convenience: if a GITHUB_TOKEN is present (the GCP self-host
   // loads it from Secret Manager) and the workspace has no GitHub connection
@@ -213,11 +221,21 @@ async function main() {
   await registerInteropRest(app, { operations });
   // Workspace-scoped provider keys (encrypted at rest); /api auth hook applies.
   await registerSecretsRoutes(app, operations);
+  // Workspace-scoped custom MCP server configs (roadmap "Tools via MCP"),
+  // encrypted at rest; /api auth hook applies.
+  await registerMcpServerRoutes(app);
+  // Whether the inbound Sentry webhook is configured on this server; /api
+  // auth hook applies.
+  await registerSentryStatusRoutes(app);
   // GitHub App connection + safety policy (workspace-scoped); /api auth applies.
   await registerGithubRoutes(app);
   // Inbound GitHub webhook (issues → task) — outside /api on purpose; the HMAC
   // signature is its own auth. No-op unless GITHUB_WEBHOOK_SECRET is set.
   await registerGithubWebhookRoutes(app, { operations });
+  // Inbound Sentry webhook (new/regressed issue → task) — same shape and
+  // posture as the GitHub webhook above. No-op unless SENTRY_WEBHOOK_SECRET
+  // is set. See docs/integrations-catalog.md and ROADMAP.md's "Tools via MCP".
+  await registerSentryWebhookRoutes(app, { operations });
   // LLM-judged acceptance evals (real runs via the standalone evals/ suite,
   // spawned as a subprocess); /api auth hook applies.
   await registerEvalsRoutes(app);
@@ -248,6 +266,10 @@ async function main() {
       (t) => projectPreview.proxyTargetForToken(t),
       () => projectPreview.liveSalvageCandidates(),
     );
+    // Command-kind artifact (Phase 3, docs/live-preview.md) — see
+    // registerPreviewArtifactRoute's own doc comment for why this is a
+    // public capability-URL route, not under /api/.
+    registerPreviewArtifactRoute(app, (t, p) => projectPreview.artifactForToken(t, p));
     // Kill any live preview trees on graceful shutdown — their dev servers are
     // spawned detached (own process group) so they'd otherwise outlive the server
     // and keep holding ports (EADDRINUSE on the next boot). In a container, PID

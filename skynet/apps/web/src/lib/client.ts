@@ -14,6 +14,8 @@ import {
   type SafetyPolicy,
   type SecretMeta,
   type SecretAuditEntry,
+  type McpServerMeta,
+  type CreateMcpServerRequest,
   type Project,
   type ProjectCharter,
   type ProjectContextEntry,
@@ -46,6 +48,7 @@ import {
   type AutonomyOverride,
   type SourceRef,
   type Decision,
+  type Plan,
   type RoadmapDoc,
   type RoadmapLineClaim,
   type RoadmapProposal,
@@ -68,6 +71,26 @@ import { toast } from "../components/toast";
 const TOKEN_KEY = "skynet_token";
 const token = () =>
   (typeof localStorage !== "undefined" && localStorage.getItem(TOKEN_KEY)) || "dev-cyberdyne";
+
+/** Chat → canvas handoff (hosted cold-click case, ROADMAP.md): pick up the
+ *  one-time session token the server's `GET /handoff/:token` route
+ *  (apps/server/src/auth/routes.ts) appended as `?st=…` after exchanging a
+ *  short-lived signed token for a real session, stash it exactly where a
+ *  normal login writes its own token, then scrub it from the visible URL —
+ *  the hash (the target route) is left untouched. A bookmark/refresh/
+ *  screenshot of the landed page should never carry a live session token.
+ *  Must run once at boot, BEFORE anything reads token() (main.tsx calls this
+ *  before the first render). No-op if `?st=` isn't present. */
+export function consumeHandoffToken(): void {
+  const st = new URLSearchParams(location.search).get("st");
+  if (!st) return;
+  try {
+    localStorage.setItem(TOKEN_KEY, st);
+  } catch {
+    /* private mode / storage disabled — falls through to a normal login */
+  }
+  history.replaceState(null, "", location.pathname + location.hash);
+}
 
 // The current session's principal, mirrored from `GET /api/auth/me` — a
 // human login carries no `scopes` (full authority) UNLESS it's a viewer
@@ -875,6 +898,26 @@ export function fetchSecretAudit() {
   return req<{ audit: SecretAuditEntry[] }>("GET", "/api/secrets/audit");
 }
 
+// Custom MCP servers (Integrations) — the "scoped tools" roadmap "Tools via
+// MCP" gives an agent to act back into the operator's own services (GitHub/
+// Sentry/Slack/anything speaking MCP). Never returns a stored env/header
+// value, only metadata — see McpServerMeta.
+export function fetchMcpServers() {
+  return req<{ servers: McpServerMeta[] }>("GET", "/api/mcp-servers");
+}
+export function createMcpServer(body: CreateMcpServerRequest) {
+  return req<{ server: McpServerMeta }>("POST", "/api/mcp-servers", body);
+}
+export function deleteMcpServer(id: string) {
+  return req<unknown>("DELETE", `/api/mcp-servers/${id}`);
+}
+
+// Whether the inbound Sentry webhook (sentry/webhook.ts) is configured on
+// this server — drives the "not configured" warning in Integrations.
+export function fetchSentryStatus() {
+  return req<{ configured: boolean }>("GET", "/api/sentry/status");
+}
+
 // ─── Service tokens (MCP / programmatic access) ────────────────────────────
 // Scoped API tokens for runs driving Skynet over MCP. The raw token is
 // returned ONCE at creation; list only ever yields non-secret metadata.
@@ -977,6 +1020,10 @@ export function updateProject(
     // Which provider keys the project may run on (credential ids; empty = all).
     enabledRunnerCredentialIds?: string[];
     syncSourceStatus?: boolean;
+    // Phase 3 generic webhook destination/secret; null clears each back to
+    // "not configured" / "unsigned". See Project.externalWebhookUrl.
+    externalWebhookUrl?: string | null;
+    externalWebhookSecret?: string | null;
     // Branch to stack runs/PRs onto; null clears back to the global default.
     baseBranch?: string | null;
     // Where the Roadmap tab reads its doc from; null clears back to the
@@ -1151,6 +1198,20 @@ export function updateMilestone(
 export function deleteMilestone(milestoneId: string) {
   return req<unknown>("DELETE", `/api/milestones/${milestoneId}`);
 }
+
+// ─── The living Plan (Product Steward Phase 1) ──────────────────────────────
+// One per project — the durable, versioned roadmap the steward/operator
+// maintains (docs/product-steward.md §2). Distinct from fetchProjectRoadmap
+// above, which reads raw ROADMAP.md text straight from a bound repo; this is
+// not repo-coupled and works for chat-only projects too.
+export function fetchProjectPlan(projectId: string) {
+  return req<Plan>("GET", `/api/projects/${projectId}/plan`);
+}
+/** `baseVersion` must match the Plan's current version or the write is
+ *  refused (409) — see UpdatePlanRequest's own doc comment. */
+export function updateProjectPlan(projectId: string, body: { markdown: string; baseVersion: number }) {
+  return req<Plan>("PATCH", `/api/projects/${projectId}/plan`, body);
+}
 // A project/task action the assistant proposes (confirm-first). Kept in sync with
 // AssistantAction in apps/server/src/project-assistant.ts; `summary` is the label.
 export interface AssistantAction {
@@ -1170,6 +1231,11 @@ export interface AssistantAction {
     | "set_status"
     | "set_schedule"
     | "set_assignment"
+    | "reassign_run"
+    | "retire_runner"
+    | "pause_run"
+    | "resume_run"
+    | "stop_run"
     | "add_feature"
     | "add_milestone"
     | "set_task_feature"
@@ -1184,7 +1250,9 @@ export interface AssistantAction {
     | "start_feature"
     | "process_backlog"
     | "pause_key"
-    | "resume_key";
+    | "resume_key"
+    | "remove_credential"
+    | "resolve_hitl";
   summary: string;
   taskId?: string;
   text?: string;
@@ -1201,7 +1269,11 @@ export interface AssistantAction {
   // = the pool for `agents` mode (empty otherwise).
   mode?: "any" | "agents" | "unassigned";
   agentIds?: string[];
-  // Credential pause/resume — workspace-scoped, unlike every project action above.
+  // Fleet ops: `agentId` (singular) targets a specific agent for reassign_run/
+  // retire_runner; `runId` is the task's live run for pause_run/resume_run/stop_run.
+  agentId?: string;
+  runId?: string;
+  // Credential pause/resume/remove — workspace-scoped, unlike every project action above.
   credentialId?: string;
   reason?: string;
   // Roadmap linkage (add_feature / add_milestone / set_task_feature /
@@ -1223,6 +1295,12 @@ export interface AssistantAction {
   del?: number;
   baselineHash?: string;
   baselineSha?: string;
+  // resolve_hitl: the gate being acted on and how. `guidance` is required for
+  // modify, `optionIndex` (0-based) for option; approve/reject need neither.
+  hitlId?: string;
+  resolveAction?: "approve" | "reject" | "modify" | "option";
+  guidance?: string;
+  optionIndex?: number;
 }
 // Global Steward chat (the sidebar dock). `projectId` focuses the page you're on
 // (full project assistant + actions); omit it for a workspace-wide answer. The
@@ -1358,8 +1436,18 @@ export function refreshProjectContext(projectId: string) {
 // ─── Live preview (Phase-1: web/sites) ──────────────────────────────────────
 export type PreviewSource = "main" | "merged" | "latest";
 // "service" (Phase 2) rebuilds/restarts automatically when the fleet merges,
-// instead of relying on the dev server's own HMR — see docs/live-preview.md.
-export type PreviewKind = "web" | "service";
+// instead of relying on the dev server's own HMR. "command" (Phase 3) has no
+// server/URL at all — a finished command's exit code + artifacts ARE the
+// preview. See docs/live-preview.md.
+export type PreviewKind = "web" | "service" | "command";
+export interface PreviewArtifact {
+  path: string;
+  size: number;
+  mime: string;
+  /** Capability URL (`/preview-artifact/<token>/…`) — fetch/embed directly,
+   *  no auth header needed (mirrors the `/p/<token>/` dev-server proxy). */
+  url: string;
+}
 export interface PreviewState {
   status: "idle" | "starting" | "live" | "failed" | "stopped";
   url: string | null;
@@ -1371,6 +1459,10 @@ export interface PreviewState {
   source: PreviewSource;
   combined: { total: number; included: number; skipped: number } | null;
   kind: PreviewKind;
+  // "command" kind only (null/[] for "web"/"service"): the finished run's
+  // exit code and any declared artifacts it produced.
+  exitCode: number | null;
+  artifacts: PreviewArtifact[];
 }
 export function previewStatus(projectId: string) {
   return req<PreviewState>("GET", `/api/projects/${projectId}/preview`);

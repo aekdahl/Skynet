@@ -17,7 +17,7 @@ describe("providerRequirements", () => {
   });
 
   it("every fleet provider has a keyUrl so the onboarding can link directly to key creation", () => {
-    const PROVIDERS = ["claude", "codex", "gemini", "cursor", "copilot", "hermes", "opencode", "kimi"] as const;
+    const PROVIDERS = ["claude", "codex", "gemini", "cursor", "copilot", "hermes", "opencode", "kimi", "aider"] as const;
     for (const id of PROVIDERS) {
       const r = providerRequirements(id);
       expect(r.keyUrl, `${id} is missing a keyUrl`).toBeTruthy();
@@ -55,6 +55,15 @@ describe("providerRequirements", () => {
     expect(r.authEnvVars[0]).toBe("KIMI_API_KEY");
     expect(r.cliLogin).toBe(false);
     expect(r.docsUrl).toContain("kimi");
+  });
+
+  it("marks aider as a CLI needing the aider binary + a provider key (Anthropic-first)", () => {
+    const r = providerRequirements("aider");
+    expect(r.runtime).toBe("cli");
+    expect(r.bin).toBe("aider");
+    expect(r.authEnvVars[0]).toBe("ANTHROPIC_API_KEY");
+    expect(r.cliLogin).toBe(false);
+    expect(r.docsUrl).toContain("aider");
   });
 
   it("attaches binOnPath per provider (null for the SDK provider)", () => {

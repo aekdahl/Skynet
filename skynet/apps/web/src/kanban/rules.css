@@ -101,6 +101,7 @@
 .rb-priority-chips { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ak-sp-6); }
 .rb-priority-chip { display: inline-flex; align-items: center; gap: var(--ak-sp-5); }
 .rb-priority-remove { border: none; background: none; color: inherit; cursor: pointer; font-size: 12px; line-height: 1; padding: 0; }
+.rb-priority-remove:hover { color: var(--ak-warn); }
 .rb-priority-remove:focus-visible { outline: none; box-shadow: var(--ak-focus-ring); }
 .rb-priority-suggest {
   padding: var(--ak-sp-3) var(--ak-sp-8); font-size: 11px; font-family: var(--ak-font-mono);

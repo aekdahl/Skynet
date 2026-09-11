@@ -19,26 +19,30 @@
 // is missing or unauthenticated the runner degrades cleanly — it surfaces the
 // reason and completes, so the orchestrator lifecycle never hangs.
 //
-// Opt-in browser tooling (spec.browser): cursor-agent's MCP servers are FILE-
-// based (.cursor/mcp.json project-local, or ~/.cursor/mcp.json global —
-// verified live against cursor-agent 2026.06.19; `cursor-agent mcp` has no
-// "add via flag for one run" option). prepareBrowserMcp writes that file into
-// the run's OWN worktree, same shape `cursor-agent mcp add` would. A freshly-
-// added server still needs a one-time approval before it loads in headless
-// mode — normally `cursor-agent mcp enable <name>`, which persists into
-// GLOBAL state, so instead we pass `--approve-mcps` on the invocation itself
-// (session-scoped, never touches ~/.cursor). This matches the SAME trust
+// Opt-in MCP tooling (spec.browser, spec.mcpServers): cursor-agent's MCP
+// servers are FILE-based (.cursor/mcp.json project-local, or
+// ~/.cursor/mcp.json global — verified live against cursor-agent 2026.06.19;
+// `cursor-agent mcp` has no "add via flag for one run" option). prepareMcp
+// writes that file into the run's OWN worktree, same shape `cursor-agent mcp
+// add` would. A freshly-added server still needs a one-time approval before
+// it loads in headless mode — normally `cursor-agent mcp enable <name>`,
+// which persists into GLOBAL state, so instead we pass `--approve-mcps` on
+// the invocation itself (session-scoped, never touches ~/.cursor) for browser
+// tooling AND/OR any user-configured server. This matches the SAME trust
 // level `--force` already gives every other tool below — cursor-agent is the
 // one vendor this codebase runs fully unattended, relying on Skynet's post-run
 // diff review rather than a live per-action gate (see `--force` below); a
 // live-gated browser tool would be an inconsistent exception, not a safer one.
+// A remote (url/headers) user-configured server is emitted in the same
+// `{type:"http", url, headers}` shape as Gemini's — best-effort, not
+// independently verified against cursor-agent's own MCP-config schema.
 
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createInterface, type Interface } from "node:readline";
 import type { PlanStep, ProviderId, Resolution } from "@skynet/shared";
-import { mergeBrowserMcpConfig, usageFromJson } from "./cli-runner.js";
+import { mergeMcpConfig, usageFromJson } from "./cli-runner.js";
 import type {
   HitlRaise,
   RunnerEvents,
@@ -69,7 +73,7 @@ export function cursorArgs(spec: StartSpec, prompt: string, resumeChatId: string
   // A freshly-written .cursor/mcp.json server needs one-time approval before
   // it loads in headless mode — see the file header for why this (not
   // `mcp enable`) is the right way to grant it.
-  if (spec.browser) args.push("--approve-mcps");
+  if (spec.browser || spec.mcpServers?.length) args.push("--approve-mcps");
   if (model) args.push("--model", model);
   // Continue the parent/own chat when we have an id (fork or follow-up turn).
   if (resumeChatId) args.push("--resume", resumeChatId);
@@ -159,14 +163,15 @@ class CursorRunnerHandle implements RunnerHandle {
     this.events.onStatus(this.runId, "running");
     this.events.onLog(this.runId, `picked up "${spec.task}" on ${spec.branch}`);
     this.hb = setInterval(() => this.events.onHeartbeat(this.runId), 5_000);
-    if (spec.browser) this.prepareBrowserMcp();
+    if (spec.browser || spec.mcpServers?.length) this.prepareMcp();
     this.spawnTurn(this.initialPrompt(), true);
   }
 
   /** Best-effort: write .cursor/mcp.json into the worktree so the browser MCP
-   *  server is available. A failure here just means the run proceeds without
-   *  browser tools — never worth failing the whole task over. */
-  private prepareBrowserMcp() {
+   *  server and/or any user-configured servers are available. A failure here
+   *  just means the run proceeds without them — never worth failing the whole
+   *  task over. */
+  private prepareMcp() {
     try {
       const cwd = this.spec.cwd ?? process.cwd();
       const dir = join(cwd, ".cursor");
@@ -178,9 +183,9 @@ class CursorRunnerHandle implements RunnerHandle {
         /* no existing file, or unreadable — start fresh */
       }
       mkdirSync(dir, { recursive: true });
-      writeFileSync(file, JSON.stringify(mergeBrowserMcpConfig(existing), null, 2));
+      writeFileSync(file, JSON.stringify(mergeMcpConfig(existing, this.spec), null, 2));
     } catch (err) {
-      this.events.onLog(this.runId, `browser-tools setup failed: ${(err as Error).message} — continuing without it`);
+      this.events.onLog(this.runId, `MCP tool setup failed: ${(err as Error).message} — continuing without it`);
     }
   }
 

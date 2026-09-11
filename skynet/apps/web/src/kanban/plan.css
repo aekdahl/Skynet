@@ -1,0 +1,43 @@
+/* ─── The living Plan (Product Steward Phase 1) ──────────────────────────── */
+
+.pplan { display: flex; flex-direction: column; gap: var(--ak-sp-16); }
+.pplan-intro { font-size: 12.5px; color: var(--ak-text-faint); line-height: 1.5; max-width: 640px; }
+
+.pplan-doc { display: flex; flex-direction: column; gap: 10px; background: var(--ak-surface-1); border: 1px solid var(--ak-border); border-radius: var(--ak-radius-card); padding: 14px 16px; }
+.pplan-doc-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.pplan-doc-meta { font-size: 10.5px; color: var(--ak-text-faint); }
+.pplan-editor { min-height: 220px; resize: vertical; font-family: var(--ak-font-mono); font-size: 12.5px; line-height: 1.5; }
+.pplan-doc-actions { display: flex; align-items: center; gap: 10px; }
+.pplan-conflict {
+  font-size: 12px; color: var(--ak-warn);
+  background: color-mix(in oklch, var(--ak-warn), transparent 90%);
+  border: 1px solid color-mix(in oklch, var(--ak-warn), transparent 55%);
+  border-radius: var(--ak-radius-sm); padding: 8px 10px;
+}
+.pplan-conflict-reload { background: none; border: none; padding: 0; color: var(--ak-warn); font-weight: 600; cursor: pointer; text-decoration: underline; }
+
+.pplan-milestones { display: flex; flex-direction: column; gap: 10px; }
+.pplan-section-head { font-family: var(--ak-font-mono); font-size: 11px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ak-text-faint); }
+
+.pplan-milestone { background: var(--ak-surface-1); border: 1px solid var(--ak-border); border-radius: var(--ak-radius-card); padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; }
+.pplan-milestone-head { display: flex; align-items: center; gap: 10px; }
+.pplan-milestone-status { font-size: 11.5px; padding: 3px 8px; width: auto; flex: none; }
+.pplan-milestone-name { flex: 1; font-size: 13.5px; font-weight: 600; color: var(--ak-text-primary); }
+.pplan-milestone-target { font-size: 11px; color: var(--ak-text-faint); }
+.pplan-milestone-del { background: none; border: none; padding: 0; color: var(--ak-text-faint); cursor: pointer; font-size: 12px; }
+.pplan-milestone-del:hover { color: var(--ak-warn); }
+
+.pplan-milestone-tasks { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.pplan-milestone-empty { font-size: 11.5px; color: var(--ak-text-faint); }
+.pplan-task-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 11.5px; color: var(--ak-text-secondary);
+  background: var(--ak-surface-2); border: 1px solid var(--ak-border-subtle);
+  border-radius: var(--ak-radius-pill); padding: 2px 10px;
+}
+.pplan-task-chip-x { cursor: pointer; color: var(--ak-text-faint); }
+.pplan-task-chip-x:hover { color: var(--ak-warn); }
+.pplan-link-btn { background: none; border: none; padding: 2px 4px; color: var(--ak-human); font-size: 11.5px; cursor: pointer; }
+.pplan-link-select { font-size: 11.5px; padding: 2px 6px; width: auto; }
+
+.pplan-add-milestone { display: flex; gap: 8px; max-width: 480px; }

@@ -3,7 +3,7 @@
 // task, route HITL gates, deliver decisions, fork, complete. Phase 0 uses the
 // mock runner; real providers drop in behind the same runner-sdk interface.
 
-import type { TaskRun, AutonomyBreaker, AutonomyOverride, Checkpoint, HitlItem, Project, Resolution, Agent, Task, TaskAssignment, TaskSource, TaskState, ProviderId, ProviderInfo, MergeBriefing, MergeBrief, FeatureBrief, Risk, Feature, FeatureStatus, Milestone, SolutionBrief, DiffWalkthrough, PullRequest, PrChecksStatus } from "@skynet/shared";
+import type { TaskRun, AutonomyBreaker, AutonomyOverride, Checkpoint, HitlItem, Project, Resolution, Agent, Task, TaskAssignment, TaskSource, TaskState, ProviderId, ProviderInfo, MergeBriefing, MergeBrief, FeatureBrief, Risk, Feature, FeatureStatus, Milestone, SolutionBrief, DiffWalkthrough, PullRequest, PrChecksStatus, HandoffRole } from "@skynet/shared";
 import { WorkspaceSettings, computeDailySpend, costBandFor, dayWindow, pacedAvailableUsd, ratesFor, resolveTaskBrief } from "@skynet/shared";
 import {
   isCreditExhaustionError,
@@ -11,6 +11,7 @@ import {
   type RunnerEvents,
   type RunnerHandle,
   type RunnerProvider,
+  type StartSpec,
   type UntrustedRead,
 } from "@skynet/runner-sdk";
 // Cheap, tool-less one-shot for the clarification draft. Explicit mid-tier
@@ -27,6 +28,17 @@ import { resolveActivePolicy } from "./command-policy.js";
 import { isManagerDelegated, resolveMergeTarget } from "./derive/merge-target.js";
 import { parseReviewVerdict, extractJsonObject, REVIEW_OUTPUT_INSTRUCTION, parseReviewProposals, type ProposedTask } from "./review-verdict.js";
 import { parseComparativeVerdict, comparativeReviewInstruction } from "./bakeoff-verdict.js";
+import {
+  HANDOFF_TARGET_FILE,
+  changeManagerQuestion,
+  parseChangeManagerReply,
+  spliceChangelogEntry,
+  docsWriterQuestion,
+  parseDocsWriterReply,
+  releaseCommsQuestion,
+  parseReleaseCommsReply,
+  type HandoffContext,
+} from "./feature-handoff.js";
 import { parseBreakerVerdict, BREAKER_OUTPUT_INSTRUCTION, type BreakerVerdictOut } from "./breaker-verdict.js";
 import { parseInjectionVerdict, buildInjectionPrompt } from "./injection-firewall.js";
 import { parseDiffWalkthrough, DIFF_WALKTHROUGH_INSTRUCTION, DIFF_WALKTHROUGH_SYSTEM } from "./diff-walkthrough.js";
@@ -52,6 +64,7 @@ import { providerUsableFromEnv } from "./provider-env.js";
 import { assessProjectDrive } from "./drive.js";
 import { projectCredential } from "./project-credential.js";
 import { decideAutoMerge, DEFAULT_AUTO_MERGE_POLICY, GATE_REASON_TEXT, POLICY_MERGE_REASON } from "./merge-policy.js";
+import sensitivePaths from "../../../docs/sensitive-paths.json" with { type: "json" };
 
 /** How long before a project's board may be re-pulled from its source again. */
 const REFILL_COOLDOWN_MS = 15 * 60 * 1000;
@@ -60,6 +73,7 @@ const REFILL_COOLDOWN_MS = 15 * 60 * 1000;
  *  that just ran dry will still be dry in fifteen minutes. */
 const REPLENISH_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 import { secretService } from "./secrets/index.js";
+import { mcpServerService } from "./mcp-servers/index.js";
 import { previewService } from "./preview/index.js";
 import { projectPreview, type ProjectPreviewManager } from "./preview/project-preview.js";
 import { prepareWorktree } from "./preview/worktree.js";
@@ -499,9 +513,11 @@ function fleetTaskCreatedAt(task: Task): number {
 // worktree + GitHub push just to reach it.
 
 /** Sensitive areas — a change touching these reads as higher-risk on the
- *  ready-to-merge card (matched against module ids AND file paths, case-insensitive). */
-const SENSITIVE_AREA =
-  /(auth|login|session|token|secret|credential|password|payment|billing|charge|invoice|migration|schema|infra|deploy|terraform|k8s|kubernetes|security|permission|rbac)/i;
+ *  ready-to-merge card (matched against module ids AND file paths, case-insensitive).
+ *  Sourced from docs/sensitive-paths.json — the same file
+ *  .github/workflows/pr-risk-label.yml reads, so the two "what counts as
+ *  sensitive" definitions (server evidence vs. CI advisory label) can't drift. */
+const SENSITIVE_AREA = new RegExp(sensitivePaths.sensitiveAreaPattern, "i");
 
 /** The actual file paths (plus any matching module ids, folded in as synthetic
  *  "module: …" entries when no individual file name matches) that tripped the
@@ -526,16 +542,10 @@ export function mergeTouchesTests(files: string[]): boolean {
 // reviewer sees it at every stage, not just one. Display-only here — this
 // mirrors, not replaces, the merge-guardrails path-policy that decides what
 // actually blocks an auto-merge.
-const REQUIRES_HUMAN_PATTERNS: { label: string; re: RegExp }[] = [
-  { label: "migrations/**", re: /(^|\/)migrations\// },
-  { label: ".github/workflows/**", re: /^\.github\/workflows\// },
-  { label: "auth/**", re: /(^|\/)auth\// },
-];
-const DEPENDENCY_MANIFESTS = new Set([
-  "package.json", "package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "pnpm-lock.yaml",
-  "go.mod", "go.sum", "Cargo.toml", "Cargo.lock", "requirements.txt", "Pipfile", "Pipfile.lock",
-  "pyproject.toml", "poetry.lock", "composer.json", "composer.lock", "Gemfile", "Gemfile.lock",
-]);
+const REQUIRES_HUMAN_PATTERNS: { label: string; re: RegExp }[] = sensitivePaths.requiresHumanGlobs.map(
+  ({ label, pattern }) => ({ label, re: new RegExp(pattern) }),
+);
+const DEPENDENCY_MANIFESTS = new Set(sensitivePaths.dependencyManifests);
 
 /** The specific glob/category labels a diff's file list trips against the
  *  fixed "always needs a human" policy list — the evidence behind the
@@ -765,6 +775,10 @@ export class Orchestrator {
   // idle again by the time reassign runs and would otherwise just get
   // re-picked as its own "replacement".
   private escalations = new Map<string, { git?: GitContext; baseRef?: string; taskId: string | null; source: EscalationSource; agentId?: string | null }>();
+  // Reentrancy guard for reengageOnFeedback: a duplicate/retried GitHub
+  // webhook delivery for the same run must not fire two overlapping
+  // relaunches into the same worktree.
+  private reengaging = new Set<string>();
   // Per-run failure counter (onFailed): past config.runMaxFailures the run is
   // escalated instead of parked in `review`. Cleared on success/resolution.
   private failCounts = new Map<string, number>();
@@ -977,9 +991,11 @@ export class Orchestrator {
             return import("@skynet/runner-sdk/opencode").then((m) => new m.OpenCodeRunnerProvider());
           case "kimi":
             return import("@skynet/runner-sdk/kimi").then((m) => new m.KimiRunnerProvider());
+          case "aider":
+            return import("@skynet/runner-sdk/aider").then((m) => new m.AiderRunnerProvider());
           default:
             // An unresolvable provider is a loud error — there is no mock fallback.
-            return Promise.reject(new Error(`Unknown runner provider "${id}" (expected claude|codex|gemini|cursor|copilot|hermes|opencode|kimi).`));
+            return Promise.reject(new Error(`Unknown runner provider "${id}" (expected claude|codex|gemini|cursor|copilot|hermes|opencode|kimi|aider).`));
         }
       })();
       this.providers.set(id, p);
@@ -1113,6 +1129,11 @@ export class Orchestrator {
       output: null,
       flags: raise.kind === "escalation" ? [...flags, "agent"] : flags,
       sourceBranchOverride: null,
+      handoffRole: null,
+      handoffFilePath: null,
+      handoffBaseline: null,
+      handoffContent: null,
+      handoffDraftText: null,
     };
     // Manager escalation policy (agent-hierarchy.md §4): a worker's low-risk
     // question/plan gate is auto-resolved by ITS MANAGER, not the human
@@ -1622,6 +1643,11 @@ export class Orchestrator {
       // this?" instead of leaving an operator to infer it from the diff.
       flags: [...requiresHumanGlobs, ...gateChips],
       sourceBranchOverride: null,
+      handoffRole: null,
+      handoffFilePath: null,
+      handoffBaseline: null,
+      handoffContent: null,
+      handoffDraftText: null,
     };
     // `full` autonomy (see ApprovalLevel in @skynet/shared) skips even a diff's
     // OWN human decision, unconditionally — no second agent, no LLM consult.
@@ -2150,6 +2176,37 @@ export class Orchestrator {
   }
 
   /**
+   * `browser`/`mcpServers` for a real coding-agent run on this project —
+   * spread into every `provider.start()` call site below (assign/fork/
+   * worker-spawn/checkpoint-restore/escalation-resume/revise-after-review).
+   * Pulled into one place because every one of those call sites used to
+   * resolve `browserTools` independently (only the main assignTask path
+   * actually did) — a forked/resumed/reassigned run silently lost the
+   * operator's browser toggle, and would have silently lost their granted MCP
+   * tools too. No `project` (a call site that races project deletion) just
+   * means no opt-in tooling, same as today.
+   *
+   * Deliberately NOT used by the unattended QA harnesses (deep-review,
+   * feature-verify, breaker, explore) further down this file — those already
+   * auto-approve every tool-call gate with no human watching, so handing them
+   * a write-capable custom MCP server would be unsupervised write access to
+   * whatever that server's credentials reach. Those harnesses opt into
+   * `browser: true` on their own, deliberately, for read-only web
+   * verification only.
+   */
+  private async toolingFor(project: Project | undefined): Promise<Pick<StartSpec, "browser" | "mcpServers">> {
+    if (!project) return {};
+    const { browserTools } = await this.fleetPolicy(project.workspaceId);
+    // Defensive default: a project persisted before this field existed (or a
+    // test fixture built as a partial literal) has no `mcpServerIds` at
+    // runtime even though the zod schema defaults it — never crash a run
+    // start over that, just treat it as "no custom tools granted".
+    const mcpServerIds = project.mcpServerIds ?? [];
+    const mcpServers = mcpServerIds.length ? await mcpServerService.resolveMany(project.workspaceId, mcpServerIds) : undefined;
+    return { browser: browserTools, mcpServers };
+  }
+
+  /**
    * Acquire an idle runner, or PROVISION a fresh one on demand when the fleet is
    * fully occupied — used by fork so a family can branch even when every runner
    * is busy (a fork shouldn't be blocked waiting for capacity). The new runner
@@ -2609,11 +2666,10 @@ export class Orchestrator {
         memory,
         body: taskBody,
       });
-      // Opt-in browser tooling is a per-workspace setting, off by default; the
-      // runner decides how to expose it (Claude → a Playwright MCP server).
-      const { browserTools } = await this.fleetPolicy(project.workspaceId);
+      // Opt-in browser tooling (workspace-wide) and the project's granted
+      // custom MCP servers — see toolingFor.
       const handle = await provider.start(
-        { runId, projectId: project.id, task: brief, model: runner.model, branch, cwd, apiKey, baseUrl, rates, browser: browserTools, planModeGate: project.planModeGate, disallowedTools: project.disallowedTools, role: opts?.role },
+        { runId, projectId: project.id, task: brief, model: runner.model, branch, cwd, apiKey, baseUrl, rates, ...(await this.toolingFor(project)), planModeGate: project.planModeGate, disallowedTools: project.disallowedTools, role: opts?.role },
         this.events(),
       );
       this.live.set(runId, { handle, agentId: runner.id, taskId: task.id, branch, baseRef, git, scratchCwd });
@@ -2812,6 +2868,7 @@ export class Orchestrator {
           apiKey,
           baseUrl,
           rates,
+          ...(await this.toolingFor(project)),
           disallowedTools: project?.disallowedTools,
         },
         this.events(),
@@ -2890,7 +2947,6 @@ export class Orchestrator {
       model: runner.model,
       branch,
       modules,
-      bakeoffId: null,
       progress: 0,
       plan: [],
       usage: null,
@@ -2940,6 +2996,7 @@ export class Orchestrator {
           apiKey,
           baseUrl,
           rates,
+          ...(await this.toolingFor(project)),
           disallowedTools: project?.disallowedTools,
         },
         this.events(),
@@ -3068,6 +3125,7 @@ export class Orchestrator {
           baseUrl,
           rates,
           resumeSessionId,
+          ...(await this.toolingFor(project)),
           disallowedTools: project?.disallowedTools,
         },
         this.events(),
@@ -3496,7 +3554,7 @@ export class Orchestrator {
     await this.hub.runLog(runId, `re-acquired compute to deliver "${resolution.action}" — resuming in the run's worktree`);
     try {
       const handle = await provider.start(
-        { runId, projectId: run.projectId, task: prompt, model: run.model, branch: run.branch, cwd, apiKey, baseUrl, rates, disallowedTools: project?.disallowedTools },
+        { runId, projectId: run.projectId, task: prompt, model: run.model, branch: run.branch, cwd, apiKey, baseUrl, rates, ...(await this.toolingFor(project)), disallowedTools: project?.disallowedTools },
         this.events(),
       );
       this.live.set(runId, { handle, agentId: acq.id, taskId, branch: run.branch, baseRef: config.baseBranch, git });
@@ -3559,7 +3617,7 @@ export class Orchestrator {
     await this.hub.runLog(runId, "revising per review guidance");
     try {
       const handle = await provider.start(
-        { runId, projectId: run.projectId, task: revisePrompt, model: run.model, branch: run.branch, cwd, apiKey, baseUrl, rates, disallowedTools: project?.disallowedTools },
+        { runId, projectId: run.projectId, task: revisePrompt, model: run.model, branch: run.branch, cwd, apiKey, baseUrl, rates, ...(await this.toolingFor(project)), disallowedTools: project?.disallowedTools },
         this.events(),
       );
       this.live.set(runId, { handle, agentId: acq.id, taskId: review.taskId, branch: run.branch, baseRef: review.baseRef, git: review.git });
@@ -3710,6 +3768,11 @@ export class Orchestrator {
       output: null,
       flags: [source],
       sourceBranchOverride: null,
+      handoffRole: null,
+      handoffFilePath: null,
+      handoffBaseline: null,
+      handoffContent: null,
+      handoffDraftText: null,
     };
     await this.hub.runStatus(run.id, "waiting");
     await this.hub.raiseHitl(item);
@@ -3785,6 +3848,11 @@ export class Orchestrator {
       // single run to resume/reassign/stop here).
       flags: ["autonomy-paused"],
       sourceBranchOverride: null,
+      handoffRole: null,
+      handoffFilePath: null,
+      handoffBaseline: null,
+      handoffContent: null,
+      handoffDraftText: null,
     };
     await this.hub.raiseHitl(item);
     await this.hub.runLog(runId, `project autonomy paused — ${streak.count} consecutive bad outcomes`).catch(() => undefined);
@@ -3956,7 +4024,7 @@ export class Orchestrator {
    * or drifts the resumed worktree's base just because there was no prior
    * escalation to carry that context forward.
    */
-  private async relaunchEscalated(runId: string, guidance: string, reassign: boolean, targetAgentId?: string): Promise<void> {
+  private async relaunchEscalated(runId: string, guidance: string, reassign: boolean, targetAgentId?: string, feedbackNote?: string): Promise<void> {
     const run = await this.store.getRun(runId);
     const ctx = this.escalations.get(runId);
     if (!run) return;
@@ -4084,7 +4152,7 @@ export class Orchestrator {
     // Kanban redesign, stage 1: brief a reassigned agent with a REAL summary
     // of what the prior agent tried, not just "the work is in the directory"
     // — grounded on the actual log, best-effort (see draftHandoffSummary).
-    const handoffSummary = reassign ? await this.draftHandoffSummary(run, task?.text ?? run.name) : null;
+    const handoffSummary = reassign || feedbackNote ? await this.draftHandoffSummary(run, task?.text ?? run.name) : null;
     const handoffNote = handoffSummary ? `\n\nSummary of the prior agent's work so far:\n\n${handoffSummary}` : "";
     const prompt = buildAgentContext({
       project,
@@ -4099,11 +4167,13 @@ export class Orchestrator {
       // re-reading the entire repo to rediscover what was already known. Cheap
       // insurance against the expensive case.
       handoff: run.handoff?.summary,
-      body: targetAgentId
-        ? `An operator manually reassigned this task to you mid-run — the previous agent wasn't stuck, they just chose to switch who's working it. Its work so far is already in the working directory (branch ${run.branch}).${handoffNote}${gitStateNote}${guidance ? `\n\nOperator guidance:\n\n${guidance}` : ""}\n\nReview what's there, then continue and finish the task. If you get stuck, escalate (AskUserQuestion with header "ESCALATE").`
-        : reassign
-          ? `You are taking over a task another agent escalated because it got stuck. Its work so far is already in the working directory (branch ${run.branch}).${handoffNote}${gitStateNote}${guidance ? `\n\nOperator guidance:\n\n${guidance}` : ""}\n\nReview what's there, then continue and finish the task. If you also get stuck, escalate (AskUserQuestion with header "ESCALATE").`
-          : `You escalated this task for help, and the operator responded:\n\n${guidance || "(no specific guidance — use your best judgement, or escalate again if still blocked)"}\n\nYour work so far is already in the working directory (branch ${run.branch}).${gitStateNote} Continue with this guidance and finish, or escalate again (AskUserQuestion with header "ESCALATE") if you're still blocked.`,
+      body: feedbackNote
+        ? `${feedbackNote}\n\nYour previous output is already in the working directory (branch ${run.branch}).${handoffNote}${gitStateNote}\n\nAddress this, then push a fix — or escalate (AskUserQuestion with header "ESCALATE") if you're stuck.`
+        : targetAgentId
+          ? `An operator manually reassigned this task to you mid-run — the previous agent wasn't stuck, they just chose to switch who's working it. Its work so far is already in the working directory (branch ${run.branch}).${handoffNote}${gitStateNote}${guidance ? `\n\nOperator guidance:\n\n${guidance}` : ""}\n\nReview what's there, then continue and finish the task. If you get stuck, escalate (AskUserQuestion with header "ESCALATE").`
+          : reassign
+            ? `You are taking over a task another agent escalated because it got stuck. Its work so far is already in the working directory (branch ${run.branch}).${handoffNote}${gitStateNote}${guidance ? `\n\nOperator guidance:\n\n${guidance}` : ""}\n\nReview what's there, then continue and finish the task. If you also get stuck, escalate (AskUserQuestion with header "ESCALATE").`
+            : `You escalated this task for help, and the operator responded:\n\n${guidance || "(no specific guidance — use your best judgement, or escalate again if still blocked)"}\n\nYour work so far is already in the working directory (branch ${run.branch}).${gitStateNote} Continue with this guidance and finish, or escalate again (AskUserQuestion with header "ESCALATE") if you're still blocked.`,
     });
     // Reflect the (re)acquired runner on the persisted run: a reassign moves the
     // run to a DIFFERENT agent, and the board/subway attribute runs by agentId —
@@ -4115,11 +4185,13 @@ export class Orchestrator {
     if (task) await this.hub.patchTask(task.id, { state: "ongoing" });
     await this.hub.runLog(
       runId,
-      targetAgentId
-        ? `manually reassigned to ${acq.id} mid-run`
-        : reassign
-          ? "reassigned to another runner after escalation"
-          : "resuming after escalation with operator guidance",
+      feedbackNote
+        ? "re-engaged after PR feedback"
+        : targetAgentId
+          ? `manually reassigned to ${acq.id} mid-run`
+          : reassign
+            ? "reassigned to another runner after escalation"
+            : "resuming after escalation with operator guidance",
     );
     try {
       const handle = await provider.start(
@@ -4133,6 +4205,7 @@ export class Orchestrator {
           apiKey,
           baseUrl,
           rates,
+          ...(await this.toolingFor(project)),
           disallowedTools: project?.disallowedTools,
           // RESUME this run's own SDK session instead of starting cold. Without
           // it, every "Help & resume" / "Reassign" threw the conversation away
@@ -4937,6 +5010,11 @@ export class Orchestrator {
       output: null,
       flags: [reason],
       sourceBranchOverride: featureUp ? req.agentBranch : null,
+      handoffRole: null,
+      handoffFilePath: null,
+      handoffBaseline: null,
+      handoffContent: null,
+      handoffDraftText: null,
     });
   }
 
@@ -4999,6 +5077,11 @@ export class Orchestrator {
       // a non-conflict git failure) is what lets a caller tell the two apart.
       flags: [...files, "file_collision"],
       sourceBranchOverride: featureUp ? req.agentBranch : null,
+      handoffRole: null,
+      handoffFilePath: null,
+      handoffBaseline: null,
+      handoffContent: null,
+      handoffDraftText: null,
     });
   }
 
@@ -5054,6 +5137,11 @@ export class Orchestrator {
       output: capped,
       flags: [],
       sourceBranchOverride: null,
+      handoffRole: null,
+      handoffFilePath: null,
+      handoffBaseline: null,
+      handoffContent: null,
+      handoffDraftText: null,
     });
   }
 
@@ -7192,6 +7280,136 @@ export class Orchestrator {
   }
 
   /**
+   * Agent-to-agent handoff on feature completion (v2) — draft ONE configured
+   * role's artifact for a just-shipped Feature/Milestone and raise it as a
+   * `handoff` HITL. Called once per configured role by
+   * `startFeatureShipHandoff`'s bus subscriber (feature-ship-handoff.ts) on a
+   * genuine `!== "shipped" -> "shipped"` transition — this method itself
+   * doesn't know or care about the transition, only about drafting one role's
+   * artifact. Lives on Orchestrator (not Operations, not the subscriber
+   * itself) because it needs the same provider-cache + credential-resolution
+   * plumbing `autoJudgeBakeoff`/`autoReview` already use — the actual apply
+   * (commit-on-approve) lives in Operations.resolveHandoffHitl instead, same
+   * split as the roadmap-proposal pair (Orchestrator never touches those
+   * either). A silent `return` (no HITL raised) covers every "nothing
+   * sensible to show a human" case — a since-deleted agent, a provider with
+   * no `consult`, or a reply that fails feature-handoff.ts's own sanity
+   * floor; a genuine failure (the consult call itself throwing) is left to
+   * propagate so the caller's own best-effort catch+log (mirroring
+   * task-sync.ts's own convention) records it per-role rather than this
+   * method swallowing it silently.
+   */
+  async dispatchFeatureHandoff(
+    ws: string,
+    project: Project,
+    sourceKind: "feature" | "milestone",
+    sourceId: string,
+    sourceName: string,
+    sourceDescription: string | null,
+    role: HandoffRole,
+    agentId: string,
+  ): Promise<void> {
+    const agent = await this.store.getAgent(agentId);
+    if (!agent || agent.workspaceId !== ws) return;
+    const provider = await this.getProvider(agent.provider);
+    if (!provider.consult) return;
+
+    let taskTexts: string[];
+    if (sourceKind === "feature") {
+      taskTexts = (await this.store.listTasks(ws)).filter((t) => t.projectId === project.id && t.featureId === sourceId).map((t) => t.text);
+    } else {
+      const featureIds = new Set(
+        (await this.store.listFeatures(ws)).filter((f) => f.projectId === project.id && f.milestoneId === sourceId).map((f) => f.id),
+      );
+      taskTexts = (await this.store.listTasks(ws))
+        .filter((t) => t.projectId === project.id && t.featureId && featureIds.has(t.featureId))
+        .map((t) => t.text);
+    }
+    const ctx: HandoffContext = { sourceKind, sourceName, description: sourceDescription, taskTexts };
+
+    const apiKey = await secretService.resolve(ws, agent.credentialId ?? agent.provider);
+    const baseUrl = await secretService.resolveEndpoint(ws, agent.credentialId ?? agent.provider).catch(() => undefined);
+    const rates = ratesFor(baseUrl, agent.model);
+    const consultSpec = {
+      task: buildAgentContext({ project, body: `${sourceKind} shipped: ${sourceName}` }),
+      model: agent.model,
+      cwd: config.runnerCwd,
+      apiKey,
+      baseUrl,
+      rates,
+    };
+    const targetFile = HANDOFF_TARGET_FILE[role];
+
+    let filePath: string | null = null;
+    let baseline: string | null = null;
+    let content: string | null = null;
+    let draftText: string | null = null;
+    let why: string;
+    try {
+      if (role === "change-manager") {
+        const reply = await provider.consult(consultSpec, changeManagerQuestion(ctx));
+        const entry = parseChangeManagerReply(reply);
+        if (!entry) return;
+        const doc = await readProjectDoc(ws, project, targetFile!).catch(() => null);
+        filePath = targetFile;
+        baseline = doc?.content ?? null;
+        content = spliceChangelogEntry(baseline, entry);
+        why = entry;
+      } else if (role === "docs-writer") {
+        const doc = await readProjectDoc(ws, project, targetFile!).catch(() => null);
+        const reply = await provider.consult(consultSpec, docsWriterQuestion(ctx, doc?.content ?? null));
+        const updated = parseDocsWriterReply(reply, doc?.content ?? null);
+        if (!updated) return;
+        filePath = targetFile;
+        baseline = doc?.content ?? null;
+        content = updated;
+        why = `Updated ${targetFile} for "${sourceName}".`;
+      } else {
+        const reply = await provider.consult(consultSpec, releaseCommsQuestion(ctx));
+        const text = parseReleaseCommsReply(reply);
+        if (!text) return;
+        draftText = text;
+        why = text;
+      }
+    } catch (err) {
+      throw new Error(`${role} handoff consult failed: ${friendlyConsultError(err as Error)}`);
+    }
+
+    const id = `q-handoff-${sourceId}-${role}-${++this.seq}`;
+    const roleLabel = role === "change-manager" ? "Change-manager" : role === "docs-writer" ? "Docs-writer" : "Release-comms";
+    await this.hub.raiseHitl({
+      id,
+      workspaceId: ws,
+      runId: `handoff:${id}`,
+      bakeoffId: null,
+      projectId: project.id,
+      roadmapProposalId: null,
+      kind: "handoff",
+      title: `${roleLabel}: ${filePath ?? "announcement"} for "${sourceName}"`,
+      why,
+      risk: "low",
+      raisedAt: now(),
+      expiresAt: null,
+      resolvedAt: null,
+      resolution: null,
+      rationale: null,
+      command: null,
+      options: null,
+      recommended: null,
+      steps: null,
+      diff: null,
+      output: null,
+      flags: [],
+      sourceBranchOverride: null,
+      handoffRole: role,
+      handoffFilePath: filePath,
+      handoffBaseline: baseline,
+      handoffContent: content,
+      handoffDraftText: draftText,
+    });
+  }
+
+  /**
    * Manual "Judge now" — the bake-off sibling of `requestReview` above: an
    * operator forcing the N-way comparison on demand instead of waiting for a
    * periodic tick to find every sibling finished AND an eligible judge idle
@@ -7392,6 +7610,39 @@ export class Orchestrator {
     if (live) await live.handle.resume().catch(() => undefined);
     await this.hub.runStatus(runId, "running");
     return this.store.getRun(runId);
+  }
+
+  /**
+   * Feedback-loop responders (ROADMAP v3) — route a CI-failure or PR-review
+   * signal back to the run that produced the branch, re-engaging it via
+   * `relaunchEscalated`'s existing reattach-worktree/resume-session machinery
+   * instead of starting fresh. Called from the rule engine's `reengage_run`
+   * action (RuleEngine.reengageRun, wired in Operations), which is itself
+   * only reachable through an operator-authored, opted-in Rule — this method
+   * has no gate of its own beyond "is this run actually eligible right now".
+   *
+   * Only `review`/`done` runs qualify: `running`/`waiting`/`paused` already
+   * have someone (agent or human) on them, and interrupting that with a
+   * possibly-stale CI ping would be worse than doing nothing. `mergedAt` is a
+   * cheap belt-and-braces check — publishGithubSignal resolves by open PR
+   * number, so a signal for an already-merged PR shouldn't reach here, but a
+   * merge racing a check_run delivery isn't impossible.
+   */
+  async reengageOnFeedback(runId: string, note: string): Promise<{ engaged: boolean; reason?: string }> {
+    if (this.reengaging.has(runId)) return { engaged: false, reason: "already re-engaging" };
+    const run = await this.store.getRun(runId);
+    if (!run) return { engaged: false, reason: "run not found" };
+    if (run.mergedAt) return { engaged: false, reason: "already merged" };
+    if (run.status === "running" || run.status === "waiting" || run.status === "paused") {
+      return { engaged: false, reason: `run is ${run.status} — already being worked` };
+    }
+    this.reengaging.add(runId);
+    try {
+      await this.relaunchEscalated(runId, "", false, undefined, note);
+      return { engaged: true };
+    } finally {
+      this.reengaging.delete(runId);
+    }
   }
 
   /** Operator "stop / remove": halt execution, free the runner, mark the agent done. */

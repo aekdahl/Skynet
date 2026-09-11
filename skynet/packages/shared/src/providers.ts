@@ -24,6 +24,9 @@ export const DEFAULT_PROVIDERS: ProviderInfo[] = [
   // Kimi Code's own models by default (bare id); a "<type>/<id>" model routes
   // through its `anthropic`/`openai` provider config instead — see kimi.ts.
   { id: "kimi", name: "Kimi Code", glyph: "☾", color: "#7C9EFF", models: ["kimi-for-coding", "k3", "anthropic/claude-sonnet-5"] },
+  // Aider is provider-agnostic (litellm-backed); defaulted to Anthropic models
+  // in its own docs' examples, same convention OpenCode uses — see aider.ts.
+  { id: "aider", name: "Aider", glyph: "▲", color: "#F0A868", models: ["anthropic/claude-sonnet-5", "anthropic/claude-opus-5", "openai/gpt-5.2"] },
 ];
 
 /**

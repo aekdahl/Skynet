@@ -30,7 +30,9 @@ import type {
   CreateMilestoneRequest,
   CreateProjectRequest,
   CreateTaskRequest,
+  PauseCredentialResult,
   ResolveRequest,
+  SecretMeta,
   UpdateFeatureRequest,
   UpdateMilestoneRequest,
   UpdateProjectRequest,
@@ -42,6 +44,7 @@ import type { Operations } from "../operations.js";
 import type { PreviewState } from "../preview/project-preview.js";
 import type { Orchestrator } from "../orchestrator.js";
 import { prefetchProjectDocs } from "../project-assistant.js";
+import { createLinkExchange } from "../auth/link-exchange.js";
 import { TelegramClient } from "./client.js";
 import { decide } from "./commands.js";
 import {
@@ -59,6 +62,8 @@ import {
   parseQuietHours,
   runLink,
   desktopRunLink,
+  handoffLink,
+  telegramOperatorId,
   esc,
   type Names,
 } from "./notices.js";
@@ -161,6 +166,13 @@ export interface ControlOps {
   transitionTask?(ws: string, taskId: string, to: Task["state"], operatorId: string): Promise<Task>;
   updateTask?(ws: string, taskId: string, patch: UpdateTaskRequest): Promise<Task>;
   updateProject?(ws: string, id: string, patch: UpdateProjectRequest, operatorId: string): Promise<Project>;
+  // More Steward parity (reorder_task / request_review / resync_source / pause_key /
+  // resume_key) — optional, same reason as the three above.
+  moveTask?(ws: string, taskId: string, direction: "up" | "down"): Promise<Task>;
+  requestReview?(ws: string, taskId: string): Promise<void>;
+  resyncProjectSource?(ws: string, projectId: string): Promise<{ imported: number; updated: number; pushed: number }>;
+  pauseCredential?(ws: string, id: string, reason: string, operatorId: string): Promise<PauseCredentialResult>;
+  resumeCredential?(ws: string, id: string, operatorId: string): Promise<SecretMeta>;
   // Grouping / roadmap ops — mirror the shape Steward uses.
   createFeature(ws: string, projectId: string, input: CreateFeatureRequest): Promise<Feature>;
   updateFeature(ws: string, featureId: string, patch: UpdateFeatureRequest): Promise<Feature>;
@@ -253,7 +265,7 @@ export function createOwnerControl(deps: OwnerControlDeps): {
   const editReplyMarkup = deps.editReplyMarkup ?? (async () => undefined);
   const ackCallback = deps.ackCallback ?? (async () => undefined);
   const ws = deps.ws ?? DEFAULT_WORKSPACE;
-  const operatorId = `telegram:${deps.ownerChatId}`;
+  const operatorId = telegramOperatorId(deps.ownerChatId);
   const onQuit = deps.onQuit ?? (() => process.exit(REMOTE_SHUTDOWN_CODE));
   const pending = new Map<string, Pending>();
   // Monotonic counter for pending ids. Small (fits in 64-byte callback_data
@@ -669,6 +681,110 @@ export function createOwnerControl(deps: OwnerControlDeps): {
           run: async () => {
             await operations.updateMilestone(ws, action.milestoneId!, { status: "shipped" });
             return `🚢 Milestone "${ms?.name ?? action.milestoneId}" shipped.`;
+          },
+        };
+      }
+      case "reorder_task": {
+        const task = ctx.tasks.find((t) => t.id === action.taskId);
+        const summary = `Move task ${action.taskId} — "${task?.text ?? "?"}" ${action.direction} in its lane?`;
+        return {
+          kind: action.kind,
+          summary,
+          run: async () => {
+            if (!operations.moveTask) throw new Error("reordering tasks isn't available here");
+            await operations.moveTask(ws, action.taskId!, action.direction as "up" | "down");
+            return `↕️ Moved task ${action.taskId} ${action.direction} in its lane.`;
+          },
+        };
+      }
+      case "request_review": {
+        const task = ctx.tasks.find((t) => t.id === action.taskId);
+        const summary = `Request a fresh review on task ${action.taskId} — "${task?.text ?? "?"}"?`;
+        return {
+          kind: action.kind,
+          summary,
+          run: async () => {
+            if (!operations.requestReview) throw new Error("requesting a review isn't available here");
+            await operations.requestReview(ws, action.taskId!);
+            return `🔍 Review requested on task ${action.taskId}.`;
+          },
+        };
+      }
+      case "resync_source": {
+        const project = ctx.projects.find((p) => p.id === action.projectId);
+        const name = project?.name ?? action.projectId;
+        const summary = `Re-sync GitHub issues & tasks for ${name}?`;
+        return {
+          kind: action.kind,
+          summary,
+          run: async () => {
+            if (!operations.resyncProjectSource) throw new Error("re-syncing a project isn't available here");
+            const r = await operations.resyncProjectSource(ws, action.projectId!);
+            return `🔄 ${name}: ${r.imported} imported, ${r.updated} updated, ${r.pushed} pushed.`;
+          },
+        };
+      }
+      case "set_schedule": {
+        const task = ctx.tasks.find((t) => t.id === action.taskId);
+        const parts: string[] = [];
+        if (action.estimatedDurationMs === null) parts.push("clear estimate");
+        else if (action.estimatedDurationMs != null) parts.push(`~${Math.round(action.estimatedDurationMs / 60000)}m`);
+        if (action.plannedStartAt === null) parts.push("clear start");
+        else if (action.plannedStartAt != null) parts.push(`start ${new Date(action.plannedStartAt).toISOString().slice(0, 16).replace("T", " ")}`);
+        const summary = `Schedule task ${action.taskId} — "${task?.text ?? "?"}" — ${parts.join(", ") || "no change"}?`;
+        return {
+          kind: action.kind,
+          summary,
+          run: async () => {
+            if (!operations.updateTask) throw new Error("editing tasks isn't available here");
+            await operations.updateTask(ws, action.taskId!, {
+              ...(action.estimatedDurationMs !== undefined ? { estimatedDurationMs: action.estimatedDurationMs } : {}),
+              ...(action.plannedStartAt !== undefined ? { plannedStartAt: action.plannedStartAt } : {}),
+            });
+            return `📅 Scheduled task ${action.taskId} — ${parts.join(", ") || "no change"}.`;
+          },
+        };
+      }
+      case "set_assignment": {
+        const task = ctx.tasks.find((t) => t.id === action.taskId);
+        const names = (action.agentIds ?? []).map((id) => ctx.fleet.find((a) => a.id === id)?.name ?? id);
+        const summary =
+          action.mode === "agents"
+            ? `Assign task ${action.taskId} — "${task?.text ?? "?"}" to ${names.join(", ")}?`
+            : `Set task ${action.taskId} — "${task?.text ?? "?"}" eligibility to ${action.mode}?`;
+        return {
+          kind: action.kind,
+          summary,
+          run: async () => {
+            if (!operations.updateTask) throw new Error("editing tasks isn't available here");
+            await operations.updateTask(ws, action.taskId!, {
+              assignment: { mode: action.mode ?? "unassigned", agentIds: action.mode === "agents" ? (action.agentIds ?? []) : [] },
+            });
+            return `👤 Task ${action.taskId} eligibility → ${action.mode === "agents" ? names.join(", ") : action.mode}.`;
+          },
+        };
+      }
+      case "pause_key": {
+        const summary = `Pause key ${action.credentialId} — ${action.reason}? (stops its live runs)`;
+        return {
+          kind: action.kind,
+          summary,
+          run: async () => {
+            if (!operations.pauseCredential) throw new Error("pausing a key isn't available here");
+            const r = await operations.pauseCredential(ws, action.credentialId!, action.reason!, operatorId);
+            return `⏸ Key ${action.credentialId} paused${r.haltedRunIds.length ? ` — stopped ${r.haltedRunIds.length} live run(s)` : ""}.`;
+          },
+        };
+      }
+      case "resume_key": {
+        const summary = `Resume key ${action.credentialId}?`;
+        return {
+          kind: action.kind,
+          summary,
+          run: async () => {
+            if (!operations.resumeCredential) throw new Error("resuming a key isn't available here");
+            await operations.resumeCredential(ws, action.credentialId!, operatorId);
+            return `▶️ Key ${action.credentialId} resumed.`;
           },
         };
       }
@@ -1296,12 +1412,23 @@ export function startTelegramBridge(deps: TelegramBridgeDeps): void {
     const project = await operations.getProject(ws, run.projectId).catch(() => null);
     return { run: run.name || runId, project: project?.name ?? "" };
   };
-  // Deep link to open the run in the app. Desktop: always a skynet:// OS-protocol
-  // link (config.desktop — apps/desktop/main.cjs sets SKYNET_DESKTOP=1 — no
-  // PUBLIC_URL/token needed, the app is already running locally as the single
-  // operator). Hosted: unchanged — empty unless PUBLIC_URL is configured.
-  const linkFor = (runId: string): string | undefined =>
-    config.desktop ? desktopRunLink(runId) : runLink(config.publicUrl, runId);
+  // Deep link to open the run in the app (ROADMAP.md's "Chat → canvas
+  // handoff"). Desktop: always a skynet:// OS-protocol link (config.desktop —
+  // apps/desktop/main.cjs sets SKYNET_DESKTOP=1 — no PUBLIC_URL/token needed,
+  // the app is already running locally as the single operator). Hosted with
+  // auth OFF: unchanged, a plain hash link — no session needed since anyone
+  // can already load it. Hosted with auth ON: the one case that genuinely
+  // needs a session from a cold click — mint a short-lived, single-use
+  // exchange token (auth/link-exchange.ts) for this same "telegram:<chatId>"
+  // identity the bridge already acts as for gate resolutions, and point at
+  // GET /handoff/:token (auth/routes.ts) instead of the hash directly.
+  const linkFor = (runId: string): string | undefined => {
+    if (config.desktop) return desktopRunLink(runId);
+    if (!config.authRequired) return runLink(config.publicUrl, runId);
+    if (!config.publicUrl) return undefined;
+    const exchangeToken = createLinkExchange({ workspaceId: ws, operatorId: telegramOperatorId(ownerChatId) }, `#/agent/${runId}`);
+    return handoffLink(config.publicUrl, exchangeToken);
+  };
 
   // De-dupe run notices: only push when a run's status actually CHANGES, so a run
   // that re-emits "review" doesn't send the same line three times (the reported

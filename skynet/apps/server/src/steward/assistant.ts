@@ -70,6 +70,11 @@ const SYSTEM =
   '  {"kind":"set_status","status":"active|paused|done"}\n' +
   '  {"kind":"set_schedule","taskId":"<id>","estimatedDurationMs":<ms or null>,"plannedStartAt":<epoch ms or null>}\n' +
   '  {"kind":"set_assignment","taskId":"<id>","mode":"any|agents|unassigned","agentIds":["<agent id>", …]}\n' +
+  '  {"kind":"reassign_run","taskId":"<id>","agentId":"<agent id>"}\n' +
+  '  {"kind":"retire_runner","agentId":"<agent id>"}\n' +
+  '  {"kind":"pause_run","taskId":"<id>"}\n' +
+  '  {"kind":"resume_run","taskId":"<id>"}\n' +
+  '  {"kind":"stop_run","taskId":"<id>"}\n' +
   '  {"kind":"add_feature","name":"<feature name>","description":"<optional>","milestoneId":"<optional milestone id>"}\n' +
   '  {"kind":"add_milestone","name":"<milestone name>","description":"<optional>","targetAt":<optional epoch ms>}\n' +
   '  {"kind":"set_task_feature","taskId":"<id>","featureId":"<feature id, or null to unlink>"}\n' +
@@ -82,6 +87,8 @@ const SYSTEM =
   '  {"kind":"process_backlog","execMode":"queue|start_now","feasibleOnly":true|false}\n' +
   '  {"kind":"pause_key","credentialId":"<credential id>","reason":"<why, one short sentence>"}\n' +
   '  {"kind":"resume_key","credentialId":"<credential id>"}\n' +
+  '  {"kind":"remove_credential","credentialId":"<credential id>"}\n' +
+  '  {"kind":"resolve_hitl","hitlId":"<id>","resolveAction":"approve|reject|modify|option","guidance":"<required for modify — what to change>","optionIndex":<required for option — 0-based index into the gate\'s options>}\n' +
   "Notes on edit_roadmap: only propose this when the operator explicitly asks to change the roadmap DOC (ROADMAP.md) — NOT for add_feature/add_milestone, which are unrelated task-grouping records, not the file. " +
   "`content` MUST be the complete file: reproduce every unchanged line verbatim, and change only what the operator asked for — no reformatting, no fixing unrelated typos — so the diff the operator reviews shows exactly the intended edit and nothing else. " +
   "`path` must be exactly the ROADMAP.md path shown under REPO CONTENT; if no roadmap doc was shown there, say so instead of guessing a path or inventing content.\n" +
@@ -96,6 +103,10 @@ const SYSTEM =
   "`any` = any idle fleet agent may take it (omit agentIds); `agents` = only the listed agentIds (≥1) may take it, whichever is idle first; " +
   "`unassigned` clears the choice (only valid while the task is still in backlog). Every id in `agentIds` MUST be an agent from the AGENTS list " +
   "in PROJECT STATUS — map the operator's wording (name or id) to those ids, and if they name an agent that isn't listed, ask instead of guessing.\n" +
+  "Notes on the fleet actions (reassign_run / retire_runner / pause_run / resume_run / stop_run): these act on WHO is running a task right now or on the fleet roster itself, not on task/project records — different from set_assignment's eligibility. " +
+  "reassign_run and retire_runner take an `agentId` from the AGENTS list, same as set_assignment. " +
+  "pause_run/resume_run/stop_run only apply to a task that is currently `ongoing` with a live run — if PROJECT STATUS doesn't show one running, say so instead of proposing it. " +
+  "pause_run keeps the session (resumable with resume_run); stop_run is terminal — it frees the runner and marks the run done. Never propose these speculatively; they change what's actually running.\n" +
   "Notes on archive_task vs remove_task: PREFER archive_task when the operator says 'archive', 'hide', 'shelve', 'set aside', " +
   "or wants the task out of the way but recoverable (soft-hide — stays in the store, hidden from the board). " +
   "Only use remove_task for an unambiguous 'delete' / 'remove for good' — that's a hard delete.\n" +
@@ -107,6 +118,9 @@ const SYSTEM =
   "Never propose one of these speculatively from a discussion — starting agents spends real money, so it takes an explicit ask, unlike add_task which merely writes work down.\n" +
   "Notes on request_review: only propose this for a task whose state is 'review' — it forces a fresh review pass by another agent right now, instead of waiting for one to become free on its own. It can fail with an honest reason (already reviewed, or no other agent free to review right now) rather than always succeeding.\n" +
   "Notes on resync_source: use when the operator asks to re-sync, refresh, or catch up GitHub issues/tasks — it pulls new or edited GitHub issues and repo-file checklist items into tasks, and pushes any task status change that never made it back (e.g. from before \"Sync to source\" was turned on). Whole-project, no fields; fails with an honest reason if the project isn't GitHub-bound.\n" +
+  "Notes on remove_credential: this permanently deletes a stored key — unlike pause_key/resume_key, which just bench and un-bench it, this cannot be undone and can orphan any fleet agent still pinned to that credential. Only propose it on an explicit 'delete'/'remove the key for good' ask, never for 'pause it' or general cleanup talk.\n" +
+  "Notes on resolve_hitl: use this to act on an item from OPEN GATES on the operator's instruction (\"approve the diff gate\", \"reject that one\", \"go with option 2\", \"ask it to use Postgres instead\") — this is the SAME approve/reject/modify/option decision available in the Inbox and Telegram, just reachable from chat. `hitlId` MUST be one of the ids shown in OPEN GATES (each listed as `[id] kind — title`) — never invent one, and if the operator's wording is ambiguous between two open gates, ask which one instead of guessing. " +
+  "`approve` and `reject` take no extra fields. `modify` requires `guidance` — a short instruction for what should change; a modify with nothing to say isn't a valid action. `option` is only for a gate whose OPEN GATES entry lists `[options: ...]` — `optionIndex` is the 0-based position in that list (\"option 2\" in the operator's words = optionIndex 1). Never propose resolve_hitl for a gate that isn't currently listed in OPEN GATES — it may already be resolved.\n" +
   'SOURCES: when your answer states a fact about a SPECIFIC run, its commit, or the project\'s autonomy breaker, add that same trailing JSON object\'s "sources" key — a list of {"kind":"run","runId":"<id>"} | {"kind":"commit","runId":"<id>"} | {"kind":"breaker","projectId":"<id>"} — one per specific claim, so the operator can click through and check it themselves. Use the runId from ACTIVE RUNS above and the projectId from PROJECT STATUS\'s own ID line — never invent either. Skip "sources" entirely for a general answer with nothing specific to point at (most turns). If you\'re also proposing actions, "sources" and "proposeActions" are keys of the SAME trailing object, ' +
   'e.g. a reply ending in {"sources":[{"kind":"run","runId":"r-abc123"}]} with no proposeActions, or {"proposeActions":[…],"sources":[{"kind":"breaker","projectId":"p-xyz"}]} when both apply.';
 
@@ -153,6 +167,16 @@ export type ProjectActionKind =
   | "set_status"
   | "set_schedule"
   | "set_assignment"
+  // Fleet ops: act on a task's live run or on the fleet roster directly,
+  // rather than editing a task/project record. `reassign_run`/`retire_runner`
+  // are workspace-fleet actions (mirror set_assignment's agent grounding);
+  // `pause_run`/`resume_run`/`stop_run` need the task's live runId (see
+  // ProjectActionContext.tasks below).
+  | "reassign_run"
+  | "retire_runner"
+  | "pause_run"
+  | "resume_run"
+  | "stop_run"
   | "add_feature"
   | "add_milestone"
   | "set_task_feature"
@@ -161,6 +185,7 @@ export type ProjectActionKind =
   | "set_roadmap_path"
   | "pause_key"
   | "resume_key"
+  | "remove_credential"
   // Execution intents (S10): validated here (so a future proposer — MCP, an
   // operator-typed command — gets the same id-resolution + confirm-chip
   // summary every other kind gets), but DELIBERATELY not yet in `SYSTEM`
@@ -173,7 +198,18 @@ export type ProjectActionKind =
   | "start_task"
   | "queue_tasks"
   | "start_feature"
-  | "process_backlog";
+  | "process_backlog"
+  // Governance-to-SOTA — Steward-side approve-in-flow: resolve an OPEN HITL
+  // gate on this project without leaving the conversation. Deliberately a
+  // narrower action set than the full ResolveAction enum (approve/reject/
+  // modify/option only — no reassign/push/dismiss): those four are the ones
+  // that read naturally as a chat instruction ("approve the diff gate",
+  // "reject it", "tell it to also handle X", "go with option 2"); the rest
+  // are either escalation-specific plumbing or better done from the gate's
+  // own card. Mirrors Telegram's identical approve/reject/option/modify
+  // subset (telegram/intent.ts's Action.kind) — the same governance action,
+  // reachable from a second surface, not a new decision model.
+  | "resolve_hitl";
 
 export interface AssistantAction {
   kind: ProjectActionKind;
@@ -200,6 +236,13 @@ export interface AssistantAction {
   // `agentIds` is the pool for `agents` mode (empty otherwise).
   mode?: TaskAssignment["mode"];
   agentIds?: string[];
+  // Fleet ops. `agentId` (singular) is a target fleet agent for reassign_run
+  // (the task's new agent) / retire_runner (the agent to remove) — distinct
+  // from set_assignment's plural `agentIds` eligibility pool. `runId` is the
+  // task's live TaskRun id for pause_run/resume_run/stop_run, resolved from
+  // ProjectActionContext.tasks at validation time (never guessed).
+  agentId?: string;
+  runId?: string;
   // Roadmap linkage. `featureId` links a task to a feature (set_task_feature)
   // or is the target of set_feature_milestone; `milestoneId` links a feature (or
   // feature-at-creation) to a milestone; `targetAt` is a milestone's date. `null`
@@ -226,6 +269,15 @@ export interface AssistantAction {
   taskIds?: string[];
   execMode?: "queue" | "start_now";
   feasibleOnly?: boolean;
+  // resolve_hitl (Steward-side approve-in-flow). `hitlId` must resolve to an
+  // open gate in ctx.gates; `resolveAction` is the narrower approve/reject/
+  // modify/option subset (see ProjectActionKind's own doc comment); `guidance`
+  // is required for modify, `optionIndex` for option — same shape the
+  // existing generic resolveHitl route already accepts.
+  hitlId?: string;
+  resolveAction?: "approve" | "reject" | "modify" | "option";
+  guidance?: string;
+  optionIndex?: number;
 }
 
 /** The grounding the action validator resolves ids against (this project only).
@@ -240,7 +292,10 @@ export interface ProjectActionContext {
   // exist yet — see the ProjectActionKind doc comment) isn't forced to
   // thread it through.
   autonomy?: boolean;
-  tasks: { id: string; text: string; state: Task["state"] }[];
+  // `runId` is the task's live TaskRun id (null/omitted when not running) —
+  // pause_run/resume_run/stop_run ground against it so they never have to
+  // guess or re-look-up a run id the model wasn't given.
+  tasks: { id: string; text: string; state: Task["state"]; runId?: string | null }[];
   agents?: { id: string; name: string }[];
   // The project's features + milestones, so the roadmap actions resolve their
   // ids against real records (a misparse can't invent one, mirroring `tasks`).
@@ -251,6 +306,12 @@ export interface ProjectActionContext {
   // when no repo is bound or neither ROADMAP.md/docs/ROADMAP.md exists — in
   // that case edit_roadmap is never offered.
   roadmap?: { path: string; content: string; sha?: string } | null;
+  // Governance-to-SOTA — open HITL gates on this project, so resolve_hitl can
+  // resolve an id the operator references conversationally ("approve the
+  // diff gate") against a REAL open gate, never an invented one. Optional
+  // only so a caller that never proposes resolve_hitl isn't forced to fetch
+  // + thread it through (mirrors `agents`/`features`/`milestones` above).
+  gates?: { id: string; kind: HitlItem["kind"]; title: string; risk: string; options: string[] | null }[];
 }
 
 const clip = (s: string): string => (s.length > 60 ? s.slice(0, 57) + "…" : s);
@@ -376,6 +437,15 @@ export function validateProjectAction(obj: unknown, ctx: ProjectActionContext): 
       const credentialId = str(o.credentialId);
       return credentialId ? { kind, credentialId, summary: `Resume key ${credentialId}` } : null;
     }
+    case "remove_credential": {
+      // Irreversible, workspace-wide (like pause_key/resume_key) — deletes a
+      // stored key entirely, distinct from pause_key's reversible bench. Can
+      // orphan any fleet agent still pinned to this credential; only propose
+      // on an explicit "delete/remove the key" ask, never inferred from
+      // "pause X" or general cleanup talk.
+      const credentialId = str(o.credentialId);
+      return credentialId ? { kind, credentialId, summary: `Delete key ${credentialId} (cannot be undone)` } : null;
+    }
     case "set_status": {
       const status = str(o.status) as Project["status"];
       if (!ProjectStatus.options.includes(status)) return null;
@@ -450,6 +520,47 @@ export function validateProjectAction(obj: unknown, ctx: ProjectActionContext): 
           ? `Make “${clip(t.text)}” open to any agent`
           : `Clear agent eligibility on “${clip(t.text)}”`,
       };
+    }
+    case "reassign_run": {
+      // Move a task's live run to a specific, different fleet agent — WHO is
+      // running it right now, not set_assignment's WHO-may-pick-it-up
+      // eligibility. Both ids MUST resolve against this project/workspace's
+      // grounding; whether the task is actually `ongoing` right now is only
+      // known server-side (Operations.reassignTaskAgent), so a confirmed
+      // chip can still fail with an honest reason (not ongoing, agent busy
+      // or unusable).
+      const t = task(o.taskId);
+      const agent = (ctx.agents ?? []).find((a) => a.id === o.agentId);
+      if (!t || !agent) return null;
+      return { kind, taskId: t.id, agentId: agent.id, summary: `Reassign “${clip(t.text)}” → ${agent.name}` };
+    }
+    case "retire_runner": {
+      // Remove a fleet agent entirely (workspace-wide, like pause_key/
+      // resume_key, not project-scoped). Busy-guarded server-side
+      // (Operations.retireRunner) — fails with an honest reason rather than
+      // silently no-op'ing if the agent still has a live run.
+      const agent = (ctx.agents ?? []).find((a) => a.id === o.agentId);
+      return agent ? { kind, agentId: agent.id, summary: `Retire runner “${agent.name}” (remove from fleet)` } : null;
+    }
+    case "pause_run": {
+      // Halts the runner on this task's live run (session kept, resumable) —
+      // needs the task's live runId from the grounding; a task with no live
+      // run has nothing to pause.
+      const t = task(o.taskId);
+      if (!t || !t.runId) return null;
+      return { kind, taskId: t.id, runId: t.runId, summary: `Pause the run for “${clip(t.text)}”` };
+    }
+    case "resume_run": {
+      const t = task(o.taskId);
+      if (!t || !t.runId) return null;
+      return { kind, taskId: t.id, runId: t.runId, summary: `Resume the run for “${clip(t.text)}”` };
+    }
+    case "stop_run": {
+      // Terminal — frees the runner and marks the run done, unlike pause_run
+      // (which keeps the session for a resume).
+      const t = task(o.taskId);
+      if (!t || !t.runId) return null;
+      return { kind, taskId: t.id, runId: t.runId, summary: `Stop the run for “${clip(t.text)}” (frees the runner)` };
     }
     case "add_feature": {
       // Create a feature (a task grouping). Optionally slot it under a milestone
@@ -580,6 +691,28 @@ export function validateProjectAction(obj: unknown, ctx: ProjectActionContext): 
         summary: `Queue the project's backlog${feasibleOnly ? " (feasible tasks only)" : ""}${autonomyNote}`,
       };
     }
+    case "resolve_hitl": {
+      // Must resolve to a REAL open gate in ctx.gates — never an id the model
+      // invented, mirroring every task/feature/agent id check above.
+      const gate = ctx.gates?.find((g) => g.id === str(o.hitlId));
+      if (!gate) return null;
+      const resolveAction = str(o.resolveAction);
+      const label = clip(gate.title || gate.kind);
+      if (resolveAction === "approve" || resolveAction === "reject") {
+        return { kind, hitlId: gate.id, resolveAction, summary: `${resolveAction === "approve" ? "Approve" : "Reject"} “${label}”` };
+      }
+      if (resolveAction === "modify") {
+        const guidance = str(o.guidance);
+        if (!guidance) return null; // a "modify" with nothing to say is a no-op, not an action
+        return { kind, hitlId: gate.id, resolveAction, guidance, summary: `Request changes on “${label}”: ${clip(guidance)}` };
+      }
+      if (resolveAction === "option") {
+        const i = o.optionIndex;
+        if (typeof i !== "number" || !Number.isInteger(i) || !gate.options || i < 0 || i >= gate.options.length) return null;
+        return { kind, hitlId: gate.id, resolveAction, optionIndex: i, summary: `Answer “${label}” with: ${clip(gate.options[i]!)}` };
+      }
+      return null;
+    }
     default:
       return null;
   }
@@ -683,6 +816,7 @@ export function statusContext(
   agents: Agent[] = [],
   features: Feature[] = [],
   milestones: Milestone[] = [],
+  gates: HitlItem[] = [],
 ): string {
   const agentName = (id: string): string => agents.find((a) => a.id === id)?.name ?? id;
   // Compact "who may take this" tag so Steward can report + change eligibility.
@@ -770,6 +904,21 @@ export function statusContext(
         .join(" · ")}`,
     );
   }
+  // Governance-to-SOTA — open HITL gates, so the operator can say "approve
+  // the diff gate" and resolve_hitl has a real id to resolve against (see
+  // ProjectActionContext.gates's own doc comment). A question-kind gate's
+  // options are numbered here so "go with option 2" maps unambiguously.
+  if (gates.length) {
+    lines.push(
+      `OPEN GATES (needs your decision — resolve_hitl may act on these): ${gates
+        .slice(0, 20)
+        .map((g) => {
+          const opts = g.kind === "question" && g.options?.length ? ` [options: ${g.options.map((o, i) => `${i + 1}. ${o}`).join(" / ")}]` : "";
+          return `[${g.id}] ${g.kind} — ${g.title} (${g.risk} risk)${opts}`;
+        })
+        .join(" · ")}`,
+    );
+  }
   const archived = tasks.filter((t) => t.archived);
   if (archived.length) {
     lines.push(
@@ -827,16 +976,24 @@ export async function prepareStewardCall(
   const { workspaceId, project, question } = opts;
   const history = opts.history ?? [];
 
-  const [allTasks, allRuns, agents, allFeatures, allMilestones] = await Promise.all([
+  const [allTasks, allRuns, agents, allFeatures, allMilestones, allQueue] = await Promise.all([
     store.listTasks(workspaceId),
     store.listRuns(workspaceId),
     store.listAgents(workspaceId),
     store.listFeatures(workspaceId),
     store.listMilestones(workspaceId),
+    store.listQueue(workspaceId),
   ]);
   const projectTasks = allTasks.filter((t) => t.projectId === project.id);
   const features = allFeatures.filter((f) => f.projectId === project.id && !f.archived);
   const milestones = allMilestones.filter((m) => m.projectId === project.id && !m.archived);
+  // A HitlItem carries no projectId of its own except the `roadmap_edit`
+  // kind (no real run behind it) — every other kind's project is reached
+  // by joining through its run, mirroring Operations.listDecisions.
+  const projectRunIds = new Set(allRuns.filter((r) => r.projectId === project.id).map((r) => r.id));
+  const gates = allQueue.filter(
+    (g) => !g.resolvedAt && (g.kind === "roadmap_edit" ? g.projectId === project.id : projectRunIds.has(g.runId)),
+  );
   const context = statusContext(
     project,
     projectTasks,
@@ -844,6 +1001,7 @@ export async function prepareStewardCall(
     agents,
     features,
     milestones,
+    gates,
   );
   // Prefetched UNCLIPPED (not MAX_DOC_CHARS-limited — that cap is for general
   // grounding text, not a whole-file edit diff) regardless of local-vs-GitHub
@@ -854,13 +1012,14 @@ export async function prepareStewardCall(
   const actionCtx: ProjectActionContext = {
     project: { id: project.id, name: project.name },
     autonomy: project.autonomy,
-    tasks: projectTasks.map((t) => ({ id: t.id, text: t.text, state: t.state })),
+    tasks: projectTasks.map((t) => ({ id: t.id, text: t.text, state: t.state, runId: t.runId ?? null })),
     // Fleet is workspace-wide (agents aren't project-scoped) — it's the pool
     // set_assignment validates agentIds against.
     agents: agents.map((a) => ({ id: a.id, name: a.name })),
     features: features.map((f) => ({ id: f.id, name: f.name })),
     milestones: milestones.map((m) => ({ id: m.id, name: m.name })),
     roadmap: roadmapDoc ? { path: roadmapDoc.path, content: roadmapDoc.content, ...(roadmapDoc.sha ? { sha: roadmapDoc.sha } : {}) } : null,
+    gates: gates.map((g) => ({ id: g.id, kind: g.kind, title: g.title, risk: g.risk, options: g.options })),
   };
   const { apiKey, baseUrl } = await projectCredential(store, workspaceId, project.id, ASSISTANT_MODEL);
   // Live, secret-safe settings snapshot so settings questions ground in real

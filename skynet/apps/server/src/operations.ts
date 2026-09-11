@@ -39,6 +39,8 @@ import type {
   HitlItem,
   InformRequest,
   Milestone,
+  Plan,
+  UpdatePlanRequest,
   PolicyDryRunResult,
   PolicyVersion,
   PrChecksStatus,
@@ -113,6 +115,7 @@ import { git as gitExec } from "./preview/worktree.js";
 import { ASSISTANT_MODEL, oneShotText } from "@skynet/runner-sdk/claude";
 import { flyDeploy, type FlyDeployState } from "./fly/deploy.js";
 import { githubService, parseRepoRef } from "./github/index.js";
+import type { SentryIssueSignal } from "./sentry/index.js";
 import { parseChecklist } from "./tasks/checklist.js";
 import { lintTask } from "./task-linter.js";
 import { reconcileSourceState } from "./task-sync.js";
@@ -185,6 +188,7 @@ export class RoadmapConflictError extends Error {
     this.name = "RoadmapConflictError";
   }
 }
+
 
 /** A RoadmapProposal isn't `open` — already resolved, or held for a human to
  *  untangle a conflict (Rule 4). 409. */
@@ -366,6 +370,11 @@ export class Operations {
     // for the same reason as onDriveRefill: the driver ticks in the
     // orchestrator, the thinking lives here.
     this.orchestrator.onDriveReplenish = (ws, projectId) => this.replenishBacklog(ws, projectId).then(() => undefined);
+    // Feedback-loop responders (ROADMAP v3): the rule engine's `reengage_run`
+    // action has no orchestrator reference of its own (same reasoning as
+    // onDriveRefill/onDriveReplenish above, in the other direction) — wired
+    // here since this is the one layer holding both.
+    if (this.ruleEngine) this.ruleEngine.reengageRun = (runId, note) => this.orchestrator.reengageOnFeedback(runId, note);
     this.lintConsult = deps.lintConsult ?? lintTask;
   }
 
@@ -866,6 +875,15 @@ export class Operations {
       }
       return await this.resolveRoadmapEditHitl(ws, item, input.action, operatorId);
     }
+    // v2 — a `handoff` gate has no live agent/run behind it either (raised by
+    // startFeatureShipHandoff's bus subscriber, not a live run), same
+    // never-goes-through-deliver() carve-out as roadmap_edit above.
+    if (item.kind === "handoff") {
+      if (input.action !== "approve" && input.action !== "reject") {
+        throw new Error(`A handoff can only be approved or rejected here (got "${input.action}").`);
+      }
+      return await this.resolveHandoffHitl(ws, item, input.action, operatorId);
+    }
     // A catastrophic command can NEVER be approved, even if an operator
     // fat-fingers "approve" on the gate — re-validate the command against the
     // denylist server-side and refuse before recording any decision. GATE-risk
@@ -1315,9 +1333,18 @@ export class Operations {
       // Runner-key confinement is opt-in and set later in project settings —
       // a fresh project runs on any workspace key until narrowed.
       enabledRunnerCredentialIds: [],
+      // No custom MCP tools granted at creation — an explicit per-project
+      // grant set later in settings (see Project.mcpServerIds).
+      mcpServerIds: [],
+      // No Sentry binding at creation — set later in project settings.
+      sentryProject: null,
       // Source-of-truth write-back is opt-in (outward-facing) — enabled in settings,
       // or right here when the creation form asks for an issue import (below).
       syncSourceStatus: !!(repo && input.importGithubIssues),
+      // Phase 3 (external/webhook write-back) is never configured at creation —
+      // set later in project settings. See Project.externalWebhookUrl.
+      externalWebhookUrl: null,
+      externalWebhookSecret: null,
       // Optional: stack this project's runs/PRs onto a branch; else the global default.
       baseBranch: input.baseBranch?.trim() || null,
       // No override at creation — set later, once the operator (or Steward)
@@ -1341,6 +1368,9 @@ export class Operations {
       // starts with.
       newBoardEnabled: true,
       queuedWipLimit: null,
+      // No role-agents configured at creation — set later in project
+      // settings. See Project.roleAgents.
+      roleAgents: { changeManager: null, docsWriter: null, releaseComms: null },
     };
     const created = await this.hub.upsertProject(project);
     // A brand-new workspace's first-ever project isn't covered by the rule
@@ -1391,7 +1421,25 @@ export class Operations {
       patch.roadmapPath === undefined
         ? {}
         : { roadmapPath: patch.roadmapPath?.trim() ? patch.roadmapPath.trim() : null };
-    const updated = await this.hub.upsertProject({ ...existing, ...patch, ...rebind, ...instructions, ...baseBranch, ...roadmapPath });
+    // Same clear-on-blank normalization for the Phase 3 webhook fields.
+    const externalWebhookUrl =
+      patch.externalWebhookUrl === undefined
+        ? {}
+        : { externalWebhookUrl: patch.externalWebhookUrl?.trim() ? patch.externalWebhookUrl.trim() : null };
+    const externalWebhookSecret =
+      patch.externalWebhookSecret === undefined
+        ? {}
+        : { externalWebhookSecret: patch.externalWebhookSecret?.trim() ? patch.externalWebhookSecret.trim() : null };
+    const updated = await this.hub.upsertProject({
+      ...existing,
+      ...patch,
+      ...rebind,
+      ...instructions,
+      ...baseBranch,
+      ...roadmapPath,
+      ...externalWebhookUrl,
+      ...externalWebhookSecret,
+    });
     this.maybeAutoClone(ws, updated); // binding a repo on a server clones it
     // Re-enabling autonomy (whether the operator turned it off themselves, or
     // the session circuit-breaker did) starts the streak fresh — otherwise an
@@ -1802,6 +1850,37 @@ export class Operations {
         text: event.issue.title,
         description: event.issue.body || undefined,
         source: { kind: "github_issue", repo: event.repo, number: event.issue.number, url: event.issue.url },
+      });
+      created++;
+    }
+    return { created };
+  }
+
+  /**
+   * The Sentry instance of the same v3 "inbound-trigger" primitive as
+   * {@link handleGithubIssueEvent} above, and structured identically: called
+   * from the verified webhook route (sentry/webhook.ts) — signature
+   * verification already happened there, so this only does the domain work.
+   * No workspace context arrives with a Sentry webhook either, so it fans out
+   * across every workspace's projects bound to that Sentry org+project
+   * (usually exactly one). A project's `sentryProject` being non-null IS the
+   * opt-in (no separate boolean, unlike GitHub's `syncSourceStatus` — see
+   * Project.sentryProject's doc comment). Dedup key is the Sentry issue id, so
+   * a redelivered webhook for the same issue is a no-op.
+   */
+  async handleSentryIssueEvent(signal: SentryIssueSignal): Promise<{ created: number }> {
+    const projects = (await this.store.listAllProjects()).filter(
+      (p) => p.sentryProject?.org === signal.org && p.sentryProject?.project === signal.project,
+    );
+    let created = 0;
+    for (const project of projects) {
+      const existing = await this.store.listTasks(project.workspaceId);
+      const already = existing.some((t) => t.projectId === project.id && t.source?.kind === "sentry_issue" && t.source.issueId === signal.issueId);
+      if (already) continue;
+      await this.createTask(project.workspaceId, project.id, {
+        text: signal.title,
+        description: signal.culprit || undefined,
+        source: { kind: "sentry_issue", org: signal.org, project: signal.project, issueId: signal.issueId, shortId: signal.shortId, url: signal.url },
       });
       created++;
     }
@@ -3021,6 +3100,32 @@ export class Operations {
     await this.hub.deleteMilestone(mid);
   }
 
+  // ── the living Plan (Product Steward Phase 1, docs/product-steward.md) ──
+  /** The project's Plan, or an EPHEMERAL empty one (version 0, never
+   *  persisted) if nothing's been written yet — so the panel always has
+   *  something to render, and `version: 0` doubles as "no Plan exists yet"
+   *  for updateProjectPlan's baseVersion below (a real, saved Plan is never
+   *  version 0; its first write starts at 1 — see store.putPlan). */
+  async getProjectPlan(ws: string, projectId: string): Promise<Plan> {
+    const project = await this.store.getProject(projectId);
+    if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
+    const existing = await this.store.getPlan(projectId);
+    if (existing) return existing;
+    return { projectId, workspaceId: ws, markdown: "", version: 0, updatedBy: "", updatedAt: 0 };
+  }
+
+  /** Write the Plan. `input.baseVersion` is passed straight through as
+   *  store.putPlan's `expectedVersion` — the store owns both the optimistic-
+   *  concurrency check (VersionConflictError → 409, same discipline every
+   *  other versioned entity here already uses) and bumping `version`, so a
+   *  stale edit can't silently clobber one made in another tab or (Phase 2+)
+   *  by the steward — the "Plan authorship conflicts" open question's answer. */
+  async updateProjectPlan(ws: string, projectId: string, input: UpdatePlanRequest, updatedBy: string): Promise<Plan> {
+    const project = await this.store.getProject(projectId);
+    if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
+    return this.hub.upsertPlan({ projectId, workspaceId: ws, markdown: input.markdown, version: 0, updatedBy, updatedAt: now() }, input.baseVersion);
+  }
+
   // ── solution briefs (pre-work planning docs) ───────────────────────────
   // sourceConversation is a PROVENANCE breadcrumb, not a transcript — capped
   // at write time (same "assessment" truncation convention as
@@ -3692,6 +3797,11 @@ export class Operations {
       output: null,
       flags: needsHuman ? ["has_deletion"] : [],
       sourceBranchOverride: null,
+      handoffRole: null,
+      handoffFilePath: null,
+      handoffBaseline: null,
+      handoffContent: null,
+      handoffDraftText: null,
     });
   }
 
@@ -4046,6 +4156,47 @@ export class Operations {
       if (!proposal || proposal.projectId !== item.projectId) throw new NotFoundError("Roadmap proposal");
       if (proposal.state !== "open") throw new RoadmapProposalNotOpenError(proposal.state);
       await this.store.putRoadmapProposal({ ...proposal, state: "rejected" });
+    }
+    const resolution: Resolution = {
+      action,
+      optionIndex: null,
+      guidance: null,
+      targetBranch: null,
+      memoryNote: null,
+      resetWork: false,
+      by: operatorId,
+      at: now(),
+    };
+    const resolved = await this.hub.resolveHitl(item.id, resolution);
+    return resolved ?? item;
+  }
+
+  /**
+   * The plain (approve/reject) `handoff` HITL — v2's agent-to-agent handoff.
+   * Unlike roadmap_edit, there's no separate entity to look up or flip state
+   * on (see HitlItem.handoffRole's own doc comment for why): the whole
+   * payload already lives on `item`, so resolving the HITL IS the state
+   * change, plus — on approve, for a file-writing role only — a real commit.
+   * Release-comms has no file (`handoffFilePath` stays null): approving it
+   * just finalizes the draft for the operator to copy elsewhere, nothing to
+   * commit. Reject never touches the repo either way.
+   */
+  private async resolveHandoffHitl(ws: string, item: HitlItem, action: "approve" | "reject", operatorId: string): Promise<HitlItem> {
+    if (action === "approve" && item.handoffFilePath && item.handoffContent !== null) {
+      if (!item.projectId) throw new NotFoundError("Project");
+      const project = await this.store.getProject(item.projectId);
+      if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
+      if (!project.repoPath && !project.repo) throw new Error("This project has no bound repo to commit to.");
+      const message = `Skynet: ${item.title}`;
+      if (project.repoPath) {
+        await commitLocalRepoFile(project.repoPath, item.handoffFilePath, item.handoffContent, item.handoffBaseline, message);
+      } else {
+        const current = await readProjectDoc(ws, project, item.handoffFilePath);
+        if ((current?.content ?? null) !== item.handoffBaseline) {
+          throw new Error(`${item.handoffFilePath} changed on disk since this was drafted.`);
+        }
+        await githubService.commitRepoFile(ws, project.repo!, item.handoffFilePath, item.handoffContent, current?.sha, message, project.githubCredentialId);
+      }
     }
     const resolution: Resolution = {
       action,

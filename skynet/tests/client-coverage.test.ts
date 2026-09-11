@@ -23,7 +23,11 @@ const referenced = new Set([...surfaces.matchAll(/api\.(\w+)/g)].map((m) => m[1]
 const ALLOW = new Set<string>([
   // transport / plumbing
   "connect", // raw WebSocket
-  "login", // real email/password → session; journeys use the dev-token path, so there's no offline flow to exercise it
+  // auth primitive (POST /api/auth/login) — real email/password → session,
+  // exchanged for a token; the local/desktop build runs open-auth (dev
+  // tokens) so no offline journey signs in — the login screen exercises it
+  // live instead. Guarded by auth-hardening.test.ts, not an operator journey.
+  "login",
   "fetchEvals", "runEval", "fetchEvalJob", "judgeSimulation", // eval + judge machinery
   // needs a live GitHub remote / OS dialog — can't run offline in a journey
   "browseFolder",
@@ -132,10 +136,6 @@ const ALLOW = new Set<string>([
   // credentials.test.ts and the live-verify call by secrets-verify.test.ts.
   "flyDeployStatus", "flyDeployStart", "flyDeployStop",
   "flyDeployRunStatus", "flyDeployRunStart", "flyDeployRunStop",
-  // auth primitive (POST /api/auth/login) — the local/desktop build runs
-  // open-auth (dev tokens), so no fleet journey signs in; auth is guarded by
-  // auth-hardening.test.ts, not an operator journey.
-  "login",
   // read-only doc render for the Roadmap page — no operator journey to exercise
   "fetchRoadmap",
   // global Steward dock chat (workspace-wide / focused-project) — needs a live
@@ -163,9 +163,6 @@ const ALLOW = new Set<string>([
   // reply, the one retry, and repairing a reply that drops/duplicates/invents
   // ids) is exercised with a stubbed `organizeAsk` in organize-board.test.ts.
   "organizeBoard",
-  // auth handshake — needs live operator credentials + a session token exchange,
-  // so it can't run in an offline journey (the login screen exercises it live)
-  "login",
   // MFA challenge exchange (POST /api/auth/mfa) — an auth primitive like `login`;
   // needs a live challenge id + code, so no offline journey exercises it (the
   // login screen drives it live).
@@ -393,6 +390,17 @@ const ALLOW = new Set<string>([
   // in tests/gate-batching-server.test.ts; the pure grouping logic that
   // decides WHICH gates batch together is covered by tests/gate-batching.test.ts.
   "resolveHitlBatch",
+  // Custom MCP servers (roadmap "Tools via MCP") — needs the secret store
+  // (master key) enabled, same as createCredential above; no offline journey.
+  // The store round-trip, reserved-name rejection, and the resolveMany
+  // degrade-gracefully-on-a-stale-id behavior are covered server-side by
+  // tests/mcp-servers.test.ts.
+  "fetchMcpServers", "createMcpServer", "deleteMcpServer",
+  // Whether the inbound Sentry webhook is configured on this server — a
+  // read-only Integrations status check with no state-changing journey step,
+  // same reasoning as fetchSecretAudit above. The webhook it gates on IS
+  // covered end to end by tests/sentry-webhook.test.ts.
+  "fetchSentryStatus",
 ]);
 
 describe("client API coverage", () => {

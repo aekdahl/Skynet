@@ -11,6 +11,15 @@ import { rememberableRisk } from "../approval-policy.js";
 
 export type Names = { run: string; project: string };
 
+/** The identity the Telegram bridge acts AS when it performs an action on the
+ *  owner's behalf (resolving a HITL gate from a tapped button, or — see
+ *  handoffLink below — the principal a hosted chat→canvas handoff session is
+ *  issued for). One shared definition so it can never drift between the two
+ *  call sites (createOwnerControl, telegram/index.ts's startTelegramBridge). */
+export function telegramOperatorId(ownerChatId: string): string {
+  return `telegram:${ownerChatId}`;
+}
+
 /** Deep link to a run's detail page. Mirrors the web hash route
  *  (apps/web/src/lib/routing.ts: `#/agent/<runId>`). Empty base → no link. */
 export function runLink(baseUrl: string, runId: string): string | undefined {
@@ -28,6 +37,17 @@ export function runLink(baseUrl: string, runId: string): string | undefined {
  *  desktop — the protocol is always the same. */
 export function desktopRunLink(runId: string): string {
   return `skynet://agent/${runId}`;
+}
+
+/** Hosted counterpart to `desktopRunLink` for the "cold click" case (a
+ *  Telegram notification tapped on a device with no live session yet) — see
+ *  ROADMAP.md's "Chat → canvas handoff" entry and auth/link-exchange.ts. `token`
+ *  is a short-lived, single-use exchange token minted alongside the
+ *  notification; the server's `GET /handoff/:token` route
+ *  (auth/routes.ts) consumes it, issues a real session, and redirects
+ *  straight into the target view. Empty base → no link, same as `runLink`. */
+export function handoffLink(baseUrl: string, token: string): string | undefined {
+  return baseUrl ? `${baseUrl}/handoff/${token}` : undefined;
 }
 
 /** Escape text for Telegram HTML parse_mode (only &, <, > matter). */
@@ -107,6 +127,10 @@ const KIND_LABEL: Record<HitlItem["kind"], string> = {
   escalation: "NEEDS HELP",
   verifier: "CHECKS FAILED",
   roadmap_edit: "ROADMAP EDIT · NEEDS YOUR YES",
+  // v2 handoff falls through to the generic card body below (title/why) —
+  // no bespoke Telegram rendering yet, same as most other kinds; only
+  // roadmap_edit earned its own richer card (roadmapEditCardHtml).
+  handoff: "HANDOFF · NEEDS YOUR YES",
 };
 
 /** All-caps kind label for the card's header line — "AWAITING REVIEW" for a
@@ -314,6 +338,21 @@ export function gateKeyboard(it: HitlItem, projectName = "", link?: string): Inl
           { text: "⛔ Reject", callback_data: `hitl:reject:${it.id}` },
         ],
         ...openInSkynet,
+      ],
+    };
+  }
+
+  // v2 handoff: same shape as roadmap_edit above (no run, so no "View
+  // diff"/"Request changes" — Operations.resolveHandoffHitl only accepts
+  // approve/reject, so a `modify` tap here would just throw).
+  if (it.kind === "handoff") {
+    return {
+      inline_keyboard: [
+        [
+          { text: it.handoffFilePath ? "✅ Approve & commit" : "✅ Approve", callback_data: `hitl:approve:${it.id}` },
+          { text: "⛔ Reject", callback_data: `hitl:reject:${it.id}` },
+        ],
+        ...openLinkRow,
       ],
     };
   }
