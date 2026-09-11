@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useRef, useState } from "react";
-import type { TaskRun, Project, Task, TaskAssignment, Agent, SecretMeta, ProviderId, ProviderInfo } from "@skynet/shared";
+import type { TaskRun, Project, Task, TaskAssignment, Agent, SecretMeta, McpServerMeta, ProviderId, ProviderInfo } from "@skynet/shared";
 import { computeDailySpend, committedUsd, resolveTaskBrief } from "@skynet/shared";
 import { useStore } from "../lib/store";
 import * as api from "../lib/client";
@@ -30,6 +30,7 @@ import { SwDiagram } from "../components/subway-diagram";
 import { QueueCard } from "./queue";
 import { TimelineView } from "./home";
 import { RoadmapDocView } from "./project-roadmap";
+import { ProjectPlanView } from "./project-plan";
 import { ProjectMemoryView } from "./project-memory";
 import { ProjectQualityView } from "./project-quality";
 import { ProjectContextView } from "./project-context";
@@ -536,6 +537,18 @@ function TaskCard({
             title={`Imported from GitHub issue ${task.source.repo}#${task.source.number} — status syncs back when enabled`}
           >
             #{task.source.number} ↗
+          </a>
+        )}
+        {task.source?.kind === "sentry_issue" && (
+          <a
+            className="kb-source mono"
+            href={task.source.url || undefined}
+            target="_blank"
+            rel="noreferrer"
+            onClick={stop}
+            title={`From Sentry — ${task.source.org}/${task.source.project}${task.source.shortId ? ` · ${task.source.shortId}` : ""}`}
+          >
+            {task.source.shortId || "Sentry"} ↗
           </a>
         )}
         {task.source?.kind === "repo_file" && (
@@ -1626,6 +1639,48 @@ function ProjectToolAccess({ project, onChange }: { project: Project; onChange: 
   );
 }
 
+// Which custom MCP servers (Integrations → "Custom MCP servers") this
+// project's agents get — the "scoped tools" roadmap "Tools via MCP" gives an
+// agent to act back into the operator's own services, not just Skynet's own
+// git operations. Empty = none, unlike ProjectRunnerKeys above where empty
+// means "everything" — an MCP tool is an explicit grant, never an ambient
+// default a new project inherits silently (see Project.mcpServerIds).
+function ProjectMcpServers({ project, onChange }: { project: Project; onChange: (ids: string[]) => void }) {
+  const [servers, setServers] = useState<McpServerMeta[]>([]);
+  useEffect(() => {
+    api.fetchMcpServers().then(({ servers }) => setServers(servers)).catch(() => setServers([]));
+  }, []);
+  if (servers.length === 0) return null; // nothing to grant yet — add one in Integrations first
+
+  const enabled = project.mcpServerIds;
+  const toggle = (id: string) => onChange(enabled.includes(id) ? enabled.filter((x) => x !== id) : [...enabled, id]);
+  const summary = enabled.length === 0 ? "None" : `${enabled.length} tool${enabled.length === 1 ? "" : "s"}`;
+  return (
+    <details className="proj-keys">
+      <summary
+        className="proj-keys-summary"
+        title="Custom MCP servers this project's agents can call, in addition to Skynet's own git operations. Add one in Integrations first."
+      >
+        <span className="proj-approval-label mono">MCP tools</span>
+        <span className="proj-keys-value">{summary}</span>
+      </summary>
+      <div className="proj-keys-menu">
+        <div className="proj-keys-hint">
+          {enabled.length === 0
+            ? "No custom tools granted. A write-capable server acts outside Skynet's own git guardrails."
+            : "Agents on this project can call these servers' tools (still gated through the normal HITL approval)."}
+        </div>
+        {servers.map((s) => (
+          <label key={s.id} className="proj-keys-item">
+            <input type="checkbox" checked={enabled.includes(s.id)} onChange={() => toggle(s.id)} />
+            <span className="proj-keys-name">{s.name}</span>
+          </label>
+        ))}
+      </div>
+    </details>
+  );
+}
+
 export function ProjectView({
   project,
   now,
@@ -1740,10 +1795,10 @@ export function ProjectView({
   // Per-project lens (Kanban is the default; Archived shows soft-hidden tasks +
   // restore; Roadmap renders ROADMAP.md from the repo). Persisted per-project in
   // sessionStorage so switching back restores the last chosen lens.
-  const [lens, setLens] = useState<"kanban" | "roadmap" | "memory" | "context" | "coverage" | "rules" | "keys" | "feed" | "archived" | "health">(() => {
+  const [lens, setLens] = useState<"kanban" | "plan" | "roadmap" | "memory" | "context" | "coverage" | "rules" | "keys" | "feed" | "archived" | "health">(() => {
     if (typeof sessionStorage === "undefined") return "kanban";
     const v = sessionStorage.getItem(`skynet.proj.lens.${project.id}`);
-    return v === "roadmap" || v === "memory" || v === "context" || v === "coverage" || v === "rules" || v === "keys" || v === "feed" || v === "archived" || v === "health" ? v : "kanban";
+    return v === "plan" || v === "roadmap" || v === "memory" || v === "context" || v === "coverage" || v === "rules" || v === "keys" || v === "feed" || v === "archived" || v === "health" ? v : "kanban";
   });
   useEffect(() => {
     if (typeof sessionStorage !== "undefined")
@@ -1818,6 +1873,11 @@ export function ProjectView({
   // issue on done). Lives in this settings panel now; only meaningful with a repo.
   const [syncToSource, setSyncToSource] = useState(project.syncSourceStatus);
   const [resyncing, setResyncing] = useState(false);
+  // Sentry org/project slug binding for the inbound webhook trigger (roadmap
+  // "Tools via MCP") — independent of a GitHub repo connection, so it's not
+  // gated behind hasRepo like the fields above.
+  const [sentryOrg, setSentryOrg] = useState(project.sentryProject?.org ?? "");
+  const [sentryProj, setSentryProj] = useState(project.sentryProject?.project ?? "");
   const hasRepo = !!(project.gitBacked || project.repo);
 
   // Breadcrumb's "N GATES OPEN" chip — the same underlying workspace-wide
@@ -1863,8 +1923,10 @@ export function ProjectView({
     setBaseBranch(project.baseBranch ?? "");
     setCheckCmd(project.checkCmd ?? "");
     setSyncToSource(project.syncSourceStatus);
+    setSentryOrg(project.sentryProject?.org ?? "");
+    setSentryProj(project.sentryProject?.project ?? "");
     setFolded(false);
-  }, [project.id, project.name, project.goal, project.instructions, project.baseBranch, project.checkCmd, project.syncSourceStatus]);
+  }, [project.id, project.name, project.goal, project.instructions, project.baseBranch, project.checkCmd, project.syncSourceStatus, project.sentryProject]);
 
   return (
     <section className="projview">
@@ -1954,6 +2016,15 @@ export function ProjectView({
               </button>
             </div>
           )}
+          <div className="projview-setting">
+            <div className="projview-instructions-label mono">
+              Sentry project <span className="projview-instructions-hint">— new/regressed issues here become tasks (roadmap "Tools via MCP"). Set up the webhook in Integrations first.</span>
+            </div>
+            <div className="qx-row">
+              <input className="qx-input" placeholder="Org slug" value={sentryOrg} onChange={(e) => setSentryOrg(e.target.value)} />
+              <input className="qx-input" placeholder="Project slug" value={sentryProj} onChange={(e) => setSentryProj(e.target.value)} />
+            </div>
+          </div>
           <div className="qx-row">
             <button
               className="btn btn-primary"
@@ -1967,6 +2038,7 @@ export function ProjectView({
                   baseBranch: baseBranch.trim() || null,
                   checkCmd: checkCmd.trim() || null,
                   syncSourceStatus: syncToSource,
+                  sentryProject: sentryOrg.trim() && sentryProj.trim() ? { org: sentryOrg.trim(), project: sentryProj.trim() } : null,
                 });
                 setEditing(false);
               }}
@@ -1982,6 +2054,8 @@ export function ProjectView({
                 setBaseBranch(project.baseBranch ?? "");
                 setCheckCmd(project.checkCmd ?? "");
                 setSyncToSource(project.syncSourceStatus);
+                setSentryOrg(project.sentryProject?.org ?? "");
+                setSentryProj(project.sentryProject?.project ?? "");
                 setEditing(false);
               }}
             >
@@ -2091,6 +2165,7 @@ export function ProjectView({
             <ProjectGithubAccount project={project} onChange={(id) => updateProject(project.id, { githubCredentialId: id })} />
             <ProjectFlyAccount project={project} onChange={(id) => updateProject(project.id, { flyCredentialId: id })} />
             <ProjectRunnerKeys project={project} onChange={(ids) => updateProject(project.id, { enabledRunnerCredentialIds: ids })} />
+            <ProjectMcpServers project={project} onChange={(ids) => updateProject(project.id, { mcpServerIds: ids })} />
             <ProjectToolAccess project={project} onChange={(tools) => updateProject(project.id, { disallowedTools: tools })} />
             <div className="projview-head-admin">
               <button
@@ -2214,6 +2289,7 @@ export function ProjectView({
           {(
             [
               "kanban",
+              "plan",
               // Rules (Automation Builder, TASK 07) only makes sense over the
               // new board's mental model — hidden on the legacy 6-column
               // board, same gating as MomentumBoard itself below.
@@ -2236,7 +2312,7 @@ export function ProjectView({
               className={"lens-btn" + (lens === id ? " on" : "")}
               onClick={() => setLens(id)}
             >
-              {id === "kanban" ? "Kanban" : id === "rules" ? "Rules" : id === "keys" ? "Keys" : id === "roadmap" ? "Roadmap" : id === "memory" ? "Memory" : id === "context" ? "Context" : id === "coverage" ? "Coverage" : id === "feed" ? "Feed" : id === "health" ? "Health" : "Archived"}
+              {id === "kanban" ? "Kanban" : id === "plan" ? "Plan" : id === "rules" ? "Rules" : id === "keys" ? "Keys" : id === "roadmap" ? "Roadmap" : id === "memory" ? "Memory" : id === "context" ? "Context" : id === "coverage" ? "Coverage" : id === "feed" ? "Feed" : id === "health" ? "Health" : "Archived"}
               {id === "archived" && archivedTasks.length > 0 && (
                 <span className="lens-btn-count">{archivedTasks.length}</span>
               )}
@@ -2258,7 +2334,9 @@ export function ProjectView({
         )}
       </div>
 
-      {lens === "rules" && project.newBoardEnabled ? (
+      {lens === "plan" ? (
+        <ProjectPlanView project={project} />
+      ) : lens === "rules" && project.newBoardEnabled ? (
         <RulesTab project={project} />
       ) : lens === "keys" ? (
         <KeysBudgetPanel project={project} runs={runs} />
@@ -2405,6 +2483,48 @@ export function ProjectView({
 // can never read this origin's storage no matter which URL it's served at.
 const DEVICES: Record<string, number | null> = { Desktop: null, Tablet: 768, Mobile: 390 };
 
+/** "1.2 KB" / "340 B" — for a command-kind artifact's size. PURE. */
+function fmtBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/** A "command"-kind preview's result panel (Phase 3, docs/live-preview.md) —
+ *  no server/URL, so no iframe/device-frame: the run's exit code, its ALWAYS-
+ *  visible output (the command's output IS the preview, unlike a dev
+ *  server's incidental logs — not gated behind the Logs toggle), and any
+ *  declared artifacts it produced, rendered inline by type. */
+function CommandPreviewPanel({ st }: { st: api.PreviewState }) {
+  return (
+    <div className="lp-cmd">
+      {st.recipe && <div className="lp-ph-cmd mono">$ {st.recipe.cmd}</div>}
+      {st.exitCode !== null && (
+        <div className={"lp-cmd-exit " + (st.exitCode === 0 ? "lp-status-live" : "lp-status-failed")}>
+          exit code {st.exitCode}
+        </div>
+      )}
+      <pre className="lp-logs lp-cmd-output mono">{st.logs.join("\n") || "(no output yet)"}</pre>
+      {st.artifacts.length > 0 && (
+        <div className="lp-cmd-artifacts">
+          {st.artifacts.map((a) => (
+            <div key={a.path} className="lp-cmd-artifact">
+              <div className="lp-cmd-artifact-name mono">{a.path} <span className="lp-cmd-artifact-size">({fmtBytes(a.size)})</span></div>
+              {a.mime.startsWith("image/") ? (
+                <img src={a.url} alt={a.path} className="lp-cmd-artifact-img" />
+              ) : a.mime === "application/pdf" ? (
+                <iframe src={a.url} title={a.path} className="lp-cmd-artifact-pdf" />
+              ) : (
+                <a className="btn btn-ghost btn-sm" href={a.url} target="_blank" rel="noreferrer">Download</a>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function LivePreviewModal({
   id,
   title,
@@ -2495,7 +2615,8 @@ export function LivePreviewModal({
   }, [st?.logs, showLogs]);
 
   const width = DEVICES[device];
-  const live = st?.status === "live" && st.url;
+  const isCommand = st?.kind === "command";
+  const live = !isCommand && st?.status === "live" && st.url;
   // Switch the previewed slice — re-(re)starts the server against the new source
   // (keeps node_modules warm; see startSpec's soft-replace).
   const switchSource = (next: api.PreviewSource) => {
@@ -2534,27 +2655,40 @@ export function LivePreviewModal({
               service
             </span>
           )}
+          {isCommand && (
+            <span className="lp-combined mono" title="Runs a command to completion and shows its output/exit code/artifacts — no server, no URL">
+              command
+            </span>
+          )}
           <span className={"lp-status lp-status-" + (st?.status ?? "idle")}>
-            {st?.status === "live" ? "● live" : st?.status === "starting" ? "◐ starting…" : st?.status === "failed" ? "✕ failed" : st?.status ?? "…"}
+            {st?.status === "live" ? (isCommand ? "✓ finished" : "● live") : st?.status === "starting" ? (isCommand ? "◐ running…" : "◐ starting…") : st?.status === "failed" ? "✕ failed" : st?.status ?? "…"}
           </span>
           {live && <span className="lp-url mono">{st!.url}</span>}
           <span className="lp-spacer" />
-          <div className="lp-devices">
-            {Object.keys(DEVICES).map((d) => (
-              <button key={d} className={"lp-dev" + (d === device ? " on" : "")} onClick={() => setDevice(d)}>{d}</button>
-            ))}
-          </div>
+          {!isCommand && (
+            <div className="lp-devices">
+              {Object.keys(DEVICES).map((d) => (
+                <button key={d} className={"lp-dev" + (d === device ? " on" : "")} onClick={() => setDevice(d)}>{d}</button>
+              ))}
+            </div>
+          )}
           <button className="btn btn-ghost btn-sm" onClick={() => setMode((m) => (m === "dock" ? "modal" : "dock"))} title={mode === "dock" ? "Expand to full screen" : "Dock beside the board"}>
             {mode === "dock" ? "⤢ Expand" : "⇔ Dock"}
           </button>
-          <button className="btn btn-ghost btn-sm" onClick={() => setNonce((n) => n + 1)} title="Reload the app in the frame">↻ Reload</button>
-          <button className="btn btn-ghost btn-sm" onClick={() => { startedRef.current = false; void ctl.restart().then(setSt); }} title="Restart the preview server">⟳ Restart</button>
-          <button className="btn btn-ghost btn-sm" onClick={() => { setShowLogs((s) => !s); }}>Logs</button>
+          {!isCommand && (
+            <button className="btn btn-ghost btn-sm" onClick={() => setNonce((n) => n + 1)} title="Reload the app in the frame">↻ Reload</button>
+          )}
+          <button className="btn btn-ghost btn-sm" onClick={() => { startedRef.current = false; void ctl.restart().then(setSt); }} title={isCommand ? "Run it again" : "Restart the preview server"}>⟳ {isCommand ? "Run again" : "Restart"}</button>
+          {!isCommand && (
+            <button className="btn btn-ghost btn-sm" onClick={() => { setShowLogs((s) => !s); }}>Logs</button>
+          )}
           <button className="btn btn-ghost btn-sm" onClick={() => { void ctl.stop(); onClose(); }}>✕ Close</button>
         </div>
 
         <div className="lp-body">
-          {live ? (
+          {isCommand ? (
+            st && <CommandPreviewPanel st={st} />
+          ) : live ? (
             <div className="lp-frame-wrap">
               <iframe
                 key={nonce}

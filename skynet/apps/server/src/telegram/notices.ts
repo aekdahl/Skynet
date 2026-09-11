@@ -107,6 +107,10 @@ const KIND_LABEL: Record<HitlItem["kind"], string> = {
   escalation: "NEEDS HELP",
   verifier: "CHECKS FAILED",
   roadmap_edit: "ROADMAP EDIT · NEEDS YOUR YES",
+  // v2 handoff falls through to the generic card body below (title/why) —
+  // no bespoke Telegram rendering yet, same as most other kinds; only
+  // roadmap_edit earned its own richer card (roadmapEditCardHtml).
+  handoff: "HANDOFF · NEEDS YOUR YES",
 };
 
 /** All-caps kind label for the card's header line — "AWAITING REVIEW" for a
@@ -314,6 +318,21 @@ export function gateKeyboard(it: HitlItem, projectName = "", link?: string): Inl
           { text: "⛔ Reject", callback_data: `hitl:reject:${it.id}` },
         ],
         ...openInSkynet,
+      ],
+    };
+  }
+
+  // v2 handoff: same shape as roadmap_edit above (no run, so no "View
+  // diff"/"Request changes" — Operations.resolveHandoffHitl only accepts
+  // approve/reject, so a `modify` tap here would just throw).
+  if (it.kind === "handoff") {
+    return {
+      inline_keyboard: [
+        [
+          { text: it.handoffFilePath ? "✅ Approve & commit" : "✅ Approve", callback_data: `hitl:approve:${it.id}` },
+          { text: "⛔ Reject", callback_data: `hitl:reject:${it.id}` },
+        ],
+        ...openLinkRow,
       ],
     };
   }

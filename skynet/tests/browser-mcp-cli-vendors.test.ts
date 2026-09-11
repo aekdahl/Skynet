@@ -20,8 +20,8 @@ import { codex } from "../packages/runner-sdk/src/codex.js";
 import { gemini } from "../packages/runner-sdk/src/gemini.js";
 import { cursorArgs } from "../packages/runner-sdk/src/cursor.js";
 import { copilotArgs } from "../packages/runner-sdk/src/copilot.js";
-import { BROWSER_MCP_NAME, mergeBrowserMcpConfig } from "../packages/runner-sdk/src/cli-runner.js";
-import type { StartSpec } from "../packages/runner-sdk/src/types.js";
+import { BROWSER_MCP_NAME, mergeMcpConfig, userMcpServerEntries } from "../packages/runner-sdk/src/cli-runner.js";
+import type { McpServerSpec, StartSpec } from "../packages/runner-sdk/src/types.js";
 
 const spec = (over: Partial<StartSpec> = {}): StartSpec => ({
   runId: "r1",
@@ -30,6 +30,54 @@ const spec = (over: Partial<StartSpec> = {}): StartSpec => ({
   model: "gpt-5.2-codex",
   branch: "agent/r1",
   ...over,
+});
+
+const STDIO_SERVER: McpServerSpec = {
+  name: "sentry",
+  transport: "stdio",
+  command: "npx",
+  args: ["-y", "@sentry/mcp-server"],
+  env: { SENTRY_AUTH_TOKEN: "tok_123" },
+};
+const REMOTE_SERVER: McpServerSpec = {
+  name: "sentry-remote",
+  transport: "remote",
+  url: "https://mcp.sentry.dev/mcp",
+  headers: { Authorization: "Bearer tok_456" },
+};
+
+describe("userMcpServerEntries/mergeMcpConfig — shared plumbing every vendor builds on", () => {
+  it("maps a stdio server to {command,args,env}", () => {
+    expect(userMcpServerEntries(spec({ mcpServers: [STDIO_SERVER] }))).toEqual({
+      sentry: { command: "npx", args: ["-y", "@sentry/mcp-server"], env: { SENTRY_AUTH_TOKEN: "tok_123" } },
+    });
+  });
+
+  it("maps a remote server to {type:'http',url,headers}", () => {
+    expect(userMcpServerEntries(spec({ mcpServers: [REMOTE_SERVER] }))).toEqual({
+      "sentry-remote": { type: "http", url: "https://mcp.sentry.dev/mcp", headers: { Authorization: "Bearer tok_456" } },
+    });
+  });
+
+  it("skips a reserved name (browser, skynet-manager) defensively", () => {
+    const reserved: McpServerSpec = { name: "browser", transport: "stdio", command: "evil", args: [] };
+    expect(userMcpServerEntries(spec({ mcpServers: [reserved, STDIO_SERVER] }))).toEqual({
+      sentry: { command: "npx", args: ["-y", "@sentry/mcp-server"], env: { SENTRY_AUTH_TOKEN: "tok_123" } },
+    });
+  });
+
+  it("mergeMcpConfig combines the browser server AND user-configured servers, preserving existing config", () => {
+    const merged = mergeMcpConfig({ theme: "dark" }, spec({ browser: true, mcpServers: [STDIO_SERVER] }));
+    expect(merged.theme).toBe("dark");
+    const servers = merged.mcpServers as Record<string, unknown>;
+    expect(servers[BROWSER_MCP_NAME]).toEqual({ command: "npx", args: ["-y", "@playwright/mcp@latest", "--headless", "--isolated"] });
+    expect(servers.sentry).toEqual({ command: "npx", args: ["-y", "@sentry/mcp-server"], env: { SENTRY_AUTH_TOKEN: "tok_123" } });
+  });
+
+  it("mergeMcpConfig with no browser and no user servers still returns an (empty) mcpServers key", () => {
+    const merged = mergeMcpConfig({}, spec({}));
+    expect(merged.mcpServers).toEqual({});
+  });
 });
 
 describe("Codex — browser MCP via -c overrides (no file ever written)", () => {
@@ -53,6 +101,30 @@ describe("Codex — browser MCP via -c overrides (no file ever written)", () => 
     const withUnset = codex.buildArgs(spec({}));
     expect(withFalse).toEqual(withUnset);
     expect(withFalse.join(" ")).not.toContain("mcp_servers");
+  });
+
+  it("a user-configured stdio server gets .command/.args/.env.<KEY> overrides — verified live against codex-cli 0.147.0's dotted-key TOML syntax", () => {
+    const args = codex.buildArgs(spec({ mcpServers: [STDIO_SERVER] }));
+    expect(args).toContain('mcp_servers.sentry.command="npx"');
+    expect(args).toContain('mcp_servers.sentry.args=["-y","@sentry/mcp-server"]');
+    expect(args).toContain('mcp_servers.sentry.env.SENTRY_AUTH_TOKEN="tok_123"');
+  });
+
+  it("a user-configured remote server gets .url + .bearer_token_env_var, and the token rides the child env (not inline) — verified live against `codex mcp add --url/--bearer-token-env-var`", () => {
+    const args = codex.buildArgs(spec({ mcpServers: [REMOTE_SERVER] }));
+    expect(args).toContain('mcp_servers.sentry-remote.url="https://mcp.sentry.dev/mcp"');
+    const bearerIdx = args.findIndex((a) => a.startsWith("mcp_servers.sentry-remote.bearer_token_env_var="));
+    expect(bearerIdx).toBeGreaterThan(-1);
+    const envVarName = JSON.parse(args[bearerIdx]!.split("=").slice(1).join("="));
+    const env = codex.env!(spec({ mcpServers: [REMOTE_SERVER] }));
+    expect(env[envVarName]).toBe("tok_456");
+  });
+
+  it("a remote server with no Authorization header gets .url but no bearer_token_env_var", () => {
+    const noAuth: McpServerSpec = { name: "public", transport: "remote", url: "https://example.com/mcp" };
+    const args = codex.buildArgs(spec({ mcpServers: [noAuth] }));
+    expect(args).toContain('mcp_servers.public.url="https://example.com/mcp"');
+    expect(args.join(" ")).not.toContain("bearer_token_env_var");
   });
 });
 
@@ -91,6 +163,14 @@ describe("Gemini — browser MCP via .gemini/settings.json (project-local worktr
     gemini.prepareWorktree?.(spec({ browser: false }), dir);
     expect(() => readFileSync(join(dir, ".gemini", "settings.json"), "utf8")).toThrow();
   });
+
+  it("writes a user-configured server even with browser off (best-effort — not independently verified against gemini-cli's own MCP schema)", () => {
+    dir = mkdtempSync(join(tmpdir(), "skynet-gemini-mcp-"));
+    gemini.prepareWorktree?.(spec({ mcpServers: [STDIO_SERVER] }), dir);
+    const written = JSON.parse(readFileSync(join(dir, ".gemini", "settings.json"), "utf8"));
+    expect(written.mcpServers.sentry).toEqual({ command: "npx", args: ["-y", "@sentry/mcp-server"], env: { SENTRY_AUTH_TOKEN: "tok_123" } });
+    expect(written.mcpServers.browser).toBeUndefined();
+  });
 });
 
 describe("Cursor — browser MCP via .cursor/mcp.json + --approve-mcps", () => {
@@ -106,12 +186,17 @@ describe("Cursor — browser MCP via .cursor/mcp.json + --approve-mcps", () => {
     expect(withFalse).not.toContain("--approve-mcps");
   });
 
-  it("the shared config merge (same one prepareBrowserMcp writes to .cursor/mcp.json) produces the right shape", () => {
-    const merged = mergeBrowserMcpConfig({});
+  it("the shared config merge (same one prepareMcp writes to .cursor/mcp.json) produces the right shape", () => {
+    const merged = mergeMcpConfig({}, spec({ browser: true }));
     expect((merged.mcpServers as Record<string, unknown>)[BROWSER_MCP_NAME]).toEqual({
       command: "npx",
       args: ["-y", "@playwright/mcp@latest", "--headless", "--isolated"],
     });
+  });
+
+  it("cursorArgs also adds --approve-mcps for a user-configured server with no browser tooling", () => {
+    const args = cursorArgs(spec({ mcpServers: [STDIO_SERVER] }), "do the task", undefined);
+    expect(args).toContain("--approve-mcps");
   });
 });
 
@@ -130,6 +215,14 @@ describe("Copilot — browser MCP via --additional-mcp-config", () => {
     const withUnset = copilotArgs(spec({}), "do the task", { resumeSession: false, primary: true });
     expect(withFalse).toEqual(withUnset);
     expect(withFalse).not.toContain("--additional-mcp-config");
+  });
+
+  it("merges browser tooling AND a user-configured server into the same --additional-mcp-config flag", () => {
+    const args = copilotArgs(spec({ browser: true, mcpServers: [STDIO_SERVER] }), "do the task", { resumeSession: false, primary: true });
+    const i = args.indexOf("--additional-mcp-config");
+    const parsed = JSON.parse(args[i + 1]!);
+    expect(parsed.mcpServers.browser).toEqual({ command: "npx", args: ["-y", "@playwright/mcp@latest", "--headless", "--isolated"] });
+    expect(parsed.mcpServers.sentry).toEqual({ command: "npx", args: ["-y", "@sentry/mcp-server"], env: { SENTRY_AUTH_TOKEN: "tok_123" } });
   });
 });
 

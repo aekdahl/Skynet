@@ -55,6 +55,10 @@ export const config = {
   // (there's nothing to persist) or STORE=postgres (PostgresSecretStore is
   // used instead, unaffected by this).
   secretsPath: process.env.SKYNET_SECRETS_PATH || undefined,
+  // Where custom MCP server configs (roadmap "Tools via MCP") persist for
+  // STORE=file — see mcp-servers/file.ts. Same trust model/defaulting as
+  // secretsPath above (sealed ciphertext only, next to the data file).
+  mcpServersPath: process.env.SKYNET_MCP_SERVERS_PATH || undefined,
   // No silent default: pick the fan-out backbone explicitly (BUS=memory for
   // single-process dev/tests; BUS=redis to fan out across replicas).
   bus: (process.env.BUS || undefined) as "memory" | "redis" | undefined,
@@ -295,6 +299,9 @@ export const config = {
   githubApiBase: process.env.GITHUB_API_URL || "https://api.github.com",
   // HMAC secret to verify inbound webhooks (push/PR/check events).
   githubWebhookSecret: process.env.GITHUB_WEBHOOK_SECRET || undefined,
+  // HMAC secret to verify the inbound Sentry issue webhook (sentry/webhook.ts)
+  // — same "unset = feature off, 404 not 401" posture as githubWebhookSecret.
+  sentryWebhookSecret: process.env.SENTRY_WEBHOOK_SECRET || undefined,
   // ── GitHub App via cloud token-broker (Phase 2; desktop has no App key) ────
   // When set (and no local App key), installation tokens are minted by the
   // broker function from a user token obtained via Device Flow. The client id is

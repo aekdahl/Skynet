@@ -17,6 +17,7 @@ import type {
   Module,
   PendingRuleAction,
   PendingRuleActionStatus,
+  Plan,
   PolicyVersion,
   Project,
   ProjectContextEntry,
@@ -64,6 +65,7 @@ export class MemoryStore implements Store {
   protected github = new Map<string, GithubConnection>(); // keyed by workspaceId
   protected workspaceSettings = new Map<string, WorkspaceSettings>(); // keyed by workspaceId
   protected roadmapDocs = new Map<string, RoadmapDoc>(); // keyed by projectId
+  protected plans = new Map<string, Plan>(); // keyed by projectId
   protected roadmapProposals = new Map<string, RoadmapProposal>();
   protected roadmapLineClaims = new Map<string, RoadmapLineClaim>(); // keyed by `${projectId}:${lineId}`
   protected policyVersions = new Map<string, PolicyVersion>(); // keyed by id
@@ -264,6 +266,18 @@ export class MemoryStore implements Store {
 
   async getRoadmapDoc(projectId: string) { return this.roadmapDocs.get(projectId); }
   async putRoadmapDoc(doc: RoadmapDoc) { this.roadmapDocs.set(doc.projectId, doc); this.persist(); return doc; }
+
+  async getPlan(projectId: string) { return this.plans.get(projectId); }
+  async putPlan(plan: Plan, expectedVersion?: number) {
+    const current = this.plans.get(plan.projectId);
+    if (expectedVersion !== undefined && (current?.version ?? 0) !== expectedVersion) {
+      throw new VersionConflictError("plan", plan.projectId);
+    }
+    const next = { ...plan, version: (current?.version ?? 0) + 1 };
+    this.plans.set(plan.projectId, next);
+    this.persist();
+    return next;
+  }
 
   async getRoadmapProposal(id: string) { return this.roadmapProposals.get(id); }
   async putRoadmapProposal(proposal: RoadmapProposal) { this.roadmapProposals.set(proposal.id, proposal); this.persist(); return proposal; }

@@ -137,6 +137,8 @@
 
 /* ── Card base ──────────────────────────────────────────────────────────── */
 .mb-card {
+  /* font/color/text-align/cursor reset shared with .mb-card-clickzone,
+     .gv-card, .hd-stalled-row, .rg-card-link — see styles.css. */
   display: flex;
   flex-direction: column;
   gap: var(--ak-sp-6);
@@ -144,10 +146,6 @@
   border: 1px solid var(--ak-border);
   border-radius: var(--ak-radius-card);
   background: var(--ak-surface-1);
-  text-align: left;
-  font: inherit;
-  color: inherit;
-  cursor: pointer;
 }
 button.mb-card { width: 100%; }
 /* TASK 13 hardening — the shared card-hover treatment: border goes
@@ -208,10 +206,6 @@ button.mb-card { width: 100%; }
   padding: var(--ak-pad-card);
   border: none;
   background: transparent;
-  text-align: left;
-  font: inherit;
-  color: inherit;
-  cursor: pointer;
   transition: background-color var(--motion-fast);
 }
 .mb-card-clickzone:hover { background-color: color-mix(in oklch, var(--ak-machine), transparent 96%); }
