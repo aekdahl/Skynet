@@ -11,6 +11,7 @@ import { cookieToken, tokenFrom, SESSION_COOKIE, type Principal } from "../auth.
 import { TelegramClient } from "../telegram/client.js";
 import type { Operations } from "../operations.js";
 import { mfaEnabled, createChallenge, verifyChallenge } from "./mfa.js";
+import { consumeLinkExchange } from "./link-exchange.js";
 import type { SessionStore } from "./sessions.js";
 import type { ServiceTokenStore } from "./service-tokens.js";
 import type { OperatorDirectory, OperatorRecord } from "./operators.js";
@@ -150,6 +151,25 @@ export async function registerAuthRoutes(app: FastifyInstance, deps: AuthRouteDe
     const principal = verifyChallenge(body.data.challengeId, body.data.code);
     if (!principal) return reply.code(401).send({ error: "Invalid or expired code" });
     return issueSession(reply, principal, { mfa: true });
+  });
+
+  // Chat → canvas handoff (ROADMAP.md, hosted-only — desktop needs none of
+  // this, see apps/desktop/deep-link.cjs): a Telegram notification's hosted
+  // link (telegram/notices.ts's handoffLink) points here instead of straight
+  // at the hash route, carrying a short-lived single-use token minted
+  // alongside the notification (link-exchange.ts's createLinkExchange). Not
+  // under /api — a raw browser navigation (a tapped link), not an XHR call,
+  // same reason /p/<token>/ and /preview-artifact/<token>/* live at the top
+  // level. `?st=` carries the session token for the SPA to stash into
+  // localStorage (client.ts's consumeHandoffToken) — the SPA is entirely
+  // bearer-token/localStorage driven, not cookie driven, so the httpOnly
+  // cookie issueSession also sets here is belt-and-suspenders, not
+  // sufficient on its own to land the operator logged in.
+  app.get("/handoff/:token", async (req: FastifyRequest<{ Params: { token: string } }>, reply: FastifyReply) => {
+    const hit = consumeLinkExchange(req.params.token);
+    if (!hit) return reply.redirect("/"); // expired/reused/invalid — fall back to a normal login
+    const { token } = await issueSession(reply, hit.principal, { mfa: false });
+    return reply.redirect(`/?st=${encodeURIComponent(token)}${hit.hash}`);
   });
 
   // Authenticated — destroy the presented session and clear the cookie.

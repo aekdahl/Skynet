@@ -26,6 +26,13 @@ import { SimulationProvider } from "./lib/simulation-store";
 import { ConfirmProvider } from "./components/confirm";
 import { ToastHost } from "./components/toast";
 import { setupPwa } from "./pwa/pwa";
+import { consumeHandoffToken } from "./lib/client";
+
+// Chat → canvas handoff (ROADMAP.md) — must run before anything else reads a
+// stored session token (the Store's first WS connect included), so a cold
+// click from a hosted Telegram link lands already authenticated instead of
+// racing the login screen. See client.ts's consumeHandoffToken for the why.
+consumeHandoffToken();
 
 setupPwa();
 
