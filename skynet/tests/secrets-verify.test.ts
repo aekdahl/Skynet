@@ -123,6 +123,16 @@ describe("verifyProviderCredential", () => {
     expect((init as RequestInit).headers).toMatchObject({ "x-api-key": "sk-ant-bad" });
   });
 
+  it("aider — verified the same way as claude/opencode (its stored key is injected as ANTHROPIC_API_KEY)", async () => {
+    mockResponse(false, { type: "error", error: { type: "authentication_error", message: "invalid x-api-key" } });
+    const result = await verifyProviderCredential("aider", "sk-ant-bad");
+    expect(result.ok).toBe(false);
+    expect(result.message).toBe("invalid x-api-key");
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe("https://api.anthropic.com/v1/models");
+    expect((init as RequestInit).headers).toMatchObject({ "x-api-key": "sk-ant-bad" });
+  });
+
   it("kimi — a bad key hits Moonshot's OpenAI-compatible models endpoint (real captured error shape)", async () => {
     mockResponse(false, { error: { message: "Invalid Authentication", type: "invalid_authentication_error" } });
     const result = await verifyProviderCredential("kimi", "sk-moonshot-bad");

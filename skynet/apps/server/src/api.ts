@@ -24,11 +24,13 @@ import {
   DryRunPolicyRequest,
   ProviderId,
   ResolveRequest,
+  ResolveBatchRequest,
   ChatRequest,
   SavePolicyVersionRequest,
   InformRequest,
   UpdateFeatureRequest,
   UpdateMilestoneRequest,
+  UpdatePlanRequest,
   UpdateProjectRequest,
   UpdateProjectRoadmapRequest,
   ProposeRoadmapChangeRequest,
@@ -72,6 +74,8 @@ import {
   NoReviewerAvailableError,
   NothingToReviewError,
   NoTriageTargetError,
+  NoOpenBakeoffReviewError,
+  BakeoffAlreadyJudgedError,
   type Orchestrator,
 } from "./orchestrator.js";
 import {
@@ -132,6 +136,8 @@ function fail(reply: FastifyReply, err: unknown): FastifyReply {
     err instanceof NoReviewerAvailableError ||
     err instanceof NothingToReviewError ||
     err instanceof NoTriageTargetError ||
+    err instanceof NoOpenBakeoffReviewError ||
+    err instanceof BakeoffAlreadyJudgedError ||
     err instanceof ProposalAlreadyResolvedError ||
     err instanceof VersionConflictError
   ) {
@@ -387,6 +393,22 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
     try {
       return await ops.resolveHitl(ws(req), req.params.id, body.data, req.principal!.operatorId);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
+  // Gate batching — resolve several open decisions (same repeatable
+  // command-approval gate raised across N runs) in one call. A distinct
+  // static route, not `/api/hitl/:id/resolve` with a list — Fastify's router
+  // matches static segments before parameterized ones regardless of
+  // registration order, so there's no ambiguity between the two.
+  app.post("/api/hitl/resolve-batch", async (req, reply) => {
+    const body = ResolveBatchRequest.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+    try {
+      const { ids, ...rest } = body.data;
+      return await ops.resolveHitlBatch(ws(req), ids, rest, req.principal!.operatorId);
     } catch (err) {
       return fail(reply, err);
     }
@@ -1171,6 +1193,19 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     }
   });
 
+  // Manual "Judge now" — the bake-off sibling of "Request review" above: force
+  // the N-way comparison pass on an in-flight cross-vendor bake-off now,
+  // rather than waiting for a periodic tick to find every sibling finished
+  // and an eligible judge idle at the same moment. Same honest-409 shape.
+  app.post<{ Params: { id: string; tid: string } }>("/api/projects/:id/tasks/:tid/request-bakeoff-review", async (req, reply) => {
+    try {
+      await ops.requestBakeoffJudgment(ws(req), req.params.tid);
+      return reply.code(204).send();
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
   // Manual "Request re-triage" — force a fresh triage pass on a task already
   // parked in `triage`, instead of waiting for it to cycle back through
   // Backlog on its own. 409s with a specific, honest reason (not in triage /
@@ -1426,6 +1461,24 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
     }
   });
 
+  // ── the living Plan (Product Steward Phase 1) ─────────────────────────
+  app.get<{ Params: { id: string } }>("/api/projects/:id/plan", async (req, reply) => {
+    try {
+      return await ops.getProjectPlan(ws(req), req.params.id);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+  app.patch<{ Params: { id: string } }>("/api/projects/:id/plan", async (req, reply) => {
+    const body = UpdatePlanRequest.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: body.error.flatten() });
+    try {
+      return await ops.updateProjectPlan(ws(req), req.params.id, body.data, req.principal!.operatorId);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
   // ── project roadmap doc (ROADMAP.md, read straight from the bound repo) ──
   // Scenario coverage for the project's checked-out branch (read-only scan).
   app.get<{ Params: { id: string } }>("/api/projects/:id/quality", async (req, reply) => {
@@ -1542,6 +1595,18 @@ export async function registerApi(app: FastifyInstance, deps: ApiDeps): Promise<
   app.get("/api/roadmap-rollup", async (req, reply) => {
     try {
       return await ops.getWorkspaceRoadmapRollup(ws(req), req.principal!);
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
+  // ── autonomy telemetry dashboard (ZTMR / HITL volume / resolution time) ──
+  // Read-only rollup, no new write path — see Operations.getAutonomyTelemetryRollup.
+  // Same project-scoping as the roadmap roll-up just above.
+  app.get<{ Querystring: { days?: string } }>("/api/autonomy-telemetry", async (req, reply) => {
+    const windowDays = req.query.days ? Number(req.query.days) : undefined;
+    try {
+      return await ops.getAutonomyTelemetryRollup(ws(req), req.principal!, windowDays);
     } catch (err) {
       return fail(reply, err);
     }

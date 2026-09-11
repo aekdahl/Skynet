@@ -30,8 +30,9 @@ funnel; governance is the launch wedge; portable, open memory is the moat.**
 found these rare-to-absent), and where they live:
 1. **Open portable memory — one second brain across every agent** (v4; thin v0 in v1.5): user-owned,
    cross-vendor, exposed as an **MCP memory server any tool can read/write, even outside Skynet**.
-2. **Cross-vendor consensus runs** (v1.5, fan-out+diff+merge landed): same task on 2+ providers, auto-diff,
-   keep/merge the winner. Having them peer-review each other instead of a human picking is still open.
+2. **Cross-vendor consensus runs** (v1.5, landed): same task on 2+ providers, auto-diff, and an eligible
+   fleet agent peer-reviews the siblings and picks a winner (a human still confirms unless the project
+   is autonomous) — keep/merge follows automatically.
 3. **Prompt-injection / tool-poisoning firewall** (v1, landed): gate tool calls steered by untrusted content the
    agent read (issue / web page / dependency). The category's first agent-security layer.
 4. **Provably-improving fleet** (v5): measure which memory + task phrasings one-shot vs. churn, promote
@@ -45,8 +46,9 @@ found these rare-to-absent), and where they live:
 largely shipped)** — ship in this order:
 **(1) Security + reliability debt** — the 7 Aug-2026 security findings and the task-write-atomicity race
 are both *confirmed, pre-existing* issues (one already caused real data loss) with broad blast radius;
-close these before anything else compounds on top of them. **(2) Memory v0** (nothing has shipped here
-yet, and it's the wedge that keeps us from being "just another orchestrator") — **Cross-vendor consensus
+close these before anything else compounds on top of them. **(2) Memory v0** (phases 1+2 have now
+shipped — operator-authored + decision-derived facts, both injected and exportable; only the
+workspace-scoped MCP server and v4's LLM distillation remain) — **Cross-vendor consensus
 runs**' fan-out+diff+merge has now landed; only the peer-review half remains. **(3) v1.5 ease-of-use** (the remaining
 operator-ergonomics/design-token tail) **+ desktop code-signing** (the last GTM
 blocker on the committed release — mac auto-update silently no-ops without it). Provider breadth and the
@@ -63,7 +65,7 @@ Items are ranked PMF > Platform > Product within each batch:
 | | 3 | ✅ Memory v0 phase 1 — shipped, PR #656 (see v1.5 section) | Platform |
 | | 4 | Memory v0 phase 2 — decision-derived fact capture from `hitl_audit` | Platform |
 | | 5 | Manager/worker UI — Subway/Roster lines + an Inbox filter for the shipped `spawn_worker` hierarchy (see v2 section) | Platform |
-| | 6 | deep-review / breaker-review settings UI toggle (both already built, PATCH-API-only today) | PMF |
+| | 6 | ✅ deep-review / breaker-review settings UI toggle — already shipped (PR #487, refined #530), not PATCH-API-only | PMF |
 | | 7 | Mass inform — Fleet/Project UI (multi-select + whole-project) | Product |
 | | 8 | ✅ First-run onboarding telemetry — shipped, PR #653 | PMF |
 | **N+1** | 1 | Cross-vendor consensus runs (same task, 2+ agents, auto-diff) — unblocked now that provider breadth has landed | Platform |
@@ -180,9 +182,16 @@ Ordered by priority (urgent bug → launch-wedge remainder → product debt → 
 - [~] **Deeper runner-capability surfacing** — pull more native capability through the `runner-sdk`
   seam. Landed: real plan steps, token/cost telemetry, a Claude plan-mode HITL gate, token-by-token
   streaming (Claude/Gemini/Cursor), a per-project `disallowedTools` deny-list, structured diffs in
-  review, and Copilot's move to real structured-event dispatch. **Remaining:** a full `allowedTools`
-  allow-list (the safer deny-list landed first, on purpose), `settingSources` (CLAUDE.md) support, and
-  token streaming for Codex/Copilot (neither exposes a chunked wire format to stream from).
+  review, Copilot's move to real structured-event dispatch, and `settingSources: ['project']` on the
+  main Claude run so a repo's own CLAUDE.md actually reaches the agent (landed in #437 — gated behind a
+  mandatory approval whenever the same repo also defines `.claude/settings.json` hooks, since the SDK
+  can't load one without the other; see `packages/runner-sdk/src/claude.ts`). **Remaining:** token
+  streaming for Codex/Copilot — confirmed vendor-blocked (both wire protocols are line-per-JSON-message,
+  not sub-message deltas), nothing to build until either vendor exposes one; not on us. A full
+  `allowedTools` allow-list is a **considered non-goal, not a TODO**: `packages/shared/src/contracts.ts`'s
+  `disallowedTools` field documents why the deny-list shipped instead of it — an allow-list risks
+  silently breaking an agent that needs a tool nobody thought to list. Not revisiting without a concrete
+  need for a stricter default.
 - [~] **Mass inform** — select multiple agents (or a whole project) and attach a note that rides the
   *next* prompt each already receives, no extra turn. Shipped: the `inform` interaction type
   (`POST /api/runs/inform`), live-session push for Claude, buffered-note delivery for the CLI runners
@@ -190,10 +199,14 @@ Ordered by priority (urgent bug → launch-wedge remainder → product debt → 
   (multi-select on Fleet, whole-project on the project page); optional "also remember" → area/workspace
   memory promotion is still v4, not started.
 - [~] **Remaining providers behind `runner-sdk`.** Codex, Gemini, Cursor, Copilot, Hermes, OpenCode,
-  and Kimi Code are all landed as real `CliRunnerProvider`s (usage/cost telemetry, argv/env wiring,
-  live-verified against each vendor's current CLI). Reactive breadth from the candidate list
-  ([docs/runner-catalog.md](docs/runner-catalog.md)) stays open-ended — no fixed target, lowest urgency
-  now that the field-trailing gap this closed is gone.
+  Kimi Code, and Aider are all landed as real `CliRunnerProvider`s (usage/cost telemetry, argv/env
+  wiring). The first seven are live-verified against each vendor's current CLI; **Aider is not** — no
+  real install/key was available when it landed, so its flags/usage-line parsing are inferred from
+  Aider's own docs, not a captured run — and it carries a real capability gap, not just an unverified
+  one: `--yes-always` doesn't auto-run shell commands the model proposes
+  ([issue #3903](https://github.com/Aider-AI/aider/issues/3903), open), only edits. Verify live before
+  leaning on it. Reactive breadth from the candidate list ([docs/runner-catalog.md](docs/runner-catalog.md))
+  stays open-ended — no fixed target, lowest urgency now that the field-trailing gap this closed is gone.
 - [x] **UI system polish (P2 of [docs/ux-review.md](docs/ux-review.md)).** Landed: untangled
   `--accent`/`--warn` (were an accidental hex duplicate), a real Lucide-based nav icon set, motion
   tokens (`--motion-fast`/`--motion-base`), a real `:active` press state + a global `:focus-visible`
@@ -208,10 +221,19 @@ Ordered by priority (urgent bug → launch-wedge remainder → product debt → 
 - [~] **🔗 Per-project live preview — "see what it builds", any software.** Phase 1 (web/sites) shipped:
   project + per-run preview managers, descriptor→heuristic→agent-assisted recipe resolution
   (`.skynet/preview.json`), refresh-on-merge, and a resizable split-screen dock ⇄ modal reachable from a
-  phone via a `/p/<token>/` reverse proxy (Host-rewrite, HMR bridged). **Remaining:** Phase 2 (a
-  service-container runtime + auto-rebuild on merge, for apps with a server/API, not just static sites)
-  and Phase 3 (command/artifact preview kind — "run it and show the result", for non-web software).
-  Full design: [docs/live-preview.md](docs/live-preview.md).
+  phone via a `/p/<token>/` reverse proxy (Host-rewrite, HMR bridged). **Phase 3 shipped: the `command`
+  preview kind** — a `.skynet/preview.json` with `kind:"command"` runs a `command` to COMPLETION
+  (sandboxed + command-safety-gated, same as an install/build step) instead of spawning a server, and
+  the `LivePreviewModal` renders a result panel (exit code, always-visible output, declared `artifacts`
+  globs rendered inline by type — image/PDF embedded, everything else a download link) instead of an
+  iframe/device-frame. Artifacts are served from a new public capability-URL route
+  (`/preview-artifact/<token>/*`, mirroring `/p/<token>/`'s pattern — a plain `<img>`/`<iframe>` can't
+  attach the app's bearer session header) allowlisted to exactly the files that run reported, never an
+  arbitrary worktree file. `kind` defaults to `"service"` when a descriptor omits it — zero impact on
+  existing web/service previews. **Remaining:** Phase 2's service-container runtime (hosted/v1
+  isolation, vs. today's opt-in OS sandbox — the auto-rebuild-on-merge half already shipped) and
+  `kind:"static"` (build → serve `outputDir`, reusing the old W5 builder/route machinery). Full design:
+  [docs/live-preview.md](docs/live-preview.md).
 - [~] **🔁 Task ↔ source-of-truth sync.** Tasks imported from an external source should update the
   source when their Skynet status changes. Phase 1 (done): GitHub issues import + status writeback.
   Phase 2 (done): repo checklist files (`- [ ]` items import as tasks; completing one checks the box,
@@ -230,10 +252,20 @@ Ordered by priority (urgent bug → launch-wedge remainder → product debt → 
   Apple Developer ID cert (Apple Developer Program enrollment, $99/yr) + a Windows code-signing cert
   and adding both as repo secrets — a paid/human step, not engineering. Last remaining GTM blocker on
   the committed release.
-- [ ] 🏢 **Scale + containerized runner:** Redis multi-replica fan-out; **GKE Jobs for runners** — one
-  container per agent, completing the v0 sandbox item's deferred half: memory/CPU caps (cgroups) and a
-  network egress allowlist (proxy). The command-deny, worktree write-confinement, and runtime cap
-  already ship locally. Hosted-only — not needed for the local desktop release.
+- [~] 🏢 **Scale + containerized runner.** Network-egress-allowlist slice done (PR #678,
+  `product/runner-egress-allowlist`); GKE Jobs + cgroup caps remain open. **Correction found while
+  claiming this item:** Redis multi-replica fan-out was NOT actually outstanding — `RedisBus`
+  (`apps/server/src/bus.redis.ts`) and `RedisSessionStore` (`apps/server/src/auth/sessions.redis.ts`)
+  already ship, selected via `BUS=redis`; the roadmap line was stale drift, corrected rather than
+  re-implemented. **Done:** a network egress allowlist — `packages/runner-sdk/src/egress-proxy.ts`, a
+  local CONNECT+HTTP forward proxy an operator opts into via `SKYNET_RUNNER_EGRESS_ALLOWLIST`
+  (comma-separated hostnames; blank = today's fully-open behavior, and deliberately no curated default
+  list — a wrong one would silently break runs). One proxy shared per server process; a disallowed
+  host gets a 403 with the real connection never attempted. Not hosted-only — needs no cloud infra,
+  works for any Skynet instance including the local desktop release. **Still open** (genuinely
+  hosted-only, deferred): **GKE Jobs for runners** — one container per agent, needs a real GKE cluster
+  to implement/verify — and memory/CPU caps (cgroups, Linux-only, unverifiable without a Linux host).
+  The command-deny, worktree write-confinement, and runtime cap already ship locally.
 - [ ] 🔗⛓ **Structural agent-hierarchy hooks** — `role`, `familyOf`→root, worker→manager merge (cheap,
   additive; from [docs/agent-hierarchy.md](docs/agent-hierarchy.md)). Cheap groundwork for v2; not
   urgent on its own since nothing consumes it yet.
@@ -267,12 +299,22 @@ below, plus the elevated-viewer token loophole further down) — **5 remain genu
   this (`PREVIEW_ENV_DENYLIST`/`previewEnv()`) — the Fly path never adopted the wrapper. Fix: pass
   `previewEnv()` into `deploy.ts`'s `ensureDeps`/`runToCompletion` calls.
   *Severity: High. `apps/server/src/fly/deploy.ts:233,235`.*
-- [ ] **Stop same-origin preview iframes from exposing the session token** — both preview surfaces set
-  `sandbox="allow-scripts allow-same-origin ..."` while serving agent-built content on Skynet's own
-  origin by default, so injected/malicious in-preview JS can read `localStorage`'s session token for a
-  full session hijack. Fix: drop `allow-same-origin`, or refuse to boot the preview proxy without a
-  genuinely distinct origin; longer-term, move the session token out of `localStorage`.
-  *Severity: High. `apps/web/src/components/preview.tsx:47`, `apps/web/src/views/project.tsx:2275`.*
+- [x] **Stop same-origin preview iframes from exposing the session token.** Both preview surfaces set
+  `sandbox="allow-scripts allow-same-origin ..."`; the artifact-preview route
+  (`apps/server/src/preview/route.ts`) defaults to Skynet's own origin unless an operator sets
+  `SKYNET_PREVIEW_BASE_URL`, and the live-preview reverse proxy (`preview-proxy.ts`) has no
+  separate-origin option at all — a hosted/remote-reachable install always serves it at `/p/<token>/`
+  on the console's own origin (`project-preview.ts`'s `state()`, via `publicOrigin()`) so it's reachable
+  from a phone. Same-origin plus those sandbox flags let injected/malicious in-preview JS (the previewed
+  branch is agent-built, plausibly prompt-injected) read `localStorage`'s `skynet_token` — the same
+  token driving both REST and WS auth — for a full session hijack. Fix: dropped `allow-same-origin` from
+  both iframes (`components/preview.tsx`'s `PreviewFrame`, `views/project.tsx`'s `LivePreviewModal`) —
+  the framed document now gets an opaque origin regardless of the URL it's served from, so previewed
+  code still runs (scripts/forms/popups/modals all still allowed) but can never read this origin's
+  storage. Verified manually: both iframes still render/run; no code (frontend or server) reads or
+  asserts the sandbox string, so nothing else depended on the dropped flag. Moving the session token out
+  of `localStorage` entirely stays a longer-term follow-up, not done here.
+  *Severity: High. `apps/web/src/components/preview.tsx`, `apps/web/src/views/project.tsx`.*
 - [ ] **Bring `.skynet/preview.json` build/install commands under the command-safety gate** — the
   live-preview `install` step always runs unsandboxed, and `dev`/`start` only sandboxes behind an
   off-by-default flag (and even then it's write-confinement only, not a real boundary). This executes
@@ -311,12 +353,18 @@ below, plus the elevated-viewer token loophole further down) — **5 remain genu
   unrelated self-escalation guarantee — still passed, a precise regression proof rather than a blanket
   one), restored.
   *Severity: High. `apps/server/src/auth/routes.ts:216-252`.*
-- [ ] **Validate `path` against traversal in the GitHub Contents API calls** — `getFile`/`putFile`
-  concatenate the Contents API URL with no `..`-segment rejection, so a crafted `path` can retarget the
-  request at a different repo; `import_repo_file` (an MCP tool, nominally project-confined) and
-  `resync_source`/`commitRepoFile` both replay it unvalidated, giving a write leg too. Fix: reject any
-  `path` containing a `.`/`..` segment before it reaches `getFile`/`putFile`
-  (and `readRepoFile`/`listRepoRoot`), and percent-encode each segment individually.
+- [x] **Validate `path` against traversal in the GitHub Contents API calls.** Fixed (PR #665,
+  `security/github-contents-path-traversal`). `getFile`/`putFile` concatenated the Contents API URL
+  with no `..`-segment rejection, so a crafted `path` could retarget the request at a different repo
+  entirely (`fetch`'s URL parser normalizes dot-segments); `import_repo_file` (an MCP tool, nominally
+  project-confined) and `resync_source`/`commitRepoFile` both replayed it unvalidated, giving a write
+  leg too. Closed with one choke point, `safeRepoPath()` (`provider.ts`), applied at every real
+  Contents API call site: `getFile`/`putFile`, and `GitHubService.readRepoFile`'s own separate `fetch`
+  call — `listRepoRoot` takes no `path` param so needed no change. Rejects (throws) any `.`/`..`/empty
+  segment and percent-encodes each segment individually, so an encoded slash inside one segment can't
+  smuggle in an extra path level. `tests/github-contents-path-traversal.test.ts` proves `getFile`/
+  `putFile` reject a traversal path BEFORE `fetch` is ever called, not just that the eventual response
+  is safe.
   *Severity: High. `apps/server/src/github/provider.ts:211-231`, `apps/server/src/mcp/tools.ts:514`.*
 
 Two related findings landed just under the confidence bar (≥8 kept; these hit 7) and are tracked as
@@ -350,13 +398,16 @@ consensus runs just got unblocked), then remaining ease-of-use work, then the lo
   v0 MCP tools that already ship under v4 (`list_memory`/`add_memory`/`delete_memory`/`refresh_memory`).
 
 **⭐ Cross-vendor consensus runs (signature bet):**
-- [~] Fire the same task at 2+ providers in parallel, each in its own worktree off the same base
+- [x] Fire the same task at 2+ providers in parallel, each in its own worktree off the same base
   commit, auto-diff the results, and keep/merge the winner — landed (`Orchestrator.startBakeoff`,
   `TaskRun`/`Task`/`HitlItem.bakeoffId`, the "Bake-off ⇉" board action + N-way comparison view). The
   vendor-neutral seam is what makes true cross-*vendor* bake-offs possible (rivals' "councils" are
-  single-tool). Having them **peer-review each other** instead of a human picking is still open — the
-  schema (a bare `bakeoffId` grouping key, not a rigid one-shot entity) was deliberately left room for
-  it, but the review pipeline itself isn't built.
+  single-tool). **Peer-review now also landed**: an eligible non-participant fleet agent
+  (`Orchestrator.autoJudgeBakeoff`) compares every sibling's diff summary and picks a winner —
+  ALWAYS records `Task.bakeoffVerdict` as an audit trail (an unreadable reply flags for a human,
+  never guesses), and only auto-resolves the pick when the project is autonomous, same lever
+  `autoReview` already uses. A human can still force it on demand ("Judge now") or just pick manually
+  — the agent's recommendation is shown, never forced.
 
 **Easier to use than anyone else:**
 - [~] **Project assistant → co-operator (actions from chat).** Steward (the shared brain,
@@ -404,14 +455,23 @@ via a `spawn_worker` tool; risk-based escalation; worker→manager→project mer
   Subway and Roster views, an Inbox filter for gates a manager auto-resolved (so a human can audit them
   without them cluttering the main queue), and a real "start a manager" flow in place of the raw
   `assignManager` API call.
-- [ ] **Agent-to-agent handoff on feature completion** — when a Feature reaches `shipped`, or a
-  milestone flips to `shipped`, the orchestrator fans out to configured **role-agents**: a
-  **change-manager** commits the CHANGELOG.md entry (HITL-gated diff), a **docs-writer** updates
-  user-facing docs from the feature's task descriptions + diff, a **release-comms** agent drafts the
-  announcement. Each handoff is a directed variant of `mass-inform` (v1) — a fresh scoped brief, still
-  gated end-to-end. **The joinpoint already exists** (`feature.upserted`/`milestone.upserted` with
-  `status:"shipped"` are real events today); v2's work is turning them into a configurable role-agent
-  fan-out map per project.
+- [x] **Agent-to-agent handoff on feature completion** — landed. `Project.roleAgents` is the
+  configurable fan-out map (a specific agent id per role, all off by default);
+  `startFeatureShipHandoff` subscribes to the existing `feature.upserted`/`milestone.upserted` bus
+  events and fires on a genuine `!== "shipped" -> "shipped"` transition (not every upsert). A
+  **change-manager** drafts a CHANGELOG.md entry (deterministically spliced under the first heading,
+  never LLM-placed); a **docs-writer** updates README.md from the shipped work's task descriptions
+  (v1 scope: one fixed target file per file-writing role, not open-ended doc discovery — a project's
+  own doc structure varies too much to pick reliably; broader targeting is a natural follow-up); a
+  **release-comms** agent drafts an announcement (prose only, no file — approving just finalizes the
+  draft for the operator to copy elsewhere). All three raise a `handoff` HITL — its payload frozen
+  onto the item at draft time (no live-refetch machinery needed, unlike a roadmap proposal: a
+  one-shot draft with no ongoing lifecycle another actor could change out from under it) — approve
+  commits for the two file-writing roles (reusing `commitLocalRepoFile`/`githubService.commitRepoFile`,
+  the same local-vs-GitHub commit path the roadmap-proposal apply flow already established), reject
+  just resolves. No settings UI yet for `roleAgents` (PATCH-API-only, same as the still-open
+  deep-review/breaker-review toggle in the v1.5 priority table above) — set it via the project's
+  `PATCH /api/projects/:id` endpoint for now.
 - [ ] **⭐ North star: the auto dev team.** The endgame of the hierarchy is **Charter → Blueprint →
   Plan**: project intake is an LLM-assisted **Charter** (goals, non-goals, risks, done-definition —
   human-approved, G-1); from it Skynet proposes a **Team Blueprint** (Chief of Staff, Spec Analyst,
@@ -426,6 +486,29 @@ via a `spawn_worker` tool; risk-based escalation; worker→manager→project mer
   overspending" primitives this endgame needs.
   Full sketch: [docs/dev-team-blueprint.md](docs/dev-team-blueprint.md) (phased: Charter rides v1.5 ·
   CoS+Leads+QA ride v2 · Security/Spec/Scribe ride v1 governance + v3 triggers · Curator/retro ride v4/v5).
+- [ ] **Team Blueprint v0** — turn "start a manager" into a sized-team proposal (Gate G0). Today's
+  `assignManager` takes one area and spins up a single manager (see "Manager/worker UI" above); this
+  raises ONE `plan` HITL proposing "N area leads + M developers + QA on/off" sized to the project's
+  charter + module map, which the operator approves/edits/strips to a single dev before anything
+  hires. No new gate type — reuses `plan`; no new UI surface — replaces the current
+  `ManagerAreaPicker` with a real sizing proposal.
+- [ ] **QA role, surfaced** — ship the settings UI toggle for `Project.deepReview`/`.breakerReview`
+  (both already built server-side, PATCH-API-only today — see the batch-N item above), formalize a
+  dedicated QA role (an agent scoped to review, not just "whichever fleet agent is free"), and make
+  the verifier gate (tests green before human diff review) first-class in the pipeline — the
+  blueprint's G4.
+- [ ] **Chief-of-Staff-lite** — given an approved Charter, propose epics → milestones → tasks with
+  dependency order and honest estimate ranges as ONE `plan` HITL; approving creates the backlog.
+  Reuses existing Feature/Milestone/Task entities and the `plan` HITL machinery — no new schema.
+- [ ] **Standup digest** — the CoS posts a daily/per-session summary (shipped, in-flight,
+  blocked-on-you, spend vs. budget), riding the existing report/mass-inform seam and the cost
+  roll-ups `home-metrics.ts` already computes — no new aggregation.
+- [ ] **Team page** — a per-project page rendering the hired roles as an org chart (mandate, budget
+  burn, and delegation policy for each) — the "you can see the team" half of §5's operator experience.
+- [ ] **Delegated-gate Inbox/Audit filter, generalized** — extends the "Manager auto-resolves" Audit
+  filter (Manager/worker UI above, keyed on the literal `manager:<id>` operator-id prefix) to every
+  role-delegated gate as more roles land (`lead:<id>`, `qa:<id>`, `security:<id>`, …) — the audit trail
+  that keeps a shrinking Inbox honest.
 - **🔗 Product steward & the living Plan** — the concrete substrate under the north star: a
   first-class, **versioned Plan entity** (the durable roadmap the steward maintains — the proper
   replacement for the AI's throwaway `ROADMAP.md`/`PLAN.md` scratch files in the repo) plus a
@@ -441,16 +524,61 @@ uses the **user's own accounts** (their Sentry, GitHub, LLM key) — Skynet is t
 supervision layer, it doesn't host or resell those services. 3 items shipped (the enabling
 inbound-trigger primitive, Skynet as an MCP server, GitHub Issues two-way sync) — see
 [the archive](ROADMAP-ARCHIVE.md#v3--triggers--integrations).
-- [ ] **Tools via MCP:** an agent gets scoped tools (GitHub / Sentry / Slack MCP) to act back into the
-  user's services. A "Sentry agent" = a coding agent + Sentry MCP + a Sentry webhook trigger.
+- [x] **Tools via MCP:** an agent gets scoped tools (GitHub / Sentry / Slack MCP) to act back into the
+  user's services. Shipped: a generic, operator-configurable custom-MCP-server store (stdio command or
+  remote URL, either transport — Integrations → "Custom MCP servers"), a per-project opt-in grant, and
+  wiring into every stdio-capable runner vendor (Claude, Codex, Gemini, Cursor, Copilot — merged
+  alongside the existing browser-MCP mechanism; Hermes/Kimi/OpenCode have no MCP mechanism at all and
+  stay unsupported). Plus the concrete "Sentry agent" proof case: a Sentry webhook (issue created → task,
+  mirroring the GitHub issues webhook) bound per project by org/project slug. GitHub and Slack MCP
+  servers work the same way today (paste the command/URL) — GitHub already had its own inbound trigger
+  (the issues webhook, archived above); Slack has neither an MCP server nor a trigger wired by Skynet
+  itself yet, just the generic building block. See [docs/integrations-catalog.md](docs/integrations-catalog.md)
+  for the security tradeoff (a write-capable server acts outside Skynet's own git guardrails).
 - [ ] **Feedback-loop responders (route back to the *originating* run)** — a CI failure, a PR review comment, or a
   merge conflict re-engages the **same** agent that produced the branch (self-healing), not a fresh run.
   *(Agent Orchestrator-style; ties directly to the responders below.)*
-- [ ] **Interop surface (adopted)** — beyond `/mcp`, expose the fleet via an **OpenAI-compatible endpoint + REST**
-  so external tools can drive it as a model/service. *(claw-orchestrator-style; broadens who can call Skynet.)*
+- [x] **Interop surface (adopted).** Beyond `/mcp`, the fleet is already reachable via an OpenAI-compatible
+  endpoint and a plain REST job-submission API (`apps/server/src/interop/{openai,rest}.ts`, wired into
+  `index.ts` — confirmed live on `main` before this entry, code was already there). **OpenAI-compat**:
+  `GET /v1/models` lists the caller's projects as models; `POST /v1/chat/completions` turns the last
+  `user` message into a task (earlier turns fold into the task's `description` as context — "one
+  completion = one task", no server-side thread, since the wire format has no field naming an existing
+  Skynet run to resume), assigns it, and blocks (or streams as SSE, with the real `{runId,taskId}` handle
+  riding the FIRST chunk as a non-standard-but-additive field) until the run reaches `done`/`review`,
+  rendering the outcome — diff summary included — as the assistant's reply. **REST**: `GET /v1/projects`,
+  `GET /v1/runs` (filterable by `projectId`/`status`, paginated), `POST /v1/runs` (plain `{projectId,
+  text}` job submission, 201 + a run handle, no chat-message wrapper), `GET /v1/runs/:id` (optional
+  `?diff=true`). Both surfaces share `/mcp`'s exact auth (bearer service token) and project-scoping
+  (`mcp/project-scope.ts` — a project-scoped token only ever sees/targets its own projects; an
+  out-of-scope target reads as 404 "unknown model"/run-not-found rather than a 403 that would leak the
+  target's existence). **Found and closed**: despite being fully implemented, this had ZERO test coverage
+  anywhere in the repo (confirmed by grep before writing any) — `tests/interop.test.ts` now drives the
+  real Fastify routes + a real Orchestrator against a throwaway git repo (same harness shape as
+  `full-loop.test.ts`), not mocks: a real task+run created from a chat completion, prior-turn context
+  folding, SSE streaming shape, project-name matching, REST job submission + listing/pagination/filtering,
+  and project-scope enforcement on every route in both directions (a scoped token's own work is visible,
+  everything else reads as not-found). **A real bug caught while writing the harness, not in the shipped
+  code**: an early draft of the test file statically imported `registerApi`/`registerOpenAiCompat`/
+  `registerInteropRest` at the top of the file, which transitively load `config.ts` (reads
+  `SKYNET_INTEGRATION_REPO`/`SKYNET_WORKTREES_DIR` once into a plain object at module-EVAL time, not
+  lazily) BEFORE the test's own `beforeAll` had set those env vars — every "real diff" test silently
+  self-completed straight to `done` with no worktree, no branch, no HITL ever raised, since the
+  orchestrator was running against an unconfigured integration repo the whole time. Fixed by making every
+  server-side import dynamic inside `beforeAll` (same discipline `full-loop.test.ts`/
+  `merge-conflict-ask-agent.test.ts` already use, now documented in this file's own top comment for the
+  next person who reaches for a "just add one static import" shortcut).
 - [ ] **Candidate responders:** Sentry regression → fix PR · GitHub issue → PR · PR review · CI-failure
   fix · Dependabot/CVE patch+fix · PagerDuty/Datadog incident triage · support ticket → bug task.
 - [ ] Tier-2 API agents (Devin, Jules — see runner-catalog) plug in here as delegated remote workers.
+- [ ] **Security Officer role** ([docs/dev-team-blueprint.md](docs/dev-team-blueprint.md) §2) — a
+  dedicated diff scanner (secrets, injection, dependency risk) wired to the existing prompt-injection
+  firewall + safety classifier, hard-blocking on findings; a role, not a new detection engine. Gate G5.
+- [ ] **Spec Analyst role** — formalizes Charter-drafting (already a one-shot call, shipped) into a
+  persistent role that also runs the task-linter (v1.5) on vague asks and raises clarifying
+  `question`s before work starts. Gates G-1/G1.
+- [ ] **SRE/Ops role** *(blocked on the inbound-trigger primitive above)* — watches CI/incidents/
+  alerts, files fix tasks with context, and routes failures back to the originating run.
 
 ## v4 — Moat Layer: Portable cross-vendor memory (M1)  🔗
 User-owned memory that no single vendor can match, because everything streams through Skynet.
@@ -475,6 +603,11 @@ spec's file format) — see [the archive](ROADMAP-ARCHIVE.md#v4--moat-layer-port
   operator-authored + decision-derived facts, add a Skynet-side curating LLM later. Spike writeup
   (pipeline shape, guardrails against a fabricating/over-generalizing corpus, eval approach, phasing):
   [docs/memory-distillation.md](docs/memory-distillation.md).
+- [ ] **Memory Curator role** ([docs/dev-team-blueprint.md](docs/dev-team-blueprint.md) §2) — the role
+  wrapper around the distillation work above: promotes approve-with-memory decisions and retro
+  outcomes (once the retro loop below ships) into portable facts, and syncs them into repo-native
+  files (the "manage repo-native memory too" bullet above) — same distillation intelligence, framed
+  as a persistent team member instead of a background job.
 
 ## v5 — Moat Layer: Agent fluency (M2)  🔬🔗
 Help users run **more agents with clearer tasks** — the flywheel (better results + more usage).
@@ -487,6 +620,13 @@ Help users run **more agents with clearer tasks** — the flywheel (better resul
   moat visible and compounds with v4.
 - [ ] 🔬 The coach is **LLM-based** (critiques tasks, proposes decompositions); open research on UX + quality.
 - [ ] Compounds with v4 — the coach learns from the workspace's own memory/history.
+- [ ] **Retro loop → CoS estimate calibration** ([docs/dev-team-blueprint.md](docs/dev-team-blueprint.md)
+  §4) — feeds actual tokens/time per task back into the Chief-of-Staff-lite's (v2) estimate ranges, so
+  milestone estimates get honest with use instead of staying guesses. The measurement half is the
+  "provably-improving fleet" bullet above; this is where the fleet's own planner consumes it.
+- [ ] **Elastic team scaling** — the CoS proposes scaling ("backlog 12 deep, 2 idle runners → hire 3
+  devs?") as a `plan` gate; roles idle past a TTL auto-retire (their memory persists — the team is
+  disposable, the knowledge isn't).
 
 ## v6 — Vendor migration
 Help a user **move from one vendor to another** (Claude ↔ Codex ↔ Gemini …): carry over the

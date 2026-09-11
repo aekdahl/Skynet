@@ -8,8 +8,23 @@ team already uses into a **human-gated agent task** in Skynet.
 > connective + supervision layer: receive the signal → spin a supervised agent → act back into the
 > user's tool → human approves. Mechanism = an **inbound-trigger** (webhook → task) + **scoped MCP
 > tools** for the agent to act.
+>
+> **Security note on the scoped-MCP-tool half:** a write-capable server (e.g. a real GitHub PAT via a
+> GitHub MCP server) lets an agent act **outside** Skynet's own git-operation guardrails — PR-only
+> writes, no-force-push, the module allowlist — because those wrap Skynet's own git code path, not
+> arbitrary MCP tool calls a runner CLI makes on the agent's behalf. This is a known, accepted tradeoff
+> consistent with "the user's own account" above: Skynet supervises and surfaces the run, but a granted
+> MCP tool's blast radius is whatever that tool's own credentials allow, not what Skynet's guardrails
+> allow. The existing per-tool-call HITL approval gate (already governing browser MCP tool calls) is the
+> mitigation — no separate runtime gate distinguishes an MCP tool call from any other tool call today.
 
 Status: ⭐ high-value early · ◻ candidate. Pattern for each: **trigger → what the agent does → why include.**
+
+**Shipped**: the generic custom-MCP-server config (add any stdio command or remote URL in Integrations,
+grant it per project) and the Sentry inbound-trigger adapter — the concrete "GitHub / Sentry / Slack MCP"
+proof case ROADMAP.md names. GitHub and Slack MCP servers work today the same way (paste the command/URL
+in Integrations); they don't yet have a dedicated inbound-trigger adapter of their own (GitHub already has
+one, via the pre-existing issues webhook — see ROADMAP-ARCHIVE.md).
 
 ## Code forges (where work originates — highest-frequency triggers)
 | Integration | Trigger → action | Why include |
@@ -21,7 +36,7 @@ Status: ⭐ high-value early · ◻ candidate. Pattern for each: **trigger → w
 ## Errors & observability (turn production signal into supervised fixes)
 | Integration | Trigger → action | Why include |
 |---|---|---|
-| **Sentry** ⭐ | new error / regression → reproduce, root-cause, fix PR | The flagship "signal → fix" loop; high, visible value |
+| **Sentry** ✅ shipped | new error / regression → reproduce, root-cause, fix PR | The flagship "signal → fix" loop; high, visible value |
 | **Datadog / Grafana / New Relic** ◻ | alert/monitor → triage + proposed fix | Broaden beyond exceptions to metrics/logs |
 
 ## Incident & on-call

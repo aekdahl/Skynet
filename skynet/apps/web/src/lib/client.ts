@@ -14,6 +14,8 @@ import {
   type SafetyPolicy,
   type SecretMeta,
   type SecretAuditEntry,
+  type McpServerMeta,
+  type CreateMcpServerRequest,
   type Project,
   type ProjectCharter,
   type ProjectContextEntry,
@@ -46,6 +48,7 @@ import {
   type AutonomyOverride,
   type SourceRef,
   type Decision,
+  type Plan,
   type RoadmapDoc,
   type RoadmapLineClaim,
   type RoadmapProposal,
@@ -54,6 +57,7 @@ import {
   type ProposeRoadmapChangeRequest,
   type CommitRoadmapLineEditRequest,
   type RoadmapWorkspaceRollup,
+  type AutonomyTelemetryRollup,
   type MemoryFactSummary,
   type CreateMemoryFactRequest,
 } from "@skynet/shared";
@@ -313,6 +317,22 @@ export function resolveHitl(
   body: { action: ResolveAction; optionIndex?: number; guidance?: string; remember?: boolean; targetBranch?: string; memoryNote?: string; resetWork?: boolean },
 ) {
   return req<unknown>("POST", `/api/hitl/${id}/resolve`, body);
+}
+
+/** Gate batching — resolve several open decisions (same repeatable
+ *  command-approval gate raised across N runs, see kanban/gate-batching.ts)
+ *  in one call. `skipped` reports anything that didn't go through (already
+ *  resolved by someone else, etc.) so the Inbox can be honest about partial
+ *  batches rather than a blanket "done". */
+export function resolveHitlBatch(
+  ids: string[],
+  body: { action: ResolveAction; optionIndex?: number; guidance?: string; remember?: boolean; targetBranch?: string; memoryNote?: string; resetWork?: boolean },
+) {
+  return req<{ resolved: HitlItem[]; skipped: Array<{ id: string; reason: string }> }>(
+    "POST",
+    "/api/hitl/resolve-batch",
+    { ids, ...body },
+  );
 }
 
 // TaskRun chat / fork
@@ -606,6 +626,13 @@ export function fetchWorkspaceRoadmapRollup() {
   return req<RoadmapWorkspaceRollup>("GET", "/api/roadmap-rollup");
 }
 
+// ── autonomy telemetry dashboard (ZTMR / HITL volume / resolution time) ────
+// Scoped server-side the same way the roadmap roll-up is — no client filter.
+export function fetchAutonomyTelemetry(windowDays?: number) {
+  const qs = windowDays != null ? `?days=${windowDays}` : "";
+  return req<AutonomyTelemetryRollup>("GET", `/api/autonomy-telemetry${qs}`);
+}
+
 // ── roadmap proposal governance (TASK 30) ────────────────────────────────
 // A roadmap_edit HITL's plain approve/reject rides the existing resolveHitl
 // above (Operations.resolveHitl branches on kind itself) — no dedicated
@@ -851,6 +878,26 @@ export function fetchSecretAudit() {
   return req<{ audit: SecretAuditEntry[] }>("GET", "/api/secrets/audit");
 }
 
+// Custom MCP servers (Integrations) — the "scoped tools" roadmap "Tools via
+// MCP" gives an agent to act back into the operator's own services (GitHub/
+// Sentry/Slack/anything speaking MCP). Never returns a stored env/header
+// value, only metadata — see McpServerMeta.
+export function fetchMcpServers() {
+  return req<{ servers: McpServerMeta[] }>("GET", "/api/mcp-servers");
+}
+export function createMcpServer(body: CreateMcpServerRequest) {
+  return req<{ server: McpServerMeta }>("POST", "/api/mcp-servers", body);
+}
+export function deleteMcpServer(id: string) {
+  return req<unknown>("DELETE", `/api/mcp-servers/${id}`);
+}
+
+// Whether the inbound Sentry webhook (sentry/webhook.ts) is configured on
+// this server — drives the "not configured" warning in Integrations.
+export function fetchSentryStatus() {
+  return req<{ configured: boolean }>("GET", "/api/sentry/status");
+}
+
 // ─── Service tokens (MCP / programmatic access) ────────────────────────────
 // Scoped API tokens for runs driving Skynet over MCP. The raw token is
 // returned ONCE at creation; list only ever yields non-secret metadata.
@@ -1066,6 +1113,14 @@ export function assignTask(projectId: string, taskId: string) {
 export function startBakeoff(projectId: string, taskId: string, providerIds: ProviderId[]) {
   return req<TaskRun[]>("POST", `/api/projects/${projectId}/tasks/${taskId}/bakeoff`, { providerIds });
 }
+/** The bake-off sibling of `requestReview`: force the N-way comparison pass
+ *  now instead of waiting for a periodic tick to find every sibling finished
+ *  and an eligible judge idle at the same moment. Throws (ApiError 409) with
+ *  an honest, specific reason — not every sibling finished yet / already
+ *  judged / no judge free right now — for the caller to surface. */
+export function requestBakeoffJudgment(projectId: string, taskId: string) {
+  return req<unknown>("POST", `/api/projects/${projectId}/tasks/${taskId}/request-bakeoff-review`);
+}
 /** Answer triage's clarifying questions — appends the operator's own words to
  *  the task description and returns it to backlog for re-triage. */
 export function answerClarification(projectId: string, taskId: string, answer: string) {
@@ -1115,6 +1170,20 @@ export function updateMilestone(
 export function deleteMilestone(milestoneId: string) {
   return req<unknown>("DELETE", `/api/milestones/${milestoneId}`);
 }
+
+// ─── The living Plan (Product Steward Phase 1) ──────────────────────────────
+// One per project — the durable, versioned roadmap the steward/operator
+// maintains (docs/product-steward.md §2). Distinct from fetchProjectRoadmap
+// above, which reads raw ROADMAP.md text straight from a bound repo; this is
+// not repo-coupled and works for chat-only projects too.
+export function fetchProjectPlan(projectId: string) {
+  return req<Plan>("GET", `/api/projects/${projectId}/plan`);
+}
+/** `baseVersion` must match the Plan's current version or the write is
+ *  refused (409) — see UpdatePlanRequest's own doc comment. */
+export function updateProjectPlan(projectId: string, body: { markdown: string; baseVersion: number }) {
+  return req<Plan>("PATCH", `/api/projects/${projectId}/plan`, body);
+}
 // A project/task action the assistant proposes (confirm-first). Kept in sync with
 // AssistantAction in apps/server/src/project-assistant.ts; `summary` is the label.
 export interface AssistantAction {
@@ -1148,7 +1217,8 @@ export interface AssistantAction {
     | "start_feature"
     | "process_backlog"
     | "pause_key"
-    | "resume_key";
+    | "resume_key"
+    | "resolve_hitl";
   summary: string;
   taskId?: string;
   text?: string;
@@ -1187,6 +1257,12 @@ export interface AssistantAction {
   del?: number;
   baselineHash?: string;
   baselineSha?: string;
+  // resolve_hitl: the gate being acted on and how. `guidance` is required for
+  // modify, `optionIndex` (0-based) for option; approve/reject need neither.
+  hitlId?: string;
+  resolveAction?: "approve" | "reject" | "modify" | "option";
+  guidance?: string;
+  optionIndex?: number;
 }
 // Global Steward chat (the sidebar dock). `projectId` focuses the page you're on
 // (full project assistant + actions); omit it for a workspace-wide answer. The
@@ -1322,8 +1398,18 @@ export function refreshProjectContext(projectId: string) {
 // ─── Live preview (Phase-1: web/sites) ──────────────────────────────────────
 export type PreviewSource = "main" | "merged" | "latest";
 // "service" (Phase 2) rebuilds/restarts automatically when the fleet merges,
-// instead of relying on the dev server's own HMR — see docs/live-preview.md.
-export type PreviewKind = "web" | "service";
+// instead of relying on the dev server's own HMR. "command" (Phase 3) has no
+// server/URL at all — a finished command's exit code + artifacts ARE the
+// preview. See docs/live-preview.md.
+export type PreviewKind = "web" | "service" | "command";
+export interface PreviewArtifact {
+  path: string;
+  size: number;
+  mime: string;
+  /** Capability URL (`/preview-artifact/<token>/…`) — fetch/embed directly,
+   *  no auth header needed (mirrors the `/p/<token>/` dev-server proxy). */
+  url: string;
+}
 export interface PreviewState {
   status: "idle" | "starting" | "live" | "failed" | "stopped";
   url: string | null;
@@ -1335,6 +1421,10 @@ export interface PreviewState {
   source: PreviewSource;
   combined: { total: number; included: number; skipped: number } | null;
   kind: PreviewKind;
+  // "command" kind only (null/[] for "web"/"service"): the finished run's
+  // exit code and any declared artifacts it produced.
+  exitCode: number | null;
+  artifacts: PreviewArtifact[];
 }
 export function previewStatus(projectId: string) {
   return req<PreviewState>("GET", `/api/projects/${projectId}/preview`);

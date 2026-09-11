@@ -13,6 +13,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { rm, symlink } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { wrapForSandbox } from "@skynet/runner-sdk/sandbox";
+import { assertApprovable, scrubbedEnv } from "../command-safety.js";
 import { gitBin } from "../git-bin.js";
 
 const exec = promisify(execFile);
@@ -34,7 +36,10 @@ export function readDescriptorRaw(dir: string): Record<string, unknown> | null {
 }
 
 /** Infer the install command: descriptor override, then the lockfile's package
- *  manager, else npm. */
+ *  manager, else npm. The override reads straight from `.skynet/preview.json`
+ *  on the (unreviewed, pre-merge) branch being previewed/deployed — see
+ *  `runToCompletion`'s hardening, which is what actually makes running it
+ *  safe, not this function. */
 export function installCmd(dir: string): string {
   const desc = readDescriptorRaw(dir);
   const override = typeof desc?.install === "string" ? desc.install : undefined;
@@ -67,13 +72,36 @@ export async function prepareWorktree(gitRepo: string, dir: string, ref: string)
   return dir;
 }
 
-/** Run a setup command (e.g. install / build) to completion, streaming every
- *  line to `log`. Not sandboxed — install needs the registry; the untrusted
- *  app runtime (a dev server, or the app inside its own Fly build) is handled
- *  separately. Rejects on non-zero exit or timeout. */
-export function runToCompletion(cmd: string, cwd: string, log: (line: string) => void, timeoutMs: number, env?: NodeJS.ProcessEnv): Promise<void> {
+/**
+ * Run a setup command (e.g. install / build) to completion, streaming every
+ * line to `log`. Rejects on non-zero exit or timeout.
+ *
+ * This is the install/build step for BOTH the live preview and the Fly deploy
+ * engine, running a command that (via `.skynet/preview.json`'s `install`/
+ * `buildCmd` override, or a lockfile heuristic on the same unreviewed branch)
+ * is effectively agent-branch content — plausibly prompt-injected, and
+ * executed BEFORE a human has approved the change. So, regardless of caller:
+ *   - `assertApprovable` classifies it first — a hard-DENY pattern (the same
+ *     denylist an agent's own command gate is judged against) is refused
+ *     outright, never spawned.
+ *   - the OS write-sandbox is MANDATORY here (`force: true`), not gated
+ *     behind the fleet-wide `SKYNET_RUNNER_SANDBOX` opt-in — still
+ *     best-effort (falls back to unsandboxed, logged, if the platform/tool
+ *     is unavailable), but this call site doesn't get to skip trying.
+ *   - the environment defaults to `scrubbedEnv()` (an ALLOWLIST, not a
+ *     denylist over the server's own env) unless the caller passes its own —
+ *     a caller needing more (e.g. NODE_ENV=development for an install step)
+ *     builds it FROM `scrubbedEnv()`, not from `process.env`.
+ */
+export async function runToCompletion(cmd: string, cwd: string, log: (line: string) => void, timeoutMs: number, env?: NodeJS.ProcessEnv): Promise<void> {
+  // `async` so a synchronous throw here (CommandDeniedError) becomes a
+  // rejected promise like every other failure mode below — callers already
+  // handle this via `.catch()`, not try/catch around the call.
+  assertApprovable(cmd); // throws CommandDeniedError on a hard-denied command — never spawns
+  const wrapped = wrapForSandbox("/bin/sh", ["-c", cmd], { cwd, force: true });
   return new Promise((res, rej) => {
-    const child = spawn("/bin/sh", ["-c", cmd], { cwd, env: env ?? process.env });
+    if (wrapped.note) log(wrapped.note);
+    const child = spawn(wrapped.bin, wrapped.args, { cwd, env: env ?? scrubbedEnv() });
     const timer = setTimeout(() => {
       child.kill("SIGKILL");
       rej(new Error(`\`${cmd}\` timed out after ${Math.round(timeoutMs / 1000)}s`));
@@ -88,6 +116,50 @@ export function runToCompletion(cmd: string, cwd: string, log: (line: string) =>
       clearTimeout(timer);
       if (code === 0) res();
       else rej(new Error(`\`${cmd}\` exited with code ${code ?? "?"}`));
+    });
+  });
+}
+
+export interface RunResult {
+  code: number | null;
+  timedOut: boolean;
+}
+
+/**
+ * Like `runToCompletion`, but RESOLVES (never rejects) with the exit code —
+ * for a caller where a non-zero exit is a normal, showable RESULT (a test
+ * run's failure, a linter's findings), not an infra error that should abort a
+ * `&&`-chained setup step. Used by the "command" preview kind (see
+ * docs/live-preview.md's Phase 3): the whole point is to run the operator's
+ * command and show what happened, pass or fail.
+ *
+ * Same mandatory hardening as `runToCompletion` — `assertApprovable` (still
+ * throws synchronously on a hard-DENIED command; this is a refusal to run at
+ * all, not a "the command ran and failed" result) and the forced OS
+ * write-sandbox — since this runs the exact same class of unreviewed-branch
+ * content (`.skynet/preview.json`'s `command`).
+ */
+export async function runCommand(cmd: string, cwd: string, log: (line: string) => void, timeoutMs: number, env?: NodeJS.ProcessEnv): Promise<RunResult> {
+  assertApprovable(cmd);
+  const wrapped = wrapForSandbox("/bin/sh", ["-c", cmd], { cwd, force: true });
+  return new Promise((res) => {
+    if (wrapped.note) log(wrapped.note);
+    const child = spawn(wrapped.bin, wrapped.args, { cwd, env: env ?? scrubbedEnv() });
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGKILL");
+    }, timeoutMs);
+    child.stdout?.on("data", (b) => log(b.toString()));
+    child.stderr?.on("data", (b) => log(b.toString()));
+    child.on("error", (err) => {
+      clearTimeout(timer);
+      log(`process error: ${err.message}`);
+      res({ code: null, timedOut: false });
+    });
+    child.on("exit", (code) => {
+      clearTimeout(timer);
+      res({ code, timedOut });
     });
   });
 }

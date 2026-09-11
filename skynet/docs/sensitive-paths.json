@@ -1,0 +1,14 @@
+{
+  "$comment": "Single source of truth for 'what counts as a sensitive change', shared between apps/server/src/orchestrator.ts (the ready-to-merge/diff-review evidence) and .github/workflows/pr-risk-label.yml (the CI advisory label). Keep these in sync by editing here, not in either consumer.",
+  "sensitiveAreaPattern": "(auth|login|session|token|secret|credential|password|payment|billing|charge|invoice|migration|schema|infra|deploy|terraform|k8s|kubernetes|security|permission|rbac)",
+  "requiresHumanGlobs": [
+    { "label": "migrations/**", "pattern": "(^|/)migrations/" },
+    { "label": ".github/workflows/**", "pattern": "^\\.github/workflows/" },
+    { "label": "auth/**", "pattern": "(^|/)auth/" }
+  ],
+  "dependencyManifests": [
+    "package.json", "package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "pnpm-lock.yaml",
+    "go.mod", "go.sum", "Cargo.toml", "Cargo.lock", "requirements.txt", "Pipfile", "Pipfile.lock",
+    "pyproject.toml", "poetry.lock", "composer.json", "composer.lock", "Gemfile", "Gemfile.lock"
+  ]
+}

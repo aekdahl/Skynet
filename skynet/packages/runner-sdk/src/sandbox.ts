@@ -1,15 +1,18 @@
-// ─── Opt-in OS sandbox wrapper ─────────────────────────────────────────────
+// ─── Opt-in (or forced) OS sandbox wrapper ─────────────────────────────────
 // CLI runners spawn a vendor binary in the agent's worktree. When
-// SKYNET_RUNNER_SANDBOX is truthy AND a supported OS sandbox tool is present,
-// we wrap that spawn so the child can only *write* inside its worktree (plus
-// temp and the dirs vendor CLIs cache creds/config in). Reads and network stay
-// open, so the agent can still reach its model API and read the repo.
+// SKYNET_RUNNER_SANDBOX is truthy — or the caller passes `spec.force` — AND a
+// supported OS sandbox tool is present, we wrap that spawn so the child can
+// only *write* inside its worktree (plus temp and the dirs vendor CLIs cache
+// creds/config in). Reads and network stay open, so the agent can still reach
+// its model API and read the repo. `force` exists for a caller that must not
+// run attacker-controlled shell unsandboxed regardless of fleet-wide config
+// (see SandboxSpec.force) — the confinement itself is unchanged either way.
 //
-// Best-effort by design: if the flag is off, the platform is unsupported, or the
+// Best-effort by design: if not enabled, the platform is unsupported, or the
 // sandbox tool is missing, the command is returned unchanged with a note saying
-// why, and the runner proceeds unsandboxed rather than failing to start. This is
-// a guardrail that keeps a well-meaning agent's writes inside its worktree — not
-// a security boundary against a hostile agent.
+// why, and the caller proceeds unsandboxed rather than failing to start. This is
+// a guardrail that keeps writes inside the target directory — not a full
+// security boundary against a hostile process (reads/network stay open).
 //
 // macOS uses `sandbox-exec` (a permissive base profile with writes denied, then
 // re-allowed under specific subpaths). Linux uses `bwrap` (bubblewrap): a
@@ -22,6 +25,16 @@ import { delimiter, join } from "node:path";
 export interface SandboxSpec {
   /** The one directory the child is expected to write to (its worktree). */
   cwd: string;
+  /**
+   * Skip the `SKYNET_RUNNER_SANDBOX` opt-in check — always attempt OS
+   * write-confinement (still best-effort: falls back to unsandboxed, with a
+   * note, if the platform/tool is unavailable). For a caller that must not
+   * run attacker-controlled shell unsandboxed regardless of fleet-wide
+   * config — e.g. the live-preview/Fly-deploy install-build step, which
+   * executes `.skynet/preview.json`'s `install`/`buildCmd` straight from an
+   * unreviewed, pre-merge agent branch (see preview/worktree.ts).
+   */
+  force?: boolean;
 }
 
 export interface WrappedCommand {
@@ -84,7 +97,7 @@ function bwrapArgs(cwd: string, bin: string, args: string[]): string[] {
  * so callers (and tests) can assert the exact command that will be spawned.
  */
 export function wrapForSandbox(bin: string, args: string[], spec: SandboxSpec): WrappedCommand {
-  if (!sandboxEnabled()) return { bin, args, note: "", sandboxed: false };
+  if (!spec.force && !sandboxEnabled()) return { bin, args, note: "", sandboxed: false };
 
   const os = platform();
   if (os === "darwin") {

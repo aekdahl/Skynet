@@ -33,6 +33,7 @@ import { gemini } from "../packages/runner-sdk/src/gemini.js";
 import { buildUsage, durationFromResultUsage } from "../packages/runner-sdk/src/copilot.js";
 import { opencode } from "../packages/runner-sdk/src/opencode.js";
 import { kimi } from "../packages/runner-sdk/src/kimi.js";
+import { aider } from "../packages/runner-sdk/src/aider.js";
 import { usageFromJson } from "../packages/runner-sdk/src/cli-runner.js";
 
 describe("Codex usage parsing (real TokenCountEvent shape)", () => {
@@ -451,5 +452,79 @@ describe("Kimi Code event parsing (real -p --output-format stream-json shapes, s
   it("no live decision/message channel — -p mode runs under a fixed auto-permission policy (see file header)", () => {
     expect(kimi.encodeDecision(undefined, {})).toBeNull();
     expect(kimi.encodeMessage("anything")).toBeNull();
+  });
+});
+
+// NOT live-verified (see aider.ts file header) — these pin the behavior this
+// adapter was WRITTEN to produce, from Aider's own documented CLI reference,
+// not a captured real run. A live pass should confirm the flag names and the
+// usage-line format before this vendor is trusted the way its siblings are.
+describe("Aider CLI event parsing (documented shapes — not yet captured live, see aider.ts header)", () => {
+  it("buildArgs: one-shot --message, auto-confirm, plain non-streaming output, no auto-commits", () => {
+    const args = aider.buildArgs({
+      runId: "r1",
+      projectId: "p1",
+      task: "fix the bug",
+      model: "anthropic/claude-sonnet-5",
+      branch: "agent/r1",
+    });
+    expect(args).toEqual([
+      "--message",
+      "fix the bug",
+      "--yes-always",
+      "--no-pretty",
+      "--no-stream",
+      "--no-check-update",
+      "--no-analytics",
+      "--no-auto-commits",
+      "--no-dirty-commits",
+      "--model",
+      "anthropic/claude-sonnet-5",
+    ]);
+  });
+
+  it("buildArgs: a blank model omits --model, letting the CLI fall back to its own config", () => {
+    const args = aider.buildArgs({ runId: "r1", projectId: "p1", task: "x", model: "  ", branch: "agent/r1" });
+    expect(args).not.toContain("--model");
+  });
+
+  it("env: a per-workspace key injects ANTHROPIC_API_KEY (Aider's own default provider)", () => {
+    const env = aider.env!({ runId: "r1", projectId: "p1", task: "x", model: "anthropic/claude-sonnet-5", branch: "agent/r1", apiKey: "sk-ant-real" });
+    expect(env).toEqual({ ANTHROPIC_API_KEY: "sk-ant-real" });
+  });
+
+  it("env: no apiKey → inherit ambient env", () => {
+    const env = aider.env!({ runId: "r1", projectId: "p1", task: "x", model: "anthropic/claude-sonnet-5", branch: "agent/r1" });
+    expect(env).toEqual({});
+  });
+
+  it("parses the documented end-of-turn usage line, expanding abbreviated counts and preferring the session cost", () => {
+    const ev = aider.parseLine("Tokens: 2.3k sent, 191 received. Cost: $0.01 message, $0.03 session.", {});
+    expect(ev).toEqual({
+      kind: "usage",
+      usage: { inputTokens: 2300, outputTokens: 191, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0.03, turns: 0, durationMs: null },
+    });
+  });
+
+  it("parses a usage line with no session total by falling back to the message cost", () => {
+    const ev = aider.parseLine("Tokens: 512 sent, 64 received. Cost: $0.002 message.", {});
+    expect(ev).toEqual({
+      kind: "usage",
+      usage: { inputTokens: 512, outputTokens: 64, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0.002, turns: 0, durationMs: null },
+    });
+  });
+
+  it("a file-edit line is promoted to a tool event so progress moves", () => {
+    expect(aider.parseLine("Applied edit to app.py", {})).toEqual({ kind: "tool", label: "Applied edit to app.py" });
+    expect(aider.parseLine("Editing app.py", {})).toEqual({ kind: "tool", label: "Editing app.py" });
+  });
+
+  it("any other line passes through as a plain log line", () => {
+    expect(aider.parseLine("Aider v0.60.0", {})).toEqual({ kind: "log", line: "Aider v0.60.0" });
+  });
+
+  it("no live decision/message channel — --yes-always runs fully non-interactive (see file header)", () => {
+    expect(aider.encodeDecision(undefined, {})).toBeNull();
+    expect(aider.encodeMessage("anything")).toBeNull();
   });
 });

@@ -23,7 +23,11 @@ const referenced = new Set([...surfaces.matchAll(/api\.(\w+)/g)].map((m) => m[1]
 const ALLOW = new Set<string>([
   // transport / plumbing
   "connect", // raw WebSocket
-  "login", // real email/password → session; journeys use the dev-token path, so there's no offline flow to exercise it
+  // auth primitive (POST /api/auth/login) — real email/password → session,
+  // exchanged for a token; the local/desktop build runs open-auth (dev
+  // tokens) so no offline journey signs in — the login screen exercises it
+  // live instead. Guarded by auth-hardening.test.ts, not an operator journey.
+  "login",
   "fetchEvals", "runEval", "fetchEvalJob", "judgeSimulation", // eval + judge machinery
   // needs a live GitHub remote / OS dialog — can't run offline in a journey
   "browseFolder",
@@ -54,6 +58,11 @@ const ALLOW = new Set<string>([
   // a real scaffolded+attributed commit, cross-repo milestone grouping) is
   // covered server-side by tests/roadmap-workspace-rollup.test.ts instead.
   "fetchWorkspaceRoadmapRollup", "scaffoldProjectRoadmap",
+  // Autonomy telemetry dashboard — a read-only, workspace-wide rollup with no
+  // mutation for a journey to click through. Its derivation (ZTMR, gate
+  // volume/resolution time, breaker trips, by-project/by-detent grouping) is
+  // covered directly by tests/autonomy-telemetry-rollup.test.ts.
+  "fetchAutonomyTelemetry",
   // Memory v0, phase 1 — the project Memory tab's list+add. Needs a project
   // genuinely bound to a real git repo, same fixture gap as the roadmap
   // features above; no offline journey has one. The full read+write round
@@ -127,10 +136,6 @@ const ALLOW = new Set<string>([
   // credentials.test.ts and the live-verify call by secrets-verify.test.ts.
   "flyDeployStatus", "flyDeployStart", "flyDeployStop",
   "flyDeployRunStatus", "flyDeployRunStart", "flyDeployRunStop",
-  // auth primitive (POST /api/auth/login) — the local/desktop build runs
-  // open-auth (dev tokens), so no fleet journey signs in; auth is guarded by
-  // auth-hardening.test.ts, not an operator journey.
-  "login",
   // read-only doc render for the Roadmap page — no operator journey to exercise
   "fetchRoadmap",
   // global Steward dock chat (workspace-wide / focused-project) — needs a live
@@ -158,9 +163,6 @@ const ALLOW = new Set<string>([
   // reply, the one retry, and repairing a reply that drops/duplicates/invents
   // ids) is exercised with a stubbed `organizeAsk` in organize-board.test.ts.
   "organizeBoard",
-  // auth handshake — needs live operator credentials + a session token exchange,
-  // so it can't run in an offline journey (the login screen exercises it live)
-  "login",
   // MFA challenge exchange (POST /api/auth/mfa) — an auth primitive like `login`;
   // needs a live challenge id + code, so no offline journey exercises it (the
   // login screen drives it live).
@@ -373,6 +375,32 @@ const ALLOW = new Set<string>([
   // winner) is exercised against a real Orchestrator + throwaway git repo in
   // tests/bakeoff.test.ts.
   "startBakeoff",
+  // The bake-off sibling of requestReview: force the N-way judge pass now
+  // instead of waiting for a periodic tick. Needs the same real multi-sibling
+  // bake-off + idle judge fixture as startBakeoff above; no offline journey
+  // reproduces it. Covered against a real Orchestrator + throwaway git repo
+  // in tests/bakeoff-judge.test.ts.
+  "requestBakeoffJudgment",
+  // Governance-to-SOTA — policy-driven gate batching. Needs 2+ open
+  // approval gates sharing an identical command to mean anything; no
+  // offline journey/acceptance fixture raises two real HITL gates at once.
+  // The full round trip (Operations.resolveHitlBatch, the resolve-batch
+  // route, the "approver"-scope classification, a bad id not blocking the
+  // rest) is covered end to end against a real Fastify app + Orchestrator
+  // in tests/gate-batching-server.test.ts; the pure grouping logic that
+  // decides WHICH gates batch together is covered by tests/gate-batching.test.ts.
+  "resolveHitlBatch",
+  // Custom MCP servers (roadmap "Tools via MCP") — needs the secret store
+  // (master key) enabled, same as createCredential above; no offline journey.
+  // The store round-trip, reserved-name rejection, and the resolveMany
+  // degrade-gracefully-on-a-stale-id behavior are covered server-side by
+  // tests/mcp-servers.test.ts.
+  "fetchMcpServers", "createMcpServer", "deleteMcpServer",
+  // Whether the inbound Sentry webhook is configured on this server — a
+  // read-only Integrations status check with no state-changing journey step,
+  // same reasoning as fetchSecretAudit above. The webhook it gates on IS
+  // covered end to end by tests/sentry-webhook.test.ts.
+  "fetchSentryStatus",
 ]);
 
 describe("client API coverage", () => {

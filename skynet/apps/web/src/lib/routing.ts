@@ -46,6 +46,8 @@ export function parseHash(): RoutePatch | null {
       return { view: "designTokens" };
     case "roadmap-rollup":
       return { view: "workspaceRoadmap" };
+    case "autonomy-telemetry":
+      return { view: "autonomyTelemetry" };
     case "fleet":
       return arg ? { view: "agentDetail", agentId: arg } : { view: "fleet" };
     case "project":
@@ -99,6 +101,8 @@ export function toHash(r: {
       return "#/design-tokens";
     case "workspaceRoadmap":
       return "#/roadmap-rollup";
+    case "autonomyTelemetry":
+      return "#/autonomy-telemetry";
     default:
       return `#/${r.view}`;
   }

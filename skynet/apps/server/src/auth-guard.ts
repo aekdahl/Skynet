@@ -53,7 +53,13 @@ export function requiresAuth(url: string): boolean {
  *  through to "author" below. */
 function isApproverDecision(method: string, path: string): boolean {
   if (method !== "POST") return false;
-  return /^\/api\/hitl\/[^/]+\/resolve$/.test(path) || /^\/api\/merges\/[^/]+\/(merge|rework|update-branch|dismiss)$/.test(path);
+  // /api/hitl/resolve-batch (gate batching) is the same decision as the
+  // single-item route, just N at once — same scope requirement.
+  return (
+    /^\/api\/hitl\/[^/]+\/resolve$/.test(path) ||
+    path === "/api/hitl/resolve-batch" ||
+    /^\/api\/merges\/[^/]+\/(merge|rework|update-branch|dismiss)$/.test(path)
+  );
 }
 
 /** Requests that don't touch domain state: a personal auth action (logout),

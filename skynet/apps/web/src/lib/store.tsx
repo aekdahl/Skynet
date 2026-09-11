@@ -95,6 +95,11 @@ export interface StoreState {
   // is what an open autonomy dial watches to re-pull after a trip/lift/
   // override lands, from any operator or tab.
   autonomyRev: number;
+  // Bumps on any plan.upserted delta (Product Steward Phase 1) — the living
+  // Plan isn't held in the store either (one per project, fetched on demand
+  // like a RoadmapDoc), so the open Plan panel watches this to re-pull when
+  // it changes from another tab or (Phase 2+) the steward.
+  planRev: number;
   // The server's default approval level, so the create-project form can
   // pre-select what a new project would otherwise get. Undefined until the first
   // snapshot lands (or an older server that doesn't send it).
@@ -134,6 +139,14 @@ export interface Store extends StoreState {
     action: ResolveAction,
     extra?: { optionIndex?: number; guidance?: string; remember?: boolean; targetBranch?: string; memoryNote?: string; resetWork?: boolean },
   ) => Promise<void>;
+  // Gate batching — resolve several open decisions in one call. Returns what
+  // actually happened (never throws for a partial batch) so the Inbox can
+  // tell the operator if some of the N didn't go through.
+  resolveHitlBatch: (
+    ids: string[],
+    action: ResolveAction,
+    extra?: { optionIndex?: number; guidance?: string; remember?: boolean; targetBranch?: string; memoryNote?: string; resetWork?: boolean },
+  ) => Promise<{ resolved: HitlItem[]; skipped: Array<{ id: string; reason: string }> }>;
   sendAgentMessage: (id: string, text: string) => Promise<string>;
   streamAgentMessage: (id: string, text: string, onDelta: (chunk: string) => void) => Promise<string>;
   // `inform` — mass-select runs (explicit ids and/or a whole project's live
@@ -201,6 +214,11 @@ export interface Store extends StoreState {
       flyCredentialId?: string | null;
       // Which provider keys the project may run on (credential ids; empty = all).
       enabledRunnerCredentialIds?: string[];
+      // Custom MCP servers this project's agents get; see Project.mcpServerIds.
+      mcpServerIds?: string[];
+      // Sentry org/project slug binding for the inbound webhook trigger; null
+      // clears it. See Project.sentryProject.
+      sentryProject?: { org: string; project: string } | null;
       syncSourceStatus?: boolean;
       // Phase 3 generic webhook destination/secret; null clears each back to
       // "not configured" / "unsigned". See Project.externalWebhookUrl.
@@ -303,6 +321,8 @@ export interface Store extends StoreState {
   assignTask: (projectId: string, taskId: string) => Promise<TaskRun | null>;
   // Cross-vendor consensus run: fire the task at 2+ providers in parallel.
   startBakeoff: (projectId: string, taskId: string, providerIds: ProviderId[]) => Promise<TaskRun[] | null>;
+  // Bake-off peer review: have an agent compare the siblings and pick a winner.
+  requestBakeoffJudgment: (projectId: string, taskId: string) => Promise<void>;
   dismissTaskLint: (projectId: string, taskId: string) => Promise<void>;
   answerClarification: (projectId: string, taskId: string, answer: string) => Promise<void>;
   // Momentum Board (Phase 5) — accept a suggested_subtask Proposal into a real
@@ -503,6 +523,10 @@ function reduce(state: StoreState, ev: ServerEvent): StoreState {
       // The breaker/override records live outside the store too — nudge an
       // open autonomy dial to re-fetch (see client.ts's getAutonomyDetent).
       return { ...state, autonomyRev: state.autonomyRev + 1 };
+    case "plan.upserted":
+      // The living Plan lives outside the store too (one per project) —
+      // nudge an open Plan panel to re-fetch, from any operator or tab.
+      return { ...state, planRev: state.planRev + 1 };
     default:
       return state;
   }
@@ -528,6 +552,7 @@ const EMPTY: StoreState = {
   wsPhase: "connecting",
   auditRev: 0,
   autonomyRev: 0,
+  planRev: 0,
   logDeltas: {},
 };
 
@@ -561,6 +586,7 @@ function fromSnapshot(snap: Snapshot): StoreState {
     // on mount anyway, so reset the revision rather than carrying it across.
     auditRev: 0,
     autonomyRev: 0,
+    planRev: 0,
     // Any in-flight typing preview predates this snapshot — drop it rather than
     // carry stale partial text across a reconnect.
     logDeltas: {},
@@ -696,6 +722,18 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           await api.resolveHitl(id, { action, ...extra });
         } catch (e) {
           toast(serverMessage(e, "Couldn't resolve that decision."));
+        }
+      },
+      resolveHitlBatch: async (ids, action, extra) => {
+        try {
+          const result = await api.resolveHitlBatch(ids, { action, ...extra });
+          if (result.skipped.length > 0) {
+            toast(`${result.resolved.length} of ${ids.length} resolved — ${result.skipped.length} couldn't be (already handled?).`);
+          }
+          return result;
+        } catch (e) {
+          toast(serverMessage(e, "Couldn't resolve that batch."));
+          return { resolved: [], skipped: ids.map((id) => ({ id, reason: "request failed" })) };
         }
       },
       sendAgentMessage: async (id, text) => {
@@ -976,6 +1014,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             return null;
           }
           throw e;
+        }
+      },
+      requestBakeoffJudgment: async (projectId, taskId) => {
+        try {
+          await api.requestBakeoffJudgment(projectId, taskId);
+        } catch (e) {
+          if (e instanceof api.ApiError) toast(serverMessage(e, "Couldn't judge the bake-off."));
         }
       },
       dismissTaskLint: async (projectId, taskId) => {

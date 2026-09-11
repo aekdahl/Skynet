@@ -96,7 +96,7 @@ function StewardPanel({
   // audit footer's own rows.
   onOpenTask: (id: string) => void;
 }) {
-  const { projects, runs, createTask, transitionTask, updateTask, deleteTask, archiveTask, moveTask, requestReview, resyncProjectSource, updateProject, createFeature, createMilestone, updateFeature } = useStore();
+  const { projects, runs, createTask, transitionTask, updateTask, deleteTask, archiveTask, moveTask, requestReview, resyncProjectSource, updateProject, createFeature, createMilestone, updateFeature, resolveHitl } = useStore();
   const [msgs, setMsgs] = useState<Msg[]>(thread);
   const [input, setInput] = useState(draftCache);
   const [busy, setBusy] = useState(false);
@@ -232,6 +232,10 @@ function describeOutcome(kind: string, o: StewardActionOutcome): string {
         setMsgs((m) => [...m, { role: "assistant", content: describeOutcome(a.kind, outcome) }]);
         return;
       }
+      // Governance-to-SOTA — approve-in-flow: the SAME resolveHitl every other
+      // surface (Inbox, Telegram) calls, just reached from chat.
+      case "resolve_hitl":
+        return resolveHitl(a.hitlId!, a.resolveAction!, { optionIndex: a.optionIndex, guidance: a.guidance });
       default: {
         // Exhaustiveness guard: every ProjectActionKind Steward can propose MUST
         // have a case here. Without it a confirmed action silently no-ops (the

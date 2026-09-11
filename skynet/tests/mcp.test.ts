@@ -214,21 +214,20 @@ describe("MCP solution briefs", () => {
     expect(updated.status).toBe("building");
   });
 
-  it("update_brief structurally refuses status: 'approved' — the SDK rejects it before the tool body ever runs", async () => {
+  it("update_brief structurally refuses status: 'approved' — zod's inputSchema rejects it before the tool body ever runs", async () => {
     const { client, store } = await connect(author);
     const project = json(await client.callTool({ name: "create_project", arguments: { name: "P", goal: "g" } }));
     const brief = json(await client.callTool({ name: "create_brief", arguments: { projectId: project.id, title: "T" } }));
 
-    let threw = false;
-    let result: Awaited<ReturnType<typeof client.callTool>> | undefined;
-    try {
-      result = await client.callTool({ name: "update_brief", arguments: { briefId: brief.id, status: "approved" } });
-    } catch {
-      threw = true; // some SDK versions reject invalid tool args at the transport level
-    }
-    // Either the call rejected outright, or it came back as a tool error —
-    // either way it must NOT have succeeded.
-    if (!threw) expect(result!.isError).toBe(true);
+    // update_brief's `status` field is `SolutionBriefStatus.exclude(["approved"])`
+    // (see mcp/tools.ts), so "approved" fails the registered inputSchema's own
+    // enum check. With the current SDK (^1.29.0) that surfaces as a normal
+    // CallToolResult carrying isError:true and an "Invalid arguments" message
+    // — it does NOT reject/throw at the transport level — so assert on that
+    // one actual outcome directly instead of branching on both possibilities.
+    const result = await client.callTool({ name: "update_brief", arguments: { briefId: brief.id, status: "approved" } });
+    expect(result.isError).toBe(true);
+    expect(text(result)).toMatch(/invalid arguments/i);
     // The record itself was never touched.
     expect((await store.getSolutionBrief(brief.id))?.status).toBe("draft");
   });

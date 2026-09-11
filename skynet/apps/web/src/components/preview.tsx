@@ -36,15 +36,20 @@ function PvShell({
   );
 }
 
-// The real, sandboxed preview the backend reserved for this branch (W5). The
-// iframe is sandboxed so previewed app code can't reach the console origin;
-// production should also serve previews from a separate origin (subdomain).
+// The real, sandboxed preview the backend reserved for this branch (W5). No
+// `allow-same-origin`: this URL defaults to Skynet's OWN origin
+// (SKYNET_PREVIEW_BASE_URL is opt-in — see preview/config.ts), and that flag
+// combined with allow-scripts would let previewed (agent-built, possibly
+// prompt-injected) app code read this origin's storage — including the
+// session token — for a full session hijack. Dropping it forces the framed
+// document into an opaque origin regardless of the URL it's served from, so
+// the previewed app still runs, it just can't touch this origin's storage.
 function PreviewFrame({ url, title }: { url: string; title: string }) {
   return (
     <iframe
       title={title}
       src={url}
-      sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
+      sandbox="allow-scripts allow-forms allow-popups allow-modals"
       referrerPolicy="no-referrer"
       loading="lazy"
       style={{ display: "block", width: "100%", height: 300, border: 0, background: "#fff" }}

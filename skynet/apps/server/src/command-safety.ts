@@ -335,7 +335,15 @@ export interface BoundedExecResult {
 
 const ENV_ALLOWLIST = ["PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TZ", "TERM", "USER", "LOGNAME", "SHELL", "TMPDIR"];
 
-function scrubbedEnv(): NodeJS.ProcessEnv {
+/** The safe-baseline environment for any server-initiated command over
+ *  untrusted (pre-merge, agent-branch) content — an allowlist, not a
+ *  denylist over `process.env`: a denylist only drops names it happens to
+ *  know about, so anything else the server process holds (a custom deploy
+ *  token, a third-party key set for an unrelated integration) still leaks
+ *  through. Exported so other server-initiated-command call sites (e.g. the
+ *  live-preview / Fly-deploy install-build step in preview/worktree.ts) can
+ *  share this exact baseline instead of re-deriving their own. */
+export function scrubbedEnv(): NodeJS.ProcessEnv {
   const out: NodeJS.ProcessEnv = {};
   for (const key of ENV_ALLOWLIST) {
     const v = process.env[key];

@@ -39,6 +39,8 @@ import type {
   HitlItem,
   InformRequest,
   Milestone,
+  Plan,
+  UpdatePlanRequest,
   PolicyDryRunResult,
   PolicyVersion,
   PrChecksStatus,
@@ -88,6 +90,8 @@ import type {
 } from "@skynet/shared";
 import { modelValidForProvider, ProjectCharter as ProjectCharterSchema, WorkspaceSettings } from "@skynet/shared";
 import { type AutonomyDetent, AUTONOMY_DETENT_COST_WEIGHT, detentFor, fieldsForDetent } from "@skynet/shared";
+import type { AutonomyTelemetryRollup } from "@skynet/shared";
+import { computeAutonomyTelemetryRollup } from "./autonomy-telemetry-rollup.js";
 import { DraftTaskPayload, SuggestedRulePayload, SuggestedSubtaskPayload } from "@skynet/shared";
 import { buildReplenishPrompt, parseProposedTasks } from "./steward/replenish.js";
 import { DEFAULT_AUTO_MERGE_POLICY } from "./merge-policy.js";
@@ -111,6 +115,7 @@ import { git as gitExec } from "./preview/worktree.js";
 import { ASSISTANT_MODEL, oneShotText } from "@skynet/runner-sdk/claude";
 import { flyDeploy, type FlyDeployState } from "./fly/deploy.js";
 import { githubService, parseRepoRef } from "./github/index.js";
+import type { SentryIssueSignal } from "./sentry/index.js";
 import { parseChecklist } from "./tasks/checklist.js";
 import { lintTask } from "./task-linter.js";
 import { reconcileSourceState } from "./task-sync.js";
@@ -183,6 +188,7 @@ export class RoadmapConflictError extends Error {
     this.name = "RoadmapConflictError";
   }
 }
+
 
 /** A RoadmapProposal isn't `open` — already resolved, or held for a human to
  *  untangle a conflict (Rule 4). 409. */
@@ -364,6 +370,11 @@ export class Operations {
     // for the same reason as onDriveRefill: the driver ticks in the
     // orchestrator, the thinking lives here.
     this.orchestrator.onDriveReplenish = (ws, projectId) => this.replenishBacklog(ws, projectId).then(() => undefined);
+    // Feedback-loop responders (ROADMAP v3): the rule engine's `reengage_run`
+    // action has no orchestrator reference of its own (same reasoning as
+    // onDriveRefill/onDriveReplenish above, in the other direction) — wired
+    // here since this is the one layer holding both.
+    if (this.ruleEngine) this.ruleEngine.reengageRun = (runId, note) => this.orchestrator.reengageOnFeedback(runId, note);
     this.lintConsult = deps.lintConsult ?? lintTask;
   }
 
@@ -864,6 +875,15 @@ export class Operations {
       }
       return await this.resolveRoadmapEditHitl(ws, item, input.action, operatorId);
     }
+    // v2 — a `handoff` gate has no live agent/run behind it either (raised by
+    // startFeatureShipHandoff's bus subscriber, not a live run), same
+    // never-goes-through-deliver() carve-out as roadmap_edit above.
+    if (item.kind === "handoff") {
+      if (input.action !== "approve" && input.action !== "reject") {
+        throw new Error(`A handoff can only be approved or rejected here (got "${input.action}").`);
+      }
+      return await this.resolveHandoffHitl(ws, item, input.action, operatorId);
+    }
     // A catastrophic command can NEVER be approved, even if an operator
     // fat-fingers "approve" on the gate — re-validate the command against the
     // denylist server-side and refuse before recording any decision. GATE-risk
@@ -906,8 +926,43 @@ export class Operations {
       if (input.remember && input.action === "approve" && item.kind === "approval" && item.command) {
         await this.rememberApproval(ws, item.runId, item.command, operatorId);
       }
+      // Memory v0, phase 2: a "+ Also remember" note on an approval becomes a
+      // real memory fact automatically — no operator authoring step. Never
+      // lets a memory-write failure fail the approval it rides on.
+      if (resolution.memoryNote) {
+        await this.captureDecisionMemory(ws, item, resolution).catch(() => undefined);
+      }
     }
     return resolved ?? item;
+  }
+
+  /**
+   * Gate batching — resolve N HitlItems (typically several runs raising the
+   * SAME command-approval gate) as one decision instead of clicking through
+   * each individually. Reuses `resolveHitl`'s full per-item logic/side-effects
+   * unchanged (deliver, approve-and-remember, the command denylist re-check,
+   * first-writer-wins) — this is purely a loop over it, not a parallel
+   * implementation. Best-effort per id: one already-resolved/gone/denied item
+   * doesn't block the rest of the batch (same "report what actually happened"
+   * shape as `informRuns`), so the caller can tell the operator exactly which
+   * ones went through.
+   */
+  async resolveHitlBatch(
+    ws: string,
+    ids: string[],
+    input: ResolveRequest,
+    operatorId: string,
+  ): Promise<{ resolved: HitlItem[]; skipped: Array<{ id: string; reason: string }> }> {
+    const resolved: HitlItem[] = [];
+    const skipped: Array<{ id: string; reason: string }> = [];
+    for (const id of ids) {
+      try {
+        resolved.push(await this.resolveHitl(ws, id, input, operatorId));
+      } catch (err) {
+        skipped.push({ id, reason: (err as Error).message });
+      }
+    }
+    return { resolved, skipped };
   }
 
   /** Add a standing "approve always" rule for `command` to the run's project, if
@@ -924,6 +979,52 @@ export class Operations {
     if (project.approvalRules.some((r) => normalizeCommand(r.command) === norm)) return; // de-dupe
     const rule = { id: this.uid("ar"), command: norm, riskCap: cap, createdBy: operatorId, createdAt: now() };
     await this.hub.upsertProject({ ...project, approvalRules: [...project.approvalRules, rule] });
+  }
+
+  /**
+   * Memory v0, phase 2 — every approved decision carrying a `memoryNote`
+   * ("+ Also remember") becomes a real memory fact automatically, the
+   * missing half of phase 1 (which only wrote operator-authored facts via
+   * the dedicated addMemoryFact form). Always workspace-scoped: unlike
+   * `addMemoryFact`, which lets the operator pick a scope, this has no
+   * operator input to pick one from, and `Orchestrator.memoryDigestFor`
+   * (the only place memory actually reaches a running agent today) reads
+   * just `workspace.md` and `agents/<family>.md` — a project/area-scoped
+   * fact would be captured but never fed back to an agent, undermining the
+   * "compounds from usage" point of this phase. No LLM paraphrasing (that's
+   * v4's distillation): the heading is the operator's own note, verbatim.
+   * Best-effort by design (note the caller always `.catch()`s this) — a
+   * memory-write failure (no bound repo, a git error) must never fail the
+   * approval it rides on.
+   */
+  private async captureDecisionMemory(ws: string, item: HitlItem, resolution: Resolution): Promise<void> {
+    const run = await this.store.getRun(item.runId);
+    const project = run ? await this.store.getProject(run.projectId) : undefined;
+    if (!project || (!project.repoPath && !project.repo)) return;
+
+    const relPath = memoryFilePath("workspace", memorySlug(project.name));
+    const current = await readProjectDoc(ws, project, relPath).catch(() => null);
+    const fact = {
+      id: this.uid("fact"),
+      heading: resolution.memoryNote!.trim(),
+      body: `Captured from an approve decision on "${item.title}"${run ? ` (${run.branch})` : ""}.`,
+      source: "decision" as const,
+      author: resolution.by,
+      created: new Date(resolution.at).toISOString(),
+      confidence: "derived" as const,
+      run: item.runId,
+      hitl: item.id,
+    };
+    const header = current ? undefined : newMemoryFileHeader("workspace");
+    const newContent = appendFact(current?.content ?? "", fact, header);
+    const identity = operatorGitIdentity(resolution.by);
+    const message = `Skynet: capture a decision as memory (${item.runId})`;
+
+    if (project.repoPath) {
+      await commitLocalRepoFile(project.repoPath, relPath, newContent, current?.content ?? null, message, identity);
+    } else {
+      await githubService.commitRepoFile(ws, project.repo!, relPath, newContent, current?.sha, message, project.githubCredentialId, identity);
+    }
   }
 
   // ── agent actions ───────────────────────────────────────────────────────
@@ -1146,6 +1247,14 @@ export class Operations {
     // created — the operator sees the GitHub error, not an orphaned project. A new
     // repo supersedes any local folder; the fresh repo is auto-cloned below.
     let repo = input.repo;
+    // Binding straight to a local folder is the same server-filesystem exposure
+    // /api/fs/list gates behind config.allowLocalFs (local/desktop only, MUST
+    // stay off for a hosted/multi-user deployment) — without this, any caller
+    // who can create a project could point repoPath at an arbitrary path the
+    // server process can read (e.g. "/etc"), with nothing to contain it.
+    if (input.repoPath && !config.allowLocalFs) {
+      throw new Error("Binding a project to a local folder is disabled on this server.");
+    }
     let repoPath = input.repoPath ? resolvePath(input.repoPath) : null;
     // Cloning an EXISTING repo: the operator pastes its git URL (HTTPS/SSH) — we
     // normalize it to the "owner/repo" slug and bind to it, so the existing
@@ -1224,6 +1333,11 @@ export class Operations {
       // Runner-key confinement is opt-in and set later in project settings —
       // a fresh project runs on any workspace key until narrowed.
       enabledRunnerCredentialIds: [],
+      // No custom MCP tools granted at creation — an explicit per-project
+      // grant set later in settings (see Project.mcpServerIds).
+      mcpServerIds: [],
+      // No Sentry binding at creation — set later in project settings.
+      sentryProject: null,
       // Source-of-truth write-back is opt-in (outward-facing) — enabled in settings,
       // or right here when the creation form asks for an issue import (below).
       syncSourceStatus: !!(repo && input.importGithubIssues),
@@ -1254,6 +1368,9 @@ export class Operations {
       // starts with.
       newBoardEnabled: true,
       queuedWipLimit: null,
+      // No role-agents configured at creation — set later in project
+      // settings. See Project.roleAgents.
+      roleAgents: { changeManager: null, docsWriter: null, releaseComms: null },
     };
     const created = await this.hub.upsertProject(project);
     // A brand-new workspace's first-ever project isn't covered by the rule
@@ -1273,6 +1390,11 @@ export class Operations {
     const existing = await this.store.getProject(id);
     if (!existing || existing.workspaceId !== ws) throw new NotFoundError("Project");
     // Rebinding the local folder recomputes git-backing (null clears it).
+    // Setting a NEW path (clearing to null is always fine) needs the same
+    // config.allowLocalFs gate createProject applies — see its comment.
+    if (patch.repoPath && !config.allowLocalFs) {
+      throw new Error("Binding a project to a local folder is disabled on this server.");
+    }
     const rebind =
       patch.repoPath !== undefined
         ? (() => {
@@ -1512,6 +1634,7 @@ export class Operations {
       // Triage asks for what it needs; nothing to ask before it has run.
       clarification: null,
       reviewVerdict: null,
+      bakeoffVerdict: null,
       assignment: { mode: "unassigned", agentIds: [] },
       order: inProject.length,
       archived: false,
@@ -1727,6 +1850,37 @@ export class Operations {
         text: event.issue.title,
         description: event.issue.body || undefined,
         source: { kind: "github_issue", repo: event.repo, number: event.issue.number, url: event.issue.url },
+      });
+      created++;
+    }
+    return { created };
+  }
+
+  /**
+   * The Sentry instance of the same v3 "inbound-trigger" primitive as
+   * {@link handleGithubIssueEvent} above, and structured identically: called
+   * from the verified webhook route (sentry/webhook.ts) — signature
+   * verification already happened there, so this only does the domain work.
+   * No workspace context arrives with a Sentry webhook either, so it fans out
+   * across every workspace's projects bound to that Sentry org+project
+   * (usually exactly one). A project's `sentryProject` being non-null IS the
+   * opt-in (no separate boolean, unlike GitHub's `syncSourceStatus` — see
+   * Project.sentryProject's doc comment). Dedup key is the Sentry issue id, so
+   * a redelivered webhook for the same issue is a no-op.
+   */
+  async handleSentryIssueEvent(signal: SentryIssueSignal): Promise<{ created: number }> {
+    const projects = (await this.store.listAllProjects()).filter(
+      (p) => p.sentryProject?.org === signal.org && p.sentryProject?.project === signal.project,
+    );
+    let created = 0;
+    for (const project of projects) {
+      const existing = await this.store.listTasks(project.workspaceId);
+      const already = existing.some((t) => t.projectId === project.id && t.source?.kind === "sentry_issue" && t.source.issueId === signal.issueId);
+      if (already) continue;
+      await this.createTask(project.workspaceId, project.id, {
+        text: signal.title,
+        description: signal.culprit || undefined,
+        source: { kind: "sentry_issue", org: signal.org, project: signal.project, issueId: signal.issueId, shortId: signal.shortId, url: signal.url },
       });
       created++;
     }
@@ -2525,6 +2679,17 @@ export class Operations {
   }
 
   /**
+   * Manual "Judge now" — the bake-off sibling of `requestReview` above: force
+   * the N-way comparison pass on an in-flight cross-vendor bake-off now.
+   * Throws NoOpenBakeoffReviewError / BakeoffAlreadyJudgedError /
+   * NoReviewerAvailableError (orchestrator.ts) for the honest failure modes.
+   */
+  async requestBakeoffJudgment(ws: string, tid: string): Promise<void> {
+    const task = await this.getTask(ws, tid);
+    await this.orchestrator.requestBakeoffJudgment(ws, task.id);
+  }
+
+  /**
    * Manual "Request re-triage" — force a fresh triage pass on a task already
    * parked in `triage` now, instead of waiting for it to cycle back through
    * `backlog` on its own. Throws NoTriageTargetError / NoCapacityError
@@ -2935,6 +3100,32 @@ export class Operations {
     await this.hub.deleteMilestone(mid);
   }
 
+  // ── the living Plan (Product Steward Phase 1, docs/product-steward.md) ──
+  /** The project's Plan, or an EPHEMERAL empty one (version 0, never
+   *  persisted) if nothing's been written yet — so the panel always has
+   *  something to render, and `version: 0` doubles as "no Plan exists yet"
+   *  for updateProjectPlan's baseVersion below (a real, saved Plan is never
+   *  version 0; its first write starts at 1 — see store.putPlan). */
+  async getProjectPlan(ws: string, projectId: string): Promise<Plan> {
+    const project = await this.store.getProject(projectId);
+    if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
+    const existing = await this.store.getPlan(projectId);
+    if (existing) return existing;
+    return { projectId, workspaceId: ws, markdown: "", version: 0, updatedBy: "", updatedAt: 0 };
+  }
+
+  /** Write the Plan. `input.baseVersion` is passed straight through as
+   *  store.putPlan's `expectedVersion` — the store owns both the optimistic-
+   *  concurrency check (VersionConflictError → 409, same discipline every
+   *  other versioned entity here already uses) and bumping `version`, so a
+   *  stale edit can't silently clobber one made in another tab or (Phase 2+)
+   *  by the steward — the "Plan authorship conflicts" open question's answer. */
+  async updateProjectPlan(ws: string, projectId: string, input: UpdatePlanRequest, updatedBy: string): Promise<Plan> {
+    const project = await this.store.getProject(projectId);
+    if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
+    return this.hub.upsertPlan({ projectId, workspaceId: ws, markdown: input.markdown, version: 0, updatedBy, updatedAt: now() }, input.baseVersion);
+  }
+
   // ── solution briefs (pre-work planning docs) ───────────────────────────
   // sourceConversation is a PROVENANCE breadcrumb, not a transcript — capped
   // at write time (same "assessment" truncation convention as
@@ -3217,6 +3408,7 @@ export class Operations {
         assessmentRisks: [],
         clarification: null,
         reviewVerdict: null,
+        bakeoffVerdict: null,
         assignment: { mode: "unassigned", agentIds: [] },
         order: inProject.length + i,
         archived: false,
@@ -3605,6 +3797,11 @@ export class Operations {
       output: null,
       flags: needsHuman ? ["has_deletion"] : [],
       sourceBranchOverride: null,
+      handoffRole: null,
+      handoffFilePath: null,
+      handoffBaseline: null,
+      handoffContent: null,
+      handoffDraftText: null,
     });
   }
 
@@ -3897,6 +4094,20 @@ export class Operations {
     return { rows, milestones: groupMilestones(forMilestones), noRoadmapProjects };
   }
 
+  // ── autonomy telemetry dashboard (roadmap: ZTMR / HITL volume / resolution
+  // time) ─────────────────────────────────────────────────────────────────
+  // Read-only rollup — no new write path. Thin I/O + project-scoping shell
+  // around the pure computation in autonomy-telemetry-rollup.ts (see that
+  // file for the actual field-by-field derivation and its doc comments).
+  // Same template as getWorkspaceRoadmapRollup just above: one
+  // project-scoped fan-out, one typed payload.
+  async getAutonomyTelemetryRollup(ws: string, principal: Principal, windowDays?: number): Promise<AutonomyTelemetryRollup> {
+    const allProjects = await this.store.listProjects(ws);
+    const scoped = projectScope(principal, this, ws).filterProjects(allProjects);
+    const [runs, queue, audit] = await Promise.all([this.store.listRuns(ws), this.store.listQueue(ws), this.store.listAudit(ws)]);
+    return computeAutonomyTelemetryRollup({ projects: scoped, runs, queue, audit, windowDays: windowDays ?? 30, now: now() });
+  }
+
   /**
    * "Without a file there is no roadmap — create one from the board." Writes
    * a minimal starter ROADMAP.md and points `project.roadmapPath` at it,
@@ -3945,6 +4156,47 @@ export class Operations {
       if (!proposal || proposal.projectId !== item.projectId) throw new NotFoundError("Roadmap proposal");
       if (proposal.state !== "open") throw new RoadmapProposalNotOpenError(proposal.state);
       await this.store.putRoadmapProposal({ ...proposal, state: "rejected" });
+    }
+    const resolution: Resolution = {
+      action,
+      optionIndex: null,
+      guidance: null,
+      targetBranch: null,
+      memoryNote: null,
+      resetWork: false,
+      by: operatorId,
+      at: now(),
+    };
+    const resolved = await this.hub.resolveHitl(item.id, resolution);
+    return resolved ?? item;
+  }
+
+  /**
+   * The plain (approve/reject) `handoff` HITL — v2's agent-to-agent handoff.
+   * Unlike roadmap_edit, there's no separate entity to look up or flip state
+   * on (see HitlItem.handoffRole's own doc comment for why): the whole
+   * payload already lives on `item`, so resolving the HITL IS the state
+   * change, plus — on approve, for a file-writing role only — a real commit.
+   * Release-comms has no file (`handoffFilePath` stays null): approving it
+   * just finalizes the draft for the operator to copy elsewhere, nothing to
+   * commit. Reject never touches the repo either way.
+   */
+  private async resolveHandoffHitl(ws: string, item: HitlItem, action: "approve" | "reject", operatorId: string): Promise<HitlItem> {
+    if (action === "approve" && item.handoffFilePath && item.handoffContent !== null) {
+      if (!item.projectId) throw new NotFoundError("Project");
+      const project = await this.store.getProject(item.projectId);
+      if (!project || project.workspaceId !== ws) throw new NotFoundError("Project");
+      if (!project.repoPath && !project.repo) throw new Error("This project has no bound repo to commit to.");
+      const message = `Skynet: ${item.title}`;
+      if (project.repoPath) {
+        await commitLocalRepoFile(project.repoPath, item.handoffFilePath, item.handoffContent, item.handoffBaseline, message);
+      } else {
+        const current = await readProjectDoc(ws, project, item.handoffFilePath);
+        if ((current?.content ?? null) !== item.handoffBaseline) {
+          throw new Error(`${item.handoffFilePath} changed on disk since this was drafted.`);
+        }
+        await githubService.commitRepoFile(ws, project.repo!, item.handoffFilePath, item.handoffContent, current?.sha, message, project.githubCredentialId);
+      }
     }
     const resolution: Resolution = {
       action,

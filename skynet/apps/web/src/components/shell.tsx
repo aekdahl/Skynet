@@ -27,6 +27,7 @@ import {
   MergeIcon,
   IntegrationsIcon,
   RoadmapIcon,
+  TelemetryIcon,
   SettingsIcon,
   ChevronDownIcon,
   ChevronRightIcon,
@@ -51,6 +52,7 @@ type NavKey =
   | "merges"
   | "roadmap"
   | "workspaceRoadmap"
+  | "autonomyTelemetry"
   | "settings"
   | "acceptance"
   | "simulation"
@@ -80,6 +82,8 @@ function activeNav(view: ViewName): NavKey | null {
       return "roadmap";
     case "workspaceRoadmap":
       return "workspaceRoadmap";
+    case "autonomyTelemetry":
+      return "autonomyTelemetry";
     case "settings":
       return "settings";
     case "acceptance":
@@ -405,6 +409,9 @@ export function OpSidebar({
         {/* TASK 32 — "six repos, one quarter": a workspace-wide roll-up over
             every project's ROADMAP.md the operator already has access to. */}
         {item("Roadmap Roll-up", RoadmapIcon, () => setView("workspaceRoadmap"), active === "workspaceRoadmap", "track")}
+        {/* Autonomy telemetry dashboard — ZTMR / HITL gate volume / resolution
+            time, read-only rollup over the audit trail + breaker records. */}
+        {item("Autonomy Telemetry", TelemetryIcon, () => setView("autonomyTelemetry"), active === "autonomyTelemetry", "track")}
       </nav>
       <div className="op-navsec">CONFIGURE</div>
       <nav className="op-nav">

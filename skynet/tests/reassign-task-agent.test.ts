@@ -127,6 +127,23 @@ describe("reassignTaskAgent — switch a still-live run to a specific agent", ()
     expect((await store.getRun(run.id))?.agentId).toBe("r1");
   });
 
+  it("throws when targeting the SAME agent already running the task — it's busy with this very run, never idle", async () => {
+    const { store, ops, provider, task, run } = await setup("p-same-agent");
+    const oldHandle = provider.handles.get(run.id)!;
+
+    // r1 is the agent already assigned/live on this run — acquireSpecificAgent
+    // requires the target to be idle, and r1 is "busy" precisely because it's
+    // running this task, so reassigning to itself is always rejected, not a
+    // silent no-op.
+    await expect(ops.reassignTaskAgent(DEFAULT_WORKSPACE, task.id, "r1")).rejects.toThrow(/busy/i);
+
+    expect(oldHandle.stopCalls).toBe(0); // never touched
+    expect((await store.getAgent("r1"))?.status).toBe("busy"); // unchanged
+    expect(provider.starts.length).toBe(1); // no second start() call
+    expect((await store.getRun(run.id))?.agentId).toBe("r1");
+    expect((await store.getTask(task.id))?.state).toBe("ongoing"); // untouched
+  });
+
   it("throws and leaves the run untouched when the target agent doesn't exist", async () => {
     const { store, ops, provider, task, run } = await setup("p-ghost");
     const oldHandle = provider.handles.get(run.id)!;

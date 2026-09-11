@@ -137,6 +137,16 @@ export const RefreshIcon = (p: SVGProps<SVGSVGElement>) => (
   </Icon>
 );
 
+export const TelemetryIcon = (p: SVGProps<SVGSVGElement>) => (
+  <Icon {...p}>
+    <path d="M3 3v16a2 2 0 0 0 2 2h16" />
+    <path d="M7 16v-4" />
+    <path d="M11 16V8" />
+    <path d="M15 16v-6" />
+    <path d="M19 16V5" />
+  </Icon>
+);
+
 export const SwatchIcon = (p: SVGProps<SVGSVGElement>) => (
   <Icon {...p}>
     <path d="M12 22a1 1 0 0 1 0-20 10 9 0 0 1 10 9 5 5 0 0 1-5 5h-2.25a1.75 1.75 0 0 0-1.4 2.8l.3.4a1.75 1.75 0 0 1-1.4 2.8z" />
