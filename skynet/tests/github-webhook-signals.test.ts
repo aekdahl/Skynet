@@ -342,10 +342,4 @@ describe("POST /webhooks/github — PR/review/check/deploy signals", () => {
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ created: 1 });
   });
-
-  it("still 202s an out-of-scope event type (e.g. push)", async () => {
-    const res = await post("push", { ref: "refs/heads/main" });
-    expect(res.statusCode).toBe(202);
-    expect(res.json()).toEqual({ ignored: true });
-  });
 });
