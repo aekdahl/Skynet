@@ -20,7 +20,7 @@ import { registerOpenAiCompat } from "./interop/openai.js";
 import { registerInteropRest } from "./interop/rest.js";
 import { registerWs } from "./ws.js";
 import { registerStatic } from "./static.js";
-import { registerPreview, backfillPreviews, kickoffPreviewBuilds } from "./preview/index.js";
+import { registerPreview, registerPreviewArtifactRoute, backfillPreviews, kickoffPreviewBuilds } from "./preview/index.js";
 import { projectPreview } from "./preview/project-preview.js";
 import { registerLivePreviewProxy } from "./preview/preview-proxy.js";
 import { recordPublicOrigin } from "./preview/public-origin.js";
@@ -248,6 +248,10 @@ async function main() {
       (t) => projectPreview.proxyTargetForToken(t),
       () => projectPreview.liveSalvageCandidates(),
     );
+    // Command-kind artifact (Phase 3, docs/live-preview.md) — see
+    // registerPreviewArtifactRoute's own doc comment for why this is a
+    // public capability-URL route, not under /api/.
+    registerPreviewArtifactRoute(app, (t, p) => projectPreview.artifactForToken(t, p));
     // Kill any live preview trees on graceful shutdown — their dev servers are
     // spawned detached (own process group) so they'd otherwise outlive the server
     // and keep holding ports (EADDRINUSE on the next boot). In a container, PID

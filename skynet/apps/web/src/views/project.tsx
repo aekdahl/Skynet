@@ -2405,6 +2405,48 @@ export function ProjectView({
 // can never read this origin's storage no matter which URL it's served at.
 const DEVICES: Record<string, number | null> = { Desktop: null, Tablet: 768, Mobile: 390 };
 
+/** "1.2 KB" / "340 B" — for a command-kind artifact's size. PURE. */
+function fmtBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/** A "command"-kind preview's result panel (Phase 3, docs/live-preview.md) —
+ *  no server/URL, so no iframe/device-frame: the run's exit code, its ALWAYS-
+ *  visible output (the command's output IS the preview, unlike a dev
+ *  server's incidental logs — not gated behind the Logs toggle), and any
+ *  declared artifacts it produced, rendered inline by type. */
+function CommandPreviewPanel({ st }: { st: api.PreviewState }) {
+  return (
+    <div className="lp-cmd">
+      {st.recipe && <div className="lp-ph-cmd mono">$ {st.recipe.cmd}</div>}
+      {st.exitCode !== null && (
+        <div className={"lp-cmd-exit " + (st.exitCode === 0 ? "lp-status-live" : "lp-status-failed")}>
+          exit code {st.exitCode}
+        </div>
+      )}
+      <pre className="lp-logs lp-cmd-output mono">{st.logs.join("\n") || "(no output yet)"}</pre>
+      {st.artifacts.length > 0 && (
+        <div className="lp-cmd-artifacts">
+          {st.artifacts.map((a) => (
+            <div key={a.path} className="lp-cmd-artifact">
+              <div className="lp-cmd-artifact-name mono">{a.path} <span className="lp-cmd-artifact-size">({fmtBytes(a.size)})</span></div>
+              {a.mime.startsWith("image/") ? (
+                <img src={a.url} alt={a.path} className="lp-cmd-artifact-img" />
+              ) : a.mime === "application/pdf" ? (
+                <iframe src={a.url} title={a.path} className="lp-cmd-artifact-pdf" />
+              ) : (
+                <a className="btn btn-ghost btn-sm" href={a.url} target="_blank" rel="noreferrer">Download</a>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function LivePreviewModal({
   id,
   title,
@@ -2495,7 +2537,8 @@ export function LivePreviewModal({
   }, [st?.logs, showLogs]);
 
   const width = DEVICES[device];
-  const live = st?.status === "live" && st.url;
+  const isCommand = st?.kind === "command";
+  const live = !isCommand && st?.status === "live" && st.url;
   // Switch the previewed slice — re-(re)starts the server against the new source
   // (keeps node_modules warm; see startSpec's soft-replace).
   const switchSource = (next: api.PreviewSource) => {
@@ -2534,27 +2577,40 @@ export function LivePreviewModal({
               service
             </span>
           )}
+          {isCommand && (
+            <span className="lp-combined mono" title="Runs a command to completion and shows its output/exit code/artifacts — no server, no URL">
+              command
+            </span>
+          )}
           <span className={"lp-status lp-status-" + (st?.status ?? "idle")}>
-            {st?.status === "live" ? "● live" : st?.status === "starting" ? "◐ starting…" : st?.status === "failed" ? "✕ failed" : st?.status ?? "…"}
+            {st?.status === "live" ? (isCommand ? "✓ finished" : "● live") : st?.status === "starting" ? (isCommand ? "◐ running…" : "◐ starting…") : st?.status === "failed" ? "✕ failed" : st?.status ?? "…"}
           </span>
           {live && <span className="lp-url mono">{st!.url}</span>}
           <span className="lp-spacer" />
-          <div className="lp-devices">
-            {Object.keys(DEVICES).map((d) => (
-              <button key={d} className={"lp-dev" + (d === device ? " on" : "")} onClick={() => setDevice(d)}>{d}</button>
-            ))}
-          </div>
+          {!isCommand && (
+            <div className="lp-devices">
+              {Object.keys(DEVICES).map((d) => (
+                <button key={d} className={"lp-dev" + (d === device ? " on" : "")} onClick={() => setDevice(d)}>{d}</button>
+              ))}
+            </div>
+          )}
           <button className="btn btn-ghost btn-sm" onClick={() => setMode((m) => (m === "dock" ? "modal" : "dock"))} title={mode === "dock" ? "Expand to full screen" : "Dock beside the board"}>
             {mode === "dock" ? "⤢ Expand" : "⇔ Dock"}
           </button>
-          <button className="btn btn-ghost btn-sm" onClick={() => setNonce((n) => n + 1)} title="Reload the app in the frame">↻ Reload</button>
-          <button className="btn btn-ghost btn-sm" onClick={() => { startedRef.current = false; void ctl.restart().then(setSt); }} title="Restart the preview server">⟳ Restart</button>
-          <button className="btn btn-ghost btn-sm" onClick={() => { setShowLogs((s) => !s); }}>Logs</button>
+          {!isCommand && (
+            <button className="btn btn-ghost btn-sm" onClick={() => setNonce((n) => n + 1)} title="Reload the app in the frame">↻ Reload</button>
+          )}
+          <button className="btn btn-ghost btn-sm" onClick={() => { startedRef.current = false; void ctl.restart().then(setSt); }} title={isCommand ? "Run it again" : "Restart the preview server"}>⟳ {isCommand ? "Run again" : "Restart"}</button>
+          {!isCommand && (
+            <button className="btn btn-ghost btn-sm" onClick={() => { setShowLogs((s) => !s); }}>Logs</button>
+          )}
           <button className="btn btn-ghost btn-sm" onClick={() => { void ctl.stop(); onClose(); }}>✕ Close</button>
         </div>
 
         <div className="lp-body">
-          {live ? (
+          {isCommand ? (
+            st && <CommandPreviewPanel st={st} />
+          ) : live ? (
             <div className="lp-frame-wrap">
               <iframe
                 key={nonce}
