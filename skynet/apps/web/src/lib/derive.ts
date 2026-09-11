@@ -238,6 +238,20 @@ export const fleetAgentName = (id: string | null | undefined, fleet: Agent[]): s
 export const projectName = (id: string, projects: Project[]): string =>
   projects.find((p) => p.id === id)?.name ?? id;
 
+// ─── manager/worker hierarchy ────────────────────────────────────────────────
+// A worker's `parentId` is its manager's run id — the SAME field a plain fork
+// uses (spawnWorker sets it exactly like a fork does). "Is this a manager
+// delegation, not just a fork" is a join against the PARENT run's agent role,
+// since role lives on the fleet Agent, not the TaskRun.
+
+export const isManagerRun = (run: TaskRun, fleet: Agent[]): boolean =>
+  !!run.agentId && fleet.find((a) => a.id === run.agentId)?.role === "manager";
+
+// spawnWorker always sets parentId = managerRunId directly — one hop, never a
+// deeper chain — so this doesn't need a walk-to-root like familyOf.
+export const workersOf = (managerRunId: string, runs: TaskRun[]): TaskRun[] =>
+  runs.filter((r) => r.parentId === managerRunId);
+
 export const providerOf = (agent: TaskRun, fleet: Agent[]): ProviderId => {
   const r = fleet.find((f) => f.id === agent.agentId);
   return r ? r.provider : agent.provider;
