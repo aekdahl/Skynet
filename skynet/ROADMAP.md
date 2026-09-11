@@ -199,10 +199,14 @@ Ordered by priority (urgent bug → launch-wedge remainder → product debt → 
   (multi-select on Fleet, whole-project on the project page); optional "also remember" → area/workspace
   memory promotion is still v4, not started.
 - [~] **Remaining providers behind `runner-sdk`.** Codex, Gemini, Cursor, Copilot, Hermes, OpenCode,
-  and Kimi Code are all landed as real `CliRunnerProvider`s (usage/cost telemetry, argv/env wiring,
-  live-verified against each vendor's current CLI). Reactive breadth from the candidate list
-  ([docs/runner-catalog.md](docs/runner-catalog.md)) stays open-ended — no fixed target, lowest urgency
-  now that the field-trailing gap this closed is gone.
+  Kimi Code, and Aider are all landed as real `CliRunnerProvider`s (usage/cost telemetry, argv/env
+  wiring). The first seven are live-verified against each vendor's current CLI; **Aider is not** — no
+  real install/key was available when it landed, so its flags/usage-line parsing are inferred from
+  Aider's own docs, not a captured run — and it carries a real capability gap, not just an unverified
+  one: `--yes-always` doesn't auto-run shell commands the model proposes
+  ([issue #3903](https://github.com/Aider-AI/aider/issues/3903), open), only edits. Verify live before
+  leaning on it. Reactive breadth from the candidate list ([docs/runner-catalog.md](docs/runner-catalog.md))
+  stays open-ended — no fixed target, lowest urgency now that the field-trailing gap this closed is gone.
 - [x] **UI system polish (P2 of [docs/ux-review.md](docs/ux-review.md)).** Landed: untangled
   `--accent`/`--warn` (were an accidental hex duplicate), a real Lucide-based nav icon set, motion
   tokens (`--motion-fast`/`--motion-base`), a real `:active` press state + a global `:focus-visible`

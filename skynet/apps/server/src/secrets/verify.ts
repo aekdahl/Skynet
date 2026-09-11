@@ -123,6 +123,14 @@ const VERIFIERS: Record<CredentialProvider, (apiKey: string) => Promise<VerifyCr
   // Authentication", ...}}` 401 from this exact endpoint).
   kimi: (apiKey) =>
     checkEndpoint("https://api.moonshot.ai/v1/models", { authorization: `Bearer ${apiKey}` }, "Key authenticates with the Moonshot AI API."),
+  // Aider's stored credential is injected as ANTHROPIC_API_KEY (see
+  // provider-env.ts) — the same key `claude`/`opencode` verify, so reuse that check.
+  aider: (apiKey) =>
+    checkEndpoint(
+      "https://api.anthropic.com/v1/models",
+      { "x-api-key": apiKey, "anthropic-version": "2023-06-01" },
+      "Key authenticates with the Anthropic API (Aider's recommended default provider).",
+    ),
 };
 
 /**

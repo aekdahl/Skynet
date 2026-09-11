@@ -11,6 +11,7 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import { codex } from "../packages/runner-sdk/src/codex.js";
 import { gemini } from "../packages/runner-sdk/src/gemini.js";
 import { hermes } from "../packages/runner-sdk/src/hermes.js";
+import { aider } from "../packages/runner-sdk/src/aider.js";
 import { ClaudeRunnerProvider, __setClaudeTestHooks } from "../packages/runner-sdk/src/claude.js";
 import type { RunnerEvents, StartSpec } from "../packages/runner-sdk/src/types.js";
 
@@ -36,6 +37,10 @@ describe("CLI vendors: spec.task (with instructions already prefixed) reaches th
 
   it("hermes: buildArgs embeds spec.task unmodified", () => {
     expect(hermes.buildArgs(baseSpec)).toContain(INSTRUCTIONS_MARKER);
+  });
+
+  it("aider: buildArgs embeds spec.task unmodified", () => {
+    expect(aider.buildArgs(baseSpec)).toContain(INSTRUCTIONS_MARKER);
   });
 });
 

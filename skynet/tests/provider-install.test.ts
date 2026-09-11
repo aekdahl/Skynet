@@ -43,9 +43,13 @@ describe("provider-install", () => {
     expect(installCommandFor("gemini")).toEqual({ packageManager: "npm", command: "npm install -g @google/gemini-cli" });
     expect(installCommandFor("copilot")).toEqual({ packageManager: "npm", command: "npm install -g @github/copilot" });
     expect(installCommandFor("opencode")).toEqual({ packageManager: "npm", command: "npm install -g opencode-ai" });
+    // The rest stay null: cursor and kimi are each a `curl | bash` script,
+    // hermes is a manual download, and aider is a pip/pipx install — none is a
+    // plain npm install the no-shell installer will run.
     expect(installCommandFor("cursor")).toBeNull();
     expect(installCommandFor("hermes")).toBeNull();
     expect(installCommandFor("kimi")).toBeNull();
+    expect(installCommandFor("aider")).toBeNull();
   });
 
   it("streams stdout+stderr lines and reports a non-zero exit code on failure", async () => {
