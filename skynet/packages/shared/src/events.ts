@@ -16,6 +16,7 @@ import {
   Milestone,
   LogVerb,
   Module,
+  Plan,
   PlanStep,
   Project,
   ProjectContextEntry,
@@ -148,6 +149,13 @@ export const ServerEvent = z.discriminatedUnion("type", [
   z.object({ type: z.literal("contextEntry.deleted"), id: z.string() }),
   z.object({ type: z.literal("agent.upserted"), agent: Agent }),
   z.object({ type: z.literal("agent.deleted"), id: z.string() }),
+
+  // The living Plan (docs/product-steward.md §2) — one per project, not part
+  // of the snapshot (same "fetch on demand, live-refresh on this" shape as
+  // RoadmapDoc): the client re-fetches GET .../plan when it's for the
+  // project currently open, so a steward edit (Phase 2+) or another
+  // operator's tab shows up without a manual reload.
+  z.object({ type: z.literal("plan.upserted"), plan: Plan }),
 
   // audit trail mutations — the decision audit isn't part of the snapshot, so
   // these carry no payload beyond identity; clients re-fetch /api/audit on them.
