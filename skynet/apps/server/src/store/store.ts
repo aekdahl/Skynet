@@ -18,6 +18,7 @@ import type {
   Module,
   PendingRuleAction,
   PendingRuleActionStatus,
+  Plan,
   PolicyVersion,
   Project,
   ProjectContextEntry,
@@ -221,6 +222,13 @@ export interface Store {
   // by projectId; a re-sync overwrites wholesale.
   getRoadmapDoc(projectId: string): Promise<RoadmapDoc | undefined>;
   putRoadmapDoc(doc: RoadmapDoc): Promise<RoadmapDoc>;
+
+  // The living Plan (Product Steward Phase 1) — one per project, keyed by
+  // projectId. `expectedVersion`, like putTask's, enforces optimistic
+  // concurrency: throws VersionConflictError if the stored version has
+  // moved since the caller read it (omit it for an unconditional write).
+  getPlan(projectId: string): Promise<Plan | undefined>;
+  putPlan(plan: Plan, expectedVersion?: number): Promise<Plan>;
 
   // roadmap proposals (Phase 25 — TASK 28). Project-scoped, same shape as
   // the kanban `Proposal` methods above but a distinct collection — see

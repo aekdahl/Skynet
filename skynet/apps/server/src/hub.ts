@@ -14,6 +14,7 @@ import type {
   HitlItem,
   LogVerb,
   Milestone,
+  Plan,
   PlanStep,
   Project,
   ProjectContextEntry,
@@ -492,6 +493,17 @@ export class Hub {
     const existing = await this.store.getMilestone(id);
     await this.store.deleteMilestone(id);
     if (existing) this.bus.publish(existing.workspaceId, { type: "milestone.deleted", id });
+  }
+
+  // The living Plan (Product Steward Phase 1) — one per project; there is no
+  // deletePlan (nothing ever removes a project's Plan, only replaces its
+  // content). `expectedVersion` carries through to store.putPlan, which owns
+  // both the optimistic-concurrency check AND bumping `version` — the saved
+  // (already-bumped) Plan is what gets published, not the caller's draft.
+  async upsertPlan(plan: Plan, expectedVersion?: number): Promise<Plan> {
+    const saved = await this.store.putPlan(plan, expectedVersion);
+    this.bus.publish(saved.workspaceId, { type: "plan.upserted", plan: saved });
+    return saved;
   }
 
   async upsertSolutionBrief(brief: SolutionBrief): Promise<SolutionBrief> {

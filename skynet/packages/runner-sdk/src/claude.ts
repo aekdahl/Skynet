@@ -28,6 +28,7 @@ import { z } from "zod";
 import type { EndpointSmokeResult, LogVerb, ModelRates, PlanStep, ProviderId, Resolution, SmokeCheck, SmokeStatus } from "@skynet/shared";
 import { endpointLabel, priceUsage, ratesFor, vendorForBaseUrl } from "@skynet/shared";
 import { fmtDuration, idleCapMs, runtimeCapMs } from "./caps.js";
+import { RESERVED_MCP_NAMES } from "./types.js";
 import type {
   ConsultSpec,
   HitlRaise,
@@ -168,6 +169,30 @@ export function browserMcpServers(enabled: boolean): NonNullable<Options["mcpSer
     : ["npx", "-y", "@playwright/mcp@latest", "--headless", "--isolated"];
   const command = parts[0] ?? "npx";
   return { [BROWSER_MCP_NAME]: { command, args: parts.slice(1) } };
+}
+
+// User-configured MCP servers (roadmap "Tools via MCP") — resolved by the
+// orchestrator from a project's `mcpServerIds` into `spec.mcpServers` before
+// this runner ever sees them (see StartSpec.mcpServers's doc comment). Local
+// to this file on purpose (never shared with cli-runner.ts, per the file
+// header above) even though the shape happens to line up with the SDK's own
+// `McpServerConfig` union — a stdio entry IS a `McpStdioServerConfig`, and a
+// remote entry IS a `McpHttpServerConfig`, so no translation is needed.
+// Reserved names (the browser server, the manager's spawn_worker server) are
+// skipped defensively — enforced authoritatively at MCP-server *creation*
+// time (apps/server/src/mcp-servers/service.ts). RESERVED_MCP_NAMES (from
+// types.js) already covers both BROWSER_MCP_NAME and MANAGER_MCP_NAME's
+// values ("browser"/"skynet-manager").
+function userMcpServers(spec: StartSpec): NonNullable<Options["mcpServers"]> {
+  const out: NonNullable<Options["mcpServers"]> = {};
+  for (const s of spec.mcpServers ?? []) {
+    if (!s.name || RESERVED_MCP_NAMES.has(s.name)) continue;
+    out[s.name] =
+      s.transport === "remote"
+        ? { type: "http", url: s.url, ...(s.headers && Object.keys(s.headers).length ? { headers: s.headers } : {}) }
+        : { command: s.command, args: s.args, ...(s.env && Object.keys(s.env).length ? { env: s.env } : {}) };
+  }
+  return out;
 }
 
 // A manager-role run's one delegation tool (agent-hierarchy.md §3): calling it
@@ -1580,11 +1605,17 @@ class ClaudeRunnerHandle implements RunnerHandle {
       // the session (and any repo-defined hooks this also loads) doesn't start
       // until that scan has run.
       settingSources: PROJECT_SETTING_SOURCES,
-      // Opt-in real browser (Playwright/Chrome MCP) and/or a manager's
-      // spawn_worker delegation tool — merged since either, both, or neither
-      // may be present for a given run.
-      ...(spec.browser || spec.role === "manager"
-        ? { mcpServers: { ...(spec.browser ? browserMcpServers(true) : {}), ...(spec.role === "manager" ? spawnWorkerMcpServers(this.events, this.runId) : {}) } }
+      // Opt-in real browser (Playwright/Chrome MCP), a manager's spawn_worker
+      // delegation tool, and/or the project's user-configured MCP servers —
+      // merged since any combination may be present for a given run.
+      ...(spec.browser || spec.role === "manager" || spec.mcpServers?.length
+        ? {
+            mcpServers: {
+              ...(spec.browser ? browserMcpServers(true) : {}),
+              ...userMcpServers(spec),
+              ...(spec.role === "manager" ? spawnWorkerMcpServers(this.events, this.runId) : {}),
+            },
+          }
         : {}),
       // Capture the CLI's stderr (see stderrTail) — without this a startup crash
       // is reported blind, as the SDK's generic launch-failure guess.
@@ -1598,6 +1629,7 @@ class ClaudeRunnerHandle implements RunnerHandle {
     };
     this.baseOptions = baseOptions;
     if (spec.browser) this.events.onLog(this.runId, "browser tools enabled (Playwright MCP) — browser actions gate for approval");
+    if (spec.mcpServers?.length) this.events.onLog(this.runId, `MCP tools attached: ${spec.mcpServers.map((s) => s.name).join(", ")}`);
     if (spec.planModeGate) this.events.onLog(this.runId, "plan mode enabled — the agent will propose a plan and pause for approval before making changes");
     if (spec.role === "manager") this.events.onLog(this.runId, "manager role enabled — spawn_worker tool available to delegate subtasks");
     if (spec.disallowedTools?.length) this.events.onLog(this.runId, `tool restriction enabled — this project's agents may not use: ${spec.disallowedTools.join(", ")}`);

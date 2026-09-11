@@ -21,21 +21,26 @@
 // cleanly (see cli-runner.ts); the default RUNNER=mock path never imports this
 // module.
 //
-// Opt-in browser tooling (spec.browser): Gemini's MCP servers are FILE-based
-// only — there's no per-invocation flag (verified live against gemini-cli
-// 0.55.1: --help has nothing config-override-shaped; `gemini mcp add --scope
-// project` is the only way in, and it just writes .gemini/settings.json's
-// mcpServers key). prepareWorktree writes that file directly — same shape
-// `gemini mcp add` produces — into the run's OWN worktree (project scope), so
-// it never touches the operator's global ~/.gemini/settings.json and is
-// naturally cleaned up when the worktree is retired.
+// Opt-in MCP tooling (spec.browser, spec.mcpServers): Gemini's MCP servers are
+// FILE-based only — there's no per-invocation flag (verified live against
+// gemini-cli 0.55.1: --help has nothing config-override-shaped; `gemini mcp
+// add --scope project` is the only way in, and it just writes
+// .gemini/settings.json's mcpServers key). prepareWorktree writes that file
+// directly — same shape `gemini mcp add` produces — into the run's OWN
+// worktree (project scope), so it never touches the operator's global
+// ~/.gemini/settings.json and is naturally cleaned up when the worktree is
+// retired. Remote (url/headers) user-configured servers are emitted in the
+// same `{type:"http", url, headers}` shape Claude's SDK accepts — the
+// standard MCP-client JSON convention — but that shape isn't independently
+// verified against gemini-cli's own schema; a stdio server is guaranteed to
+// work, a remote one is best-effort.
 
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ProviderId, Resolution } from "@skynet/shared";
 import {
   CliRunnerProvider,
-  mergeBrowserMcpConfig,
+  mergeMcpConfig,
   usageFromJson,
   type CliEvent,
   type CliVendor,
@@ -96,7 +101,7 @@ export const gemini: CliVendor = {
   },
 
   prepareWorktree(spec: StartSpec, cwd: string): void {
-    if (!spec.browser) return;
+    if (!spec.browser && !spec.mcpServers?.length) return;
     const dir = join(cwd, ".gemini");
     const file = join(dir, "settings.json");
     // Merge onto whatever the repo itself commits at .gemini/settings.json (if
@@ -109,7 +114,7 @@ export const gemini: CliVendor = {
       /* no existing file, or unreadable — start fresh */
     }
     mkdirSync(dir, { recursive: true });
-    writeFileSync(file, JSON.stringify(mergeBrowserMcpConfig(settings), null, 2));
+    writeFileSync(file, JSON.stringify(mergeMcpConfig(settings, spec), null, 2));
   },
 
   buildArgs(spec: StartSpec): string[] {

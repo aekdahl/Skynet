@@ -14,6 +14,8 @@ import {
   type SafetyPolicy,
   type SecretAuditEntry,
   type SecretMeta,
+  type McpServerMeta,
+  type CreateMcpServerRequest,
 } from "@skynet/shared";
 import * as api from "../lib/client";
 import { PlaceholderNote } from "../components/common";
@@ -842,14 +844,210 @@ function FlyAccounts() {
   );
 }
 
+// Custom MCP servers — the "scoped tools" roadmap "Tools via MCP" gives an
+// agent to act back into the operator's own services (GitHub/Sentry/Slack/
+// anything speaking MCP), not just Skynet's own git operations. Stored via
+// the mcp-servers store (../lib/client's fetchMcpServers/createMcpServer/
+// deleteMcpServer) — a completely separate store from the provider/GitHub/Fly
+// credentials above, since a server carries a launch spec (stdio command/
+// args/env, or a remote url/headers), not a single bearer key. Granted to a
+// project in that project's own settings (see project.tsx's
+// ProjectMcpServers) — adding one here doesn't turn it on anywhere by itself.
+function McpIcon() {
+  return (
+    <svg className="gh-octi" viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.4">
+      <path d="M5 6V4a2 2 0 012-2h2a2 2 0 012 2v2" strokeLinecap="round" />
+      <rect x="3" y="6" width="10" height="7" rx="2" />
+      <path d="M6 9.5h.01M10 9.5h.01" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function McpServerForm({ onAdd, busy }: { onAdd: (req: CreateMcpServerRequest) => Promise<void>; busy: boolean }) {
+  const [transport, setTransport] = useState<"stdio" | "remote">("stdio");
+  const [name, setName] = useState("");
+  const [command, setCommand] = useState("");
+  const [args, setArgs] = useState("");
+  const [env, setEnv] = useState("");
+  const [url, setUrl] = useState("");
+  const [headers, setHeaders] = useState("");
+
+  // "KEY=value" lines → a plain object, skipping blank/malformed lines.
+  const parseLines = (text: string): Record<string, string> =>
+    Object.fromEntries(
+      text
+        .split("\n")
+        .map((l) => l.trim())
+        .filter(Boolean)
+        .map((l) => {
+          const i = l.indexOf("=");
+          return i < 0 ? null : [l.slice(0, i).trim(), l.slice(i + 1).trim()];
+        })
+        .filter((p): p is [string, string] => !!p),
+    );
+
+  const canSubmit = name.trim() && (transport === "stdio" ? command.trim() : url.trim());
+  const submit = async () => {
+    if (!canSubmit) return;
+    await onAdd(
+      transport === "stdio"
+        ? { transport: "stdio", name: name.trim(), command: command.trim(), args: args.trim().split(/\s+/).filter(Boolean), env: parseLines(env) }
+        : { transport: "remote", name: name.trim(), url: url.trim(), headers: parseLines(headers) },
+    );
+    setName(""); setCommand(""); setArgs(""); setEnv(""); setUrl(""); setHeaders("");
+  };
+
+  return (
+    <div className="gh-acct-add">
+      <div className="cfg-prov" role="group" aria-label="MCP server transport">
+        <button type="button" className={"cfg-prov-btn" + (transport === "stdio" ? " on" : "")} onClick={() => setTransport("stdio")}>
+          Local command
+        </button>
+        <button type="button" className={"cfg-prov-btn" + (transport === "remote" ? " on" : "")} onClick={() => setTransport("remote")}>
+          Remote URL
+        </button>
+      </div>
+      <input className="settings-input gh-acct-name" placeholder="Name — e.g. Sentry" maxLength={60} value={name} onChange={(e) => setName(e.target.value)} />
+      {transport === "stdio" ? (
+        <>
+          <input className="settings-input" placeholder="Command — e.g. npx" value={command} onChange={(e) => setCommand(e.target.value)} />
+          <input className="settings-input" placeholder="Args — e.g. -y @some/mcp-server" value={args} onChange={(e) => setArgs(e.target.value)} />
+          <textarea className="settings-input" rows={2} placeholder={"Env (one per line) — e.g.\nSENTRY_AUTH_TOKEN=..."} value={env} onChange={(e) => setEnv(e.target.value)} />
+        </>
+      ) : (
+        <>
+          <input className="settings-input" placeholder="URL — e.g. https://mcp.sentry.dev/mcp" value={url} onChange={(e) => setUrl(e.target.value)} />
+          <textarea className="settings-input" rows={2} placeholder={"Headers (one per line) — e.g.\nAuthorization=Bearer ..."} value={headers} onChange={(e) => setHeaders(e.target.value)} />
+        </>
+      )}
+      <button className="btn btn-primary" disabled={busy || !canSubmit} onClick={() => void submit()}>
+        Add server
+      </button>
+    </div>
+  );
+}
+
+function McpServersSection() {
+  const [servers, setServers] = useState<McpServerMeta[] | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const load = () => api.fetchMcpServers().then(({ servers }) => setServers(servers)).catch(() => setServers([]));
+  useEffect(() => { void load(); }, []);
+
+  const add = async (req: CreateMcpServerRequest) => {
+    setBusy(true);
+    setErr(null);
+    try {
+      await api.createMcpServer(req);
+      await load();
+    } catch (e) {
+      setErr(e instanceof api.ApiError && e.status === 501 ? "Secret store is disabled — set SKYNET_MASTER_KEY." : `Couldn't add the server: ${(e as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const remove = async (id: string) => {
+    setBusy(true);
+    setErr(null);
+    try { await api.deleteMcpServer(id); await load(); }
+    catch (e) { setErr(`Couldn't remove: ${(e as Error).message}`); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <div className="gh-card">
+      <div className="gh-card-head"><span className="gh-card-title">Custom MCP servers</span></div>
+      <p className="gh-card-sub">
+        Give agents tools beyond Skynet's own git operations — paste any MCP server's launch command or URL
+        (GitHub, Sentry, Slack, or your own). Adding one here doesn't turn it on anywhere: grant it to a
+        project in that project's own settings.
+      </p>
+      <p className="gh-card-sub">
+        <strong>Security:</strong> a write-capable server (e.g. one holding a real GitHub token) lets an agent
+        act <em>outside</em> Skynet's own git guardrails (PR-only writes, no force-push) — it acts with
+        whatever permissions the server's own credentials grant, the same trust model as every integration
+        on this page: your own account, your own risk.
+      </p>
+      {err && <div className="gh-warn">{err}</div>}
+      {servers && servers.length > 0 && (
+        <div className="settings-list gh-acct-list">
+          {servers.map((s) => (
+            <div className="mcp-tok-row" key={s.id}>
+              <div className="mcp-tok-main">
+                <div className="mcp-tok-top"><span className="settings-name">{s.name}</span></div>
+                <div className="mcp-tok-meta mono">
+                  {s.transport === "remote"
+                    ? s.url + (s.headerKeys.length ? ` · headers: ${s.headerKeys.join(", ")}` : "")
+                    : [s.command, ...s.args].join(" ") + (s.envKeys.length ? ` · env: ${s.envKeys.join(", ")}` : "")}
+                </div>
+              </div>
+              <button className="btn btn-ghost" disabled={busy} onClick={() => void remove(s.id)}>Remove</button>
+            </div>
+          ))}
+        </div>
+      )}
+      <McpServerForm onAdd={add} busy={busy} />
+    </div>
+  );
+}
+
+// Sentry — the flagship inbound-trigger proof case (docs/integrations-catalog.md):
+// a new/regressed issue on a bound Sentry project becomes a task, and an agent
+// already granted the Sentry MCP server above (in that project's settings)
+// can act back on it. Unlike GitHub/Fly, there's no "connect" flow here — the
+// operator wires the webhook up on Sentry's side and pastes the org/project
+// slug into the project's own settings; this card just shows what to paste
+// where and whether the server-side secret is even configured.
+function SentryIcon() {
+  return (
+    <svg className="gh-octi" viewBox="0 0 16 16" aria-hidden="true" fill="currentColor">
+      <path d="M8 1a1.4 1.4 0 00-1.2.7L1.2 12a1.4 1.4 0 001.2 2.1h1.9a4.9 4.9 0 00-4-7.3l.8-1.4A6.5 6.5 0 0110 12.7v1.4H5.3a3.3 3.3 0 00-.6-1.9H7v-1.4H3.5a4.9 4.9 0 013.9-2.4V6.6a6.4 6.4 0 00-5.6 3.8L4.6 3.9A1.4 1.4 0 018 3.9l5.6 9.7a1.4 1.4 0 01-1.2 2.1h-1v-1.4h1L8 1z" />
+    </svg>
+  );
+}
+
+function SentrySection({ configured }: { configured: boolean }) {
+  const webhookUrl = typeof window !== "undefined" ? `${window.location.origin}/webhooks/sentry` : "/webhooks/sentry";
+  return (
+    <div className="gh-card">
+      <p className="gh-card-sub">
+        In Sentry, add a webhook under Settings → Developer Settings → Internal Integration → Webhooks,
+        pointing at:
+      </p>
+      <p className="gh-card-sub mono">{webhookUrl}</p>
+      <p className="gh-card-sub">
+        Set its signing secret to this server's <code>SENTRY_WEBHOOK_SECRET</code>, then bind a project to
+        its Sentry org/project slug in that project's own settings. Add the Sentry MCP server above and grant
+        it to the same project so the agent that picks up the resulting task can act back in Sentry.
+      </p>
+      {!configured && (
+        <div className="gh-warn">SENTRY_WEBHOOK_SECRET isn't set on this server — the webhook endpoint 404s until it is.</div>
+      )}
+    </div>
+  );
+}
+
 export function IntegrationsView() {
   const [github, setGithub] = useState<GithubConnection>(emptyConnection);
   const [appConfigured, setAppConfigured] = useState(false);
   const [brokerConfigured, setBrokerConfigured] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [flyCount, setFlyCount] = useState(0);
+  const [mcpCount, setMcpCount] = useState(0);
+  const [sentryConfigured, setSentryConfigured] = useState(false);
   useEffect(() => {
-    api.fetchSecrets().then(({ secrets }) => setFlyCount(secrets.filter((s) => s.provider === "fly").length)).catch(() => setFlyCount(0));
+    // Guard against this view re-mounting before an earlier fetch resolves
+    // (the store re-renders on every WS snapshot delta) — an in-flight
+    // request from a stale mount must never overwrite state a newer mount
+    // already set. Same "cancelled" pattern the fetchGithub effect below uses.
+    let cancelled = false;
+    api.fetchSecrets().then(({ secrets }) => { if (!cancelled) setFlyCount(secrets.filter((s) => s.provider === "fly").length); }).catch(() => { if (!cancelled) setFlyCount(0); });
+    api.fetchMcpServers().then(({ servers }) => { if (!cancelled) setMcpCount(servers.length); }).catch(() => { if (!cancelled) setMcpCount(0); });
+    api.fetchSentryStatus().then(({ configured }) => { if (!cancelled) setSentryConfigured(configured); }).catch(() => { if (!cancelled) setSentryConfigured(false); });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -937,6 +1135,28 @@ export function IntegrationsView() {
             {flyCount === 0 && (
               <div className="gh-warn">Add a Fly.io API token to enable "Deploy to Fly.io" on a project.</div>
             )}
+          </IntegrationSection>
+        )}
+        {loaded && (
+          <IntegrationSection
+            icon={<McpIcon />}
+            title="Custom MCP servers"
+            statusLabel={mcpCount > 0 ? `${mcpCount} configured` : "None configured"}
+            statusOk={mcpCount > 0}
+            summary={mcpCount > 0 ? `${mcpCount} server${mcpCount === 1 ? "" : "s"}` : "Give agents tools beyond git"}
+          >
+            <McpServersSection />
+          </IntegrationSection>
+        )}
+        {loaded && (
+          <IntegrationSection
+            icon={<SentryIcon />}
+            title="Sentry"
+            statusLabel={sentryConfigured ? "Webhook configured" : "Not configured"}
+            statusOk={sentryConfigured}
+            summary="New Sentry issues become tasks"
+          >
+            <SentrySection configured={sentryConfigured} />
           </IntegrationSection>
         )}
       </div>

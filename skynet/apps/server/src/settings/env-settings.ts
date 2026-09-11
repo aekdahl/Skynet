@@ -42,6 +42,8 @@ export const ENV_FIELDS: EnvField[] = [
     hint: "Confine agent file writes to their worktree (macOS sandbox-exec / Linux bwrap). Best-effort." },
   { key: "SKYNET_RUNNER_MAX_RUNTIME_MS", group: "Runner safety", label: "Max run time", type: "number", unit: "ms",
     hint: "Force-stop a runaway/hung agent after this long. 0 disables. Default 1800000 (30 min).", placeholder: "1800000" },
+  { key: "SKYNET_RUNNER_EGRESS_ALLOWLIST", group: "Runner safety", label: "Network egress allowlist", type: "text",
+    hint: "Comma-separated hostnames agent processes may reach (e.g. api.anthropic.com,github.com). Blank = network stays fully open. Best-effort — a process that ignores HTTP(S)_PROXY isn't blocked.", placeholder: "api.anthropic.com,github.com" },
 
   // Integration.
   { key: "SKYNET_CHECK_CMD", group: "Integration", label: "Pre-merge check command", type: "text",

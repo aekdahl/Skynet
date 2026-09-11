@@ -46,9 +46,9 @@
       "types": "./dist/kimi.d.ts",
       "default": "./dist/kimi.js"
     },
-    "./sandbox": {
-      "types": "./dist/sandbox.d.ts",
-      "default": "./dist/sandbox.js"
+    "./aider": {
+      "types": "./dist/aider.d.ts",
+      "default": "./dist/aider.js"
     }
   },
   "scripts": {

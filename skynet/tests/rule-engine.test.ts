@@ -49,6 +49,12 @@ const prMerged = (over: Partial<Extract<ServerEvent, { type: "github.signal" }>>
   ...over,
 });
 
+const checkFailed = (over: Partial<Extract<ServerEvent, { type: "github.signal" }>> = {}): ServerEvent => ({
+  type: "github.signal", taskId: "t1", kind: "check_failed",
+  payload: { prNumber: 42, checkName: "build", sha: "abc123", conclusion: "failure" },
+  ...over,
+});
+
 describe("rule engine — inert until a project opts in", () => {
   it("does nothing when the project has no live Rule at all", async () => {
     const { store, bus } = await setup();
@@ -193,6 +199,85 @@ describe("rule engine — the full loop", () => {
     await new Promise((r) => setTimeout(r, 30));
     expect(await store.listPendingActionsForProject(PROJECT_ID)).toEqual([]);
     expect((await store.getTask("t1"))?.state).toBe("ongoing");
+  });
+});
+
+describe("rule engine — reengage_run action (feedback-loop responders)", () => {
+  const immediateSafety = { announceBeforeActing: false, undoWindowMin: 10, pauseAfterUndos: 3, excludePriorities: [] };
+  const reengageRule = (id = "rule-reengage") => ({
+    id, workspaceId: DEFAULT_WORKSPACE, projectId: PROJECT_ID, name: "CI failed → re-engage",
+    when: "check_failed", conditions: [{ field: "github.signal", op: "check_failed", value: null }],
+    actions: [{ type: "reengage_run", params: {} }],
+    safety: immediateSafety, stats: { moves: 0, undos: 0 }, state: "live" as const, pausedReason: null, createdAt: Date.now(), archived: false,
+  });
+
+  it("check_failed condition + reengage_run action calls the wired hook with the run id and a descriptive note", async () => {
+    const { store, bus, engine } = await setup();
+    await store.putTask(mkTask({ state: "review", runId: "run-1" }));
+    const calls: Array<{ runId: string; note: string }> = [];
+    engine.reengageRun = async (runId, note) => {
+      calls.push({ runId, note });
+      return { engaged: true };
+    };
+    await store.putRule(reengageRule());
+
+    bus.publish(DEFAULT_WORKSPACE, checkFailed());
+    await waitFor(async () => calls.length > 0);
+
+    expect(calls[0]!.runId).toBe("run-1");
+    expect(calls[0]!.note).toContain("build");
+    expect(calls[0]!.note).toContain("failed");
+
+    const transitions = await store.listTransitionsForTask("t1");
+    expect(transitions).toHaveLength(1);
+    expect(transitions[0]!.status).not.toBe("failed");
+    expect(transitions[0]!.evidence.some((e) => e.includes("re-engaged run run-1"))).toBe(true);
+  });
+
+  it("review_changes_requested is a distinct condition — a check_failed rule doesn't fire for it", async () => {
+    const { store, bus, engine } = await setup();
+    await store.putTask(mkTask({ state: "review", runId: "run-1" }));
+    let called = false;
+    engine.reengageRun = async () => {
+      called = true;
+      return { engaged: true };
+    };
+    await store.putRule(reengageRule());
+
+    bus.publish(DEFAULT_WORKSPACE, { type: "github.signal", taskId: "t1", kind: "review_changes_requested", payload: { prNumber: 42, reviewBody: "please fix" } });
+    await new Promise((r) => setTimeout(r, 30));
+    expect(called).toBe(false);
+  });
+
+  it("no orchestrator hook wired → records a benign 'not wired' evidence, never throws", async () => {
+    const { store, bus } = await setup();
+    await store.putTask(mkTask({ state: "review", runId: "run-1" }));
+    await store.putRule(reengageRule("rule-reengage-unwired")); // engine.reengageRun deliberately left unset
+
+    bus.publish(DEFAULT_WORKSPACE, checkFailed());
+    await waitFor(async () => (await store.listTransitionsForTask("t1")).length > 0);
+
+    const transitions = await store.listTransitionsForTask("t1");
+    expect(transitions[0]!.status).not.toBe("failed");
+    expect(transitions[0]!.evidence.some((e) => e.includes("not wired"))).toBe(true);
+  });
+
+  it("a task with no run → records 'has no run', never calls the hook", async () => {
+    const { store, bus, engine } = await setup();
+    await store.putTask(mkTask({ state: "review", runId: null }));
+    let called = false;
+    engine.reengageRun = async () => {
+      called = true;
+      return { engaged: true };
+    };
+    await store.putRule(reengageRule("rule-reengage-norun"));
+
+    bus.publish(DEFAULT_WORKSPACE, checkFailed());
+    await waitFor(async () => (await store.listTransitionsForTask("t1")).length > 0);
+
+    expect(called).toBe(false);
+    const transitions = await store.listTransitionsForTask("t1");
+    expect(transitions[0]!.evidence.some((e) => e.includes("has no run"))).toBe(true);
   });
 });
 

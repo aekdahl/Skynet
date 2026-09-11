@@ -21,6 +21,7 @@ import type {
   Module,
   PendingRuleAction,
   PendingRuleActionStatus,
+  Plan,
   PolicyVersion,
   Project,
   ProjectContextEntry,
@@ -97,6 +98,10 @@ CREATE TABLE IF NOT EXISTS autonomy_overrides (project_id text PRIMARY KEY, data
 -- Roadmap doc cache (Phase 24) — one parsed RoadmapDoc per project, replaced
 -- wholesale on every sync.
 CREATE TABLE IF NOT EXISTS roadmap_docs (project_id text PRIMARY KEY, workspace_id text NOT NULL, data jsonb NOT NULL);
+-- The living Plan (Product Steward Phase 1, docs/product-steward.md) -- one
+-- versioned markdown Plan per project, replaced wholesale on every edit
+-- (optimistic concurrency is enforced in Operations, not here).
+CREATE TABLE IF NOT EXISTS plans (project_id text PRIMARY KEY, workspace_id text NOT NULL, data jsonb NOT NULL, version int NOT NULL DEFAULT 1);
 -- Roadmap proposal governance (Phase 25 -- TASK 28) -- an agent's proposed
 -- edit to a project's roadmap doc; project-scoped like proposals above but
 -- a distinct collection (see @skynet/shared's RoadmapProposal).
@@ -557,6 +562,42 @@ export class PostgresStore implements Store {
       [doc.projectId, doc.workspaceId, J(doc)],
     );
     return doc;
+  }
+
+  async getPlan(projectId: string): Promise<Plan | undefined> {
+    const { rows } = await this.pool.query<{ data: Plan }>("SELECT data FROM plans WHERE project_id=$1", [projectId]);
+    return rows[0]?.data;
+  }
+  async putPlan(plan: Plan, expectedVersion?: number): Promise<Plan> {
+    if (expectedVersion === undefined) {
+      const { rows } = await this.pool.query<{ version: number }>(
+        `INSERT INTO plans(project_id,workspace_id,data,version) VALUES($1,$2,$3::jsonb,1)
+         ON CONFLICT(project_id) DO UPDATE SET workspace_id=$2, data=$3::jsonb, version=plans.version+1
+         RETURNING version`,
+        [plan.projectId, plan.workspaceId, J(plan)],
+      );
+      return { ...plan, version: rows[0]!.version };
+    }
+    const { rows } = await this.pool.query<{ version: number }>(
+      `UPDATE plans SET workspace_id=$2, data=$3::jsonb, version=version+1
+       WHERE project_id=$1 AND version=$4 RETURNING version`,
+      [plan.projectId, plan.workspaceId, J(plan), expectedVersion],
+    );
+    if (rows.length === 0) {
+      // No existing row at all (never saved before) is ALSO a legitimate
+      // "expectedVersion=0" first write — insert it rather than treating a
+      // genuinely fresh Plan as a conflict.
+      if (expectedVersion === 0) {
+        const inserted = await this.pool.query<{ version: number }>(
+          `INSERT INTO plans(project_id,workspace_id,data,version) VALUES($1,$2,$3::jsonb,1)
+           ON CONFLICT(project_id) DO NOTHING RETURNING version`,
+          [plan.projectId, plan.workspaceId, J(plan)],
+        );
+        if (inserted.rows.length > 0) return { ...plan, version: inserted.rows[0]!.version };
+      }
+      throw new VersionConflictError("plan", plan.projectId);
+    }
+    return { ...plan, version: rows[0]!.version };
   }
 
   // ── roadmap proposals (Phase 25 — TASK 28, project-scoped) ────────────────
