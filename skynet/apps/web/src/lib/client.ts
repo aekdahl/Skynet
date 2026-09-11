@@ -1203,6 +1203,11 @@ export interface AssistantAction {
     | "set_status"
     | "set_schedule"
     | "set_assignment"
+    | "reassign_run"
+    | "retire_runner"
+    | "pause_run"
+    | "resume_run"
+    | "stop_run"
     | "add_feature"
     | "add_milestone"
     | "set_task_feature"
@@ -1218,6 +1223,7 @@ export interface AssistantAction {
     | "process_backlog"
     | "pause_key"
     | "resume_key"
+    | "remove_credential"
     | "resolve_hitl";
   summary: string;
   taskId?: string;
@@ -1235,7 +1241,11 @@ export interface AssistantAction {
   // = the pool for `agents` mode (empty otherwise).
   mode?: "any" | "agents" | "unassigned";
   agentIds?: string[];
-  // Credential pause/resume — workspace-scoped, unlike every project action above.
+  // Fleet ops: `agentId` (singular) targets a specific agent for reassign_run/
+  // retire_runner; `runId` is the task's live run for pause_run/resume_run/stop_run.
+  agentId?: string;
+  runId?: string;
+  // Credential pause/resume/remove — workspace-scoped, unlike every project action above.
   credentialId?: string;
   reason?: string;
   // Roadmap linkage (add_feature / add_milestone / set_task_feature /

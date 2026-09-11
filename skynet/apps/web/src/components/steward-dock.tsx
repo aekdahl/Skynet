@@ -191,6 +191,35 @@ function describeOutcome(kind: string, o: StewardActionOutcome): string {
         return updateTask(projectId, a.taskId!, {
           assignment: { mode: a.mode ?? "unassigned", agentIds: a.mode === "agents" ? (a.agentIds ?? []) : [] },
         });
+      // ── Fleet ops ────────────────────────────────────────────────────────
+      // Act on WHO is running a task right now or on the fleet roster itself
+      // — distinct from set_assignment's eligibility. `agentId` (singular)
+      // targets a specific fleet agent; `runId` is the task's live run,
+      // already resolved server-side at proposal time.
+      case "reassign_run": {
+        await api.reassignTaskAgent(projectId, a.taskId!, a.agentId!);
+        return;
+      }
+      case "retire_runner": {
+        await api.deleteAgent(a.agentId!);
+        return;
+      }
+      case "pause_run": {
+        await api.pauseAgent(a.runId!);
+        return;
+      }
+      case "resume_run": {
+        await api.resumeAgent(a.runId!);
+        return;
+      }
+      case "stop_run": {
+        await api.stopAgent(a.runId!);
+        return;
+      }
+      case "remove_credential": {
+        await api.deleteSecret(a.credentialId!);
+        return;
+      }
       // Roadmap: create/link features + milestones via the same guarded store paths.
       case "add_feature": return createFeature(projectId, a.name ?? "", a.description, a.milestoneId ?? undefined);
       case "add_milestone": return createMilestone(projectId, a.name ?? "", a.description, a.targetAt ?? undefined);
