@@ -1515,6 +1515,13 @@ button.kb-done:hover { opacity: 1; }
 .proj-keys-value { color: var(--muted); }
 .proj-keys[open] .proj-keys-summary { border-color: var(--accent); }
 .proj-keys-menu { position: absolute; right: 0; top: calc(100% + 4px); z-index: 20; min-width: 220px; max-height: 320px; overflow-y: auto; display: flex; flex-direction: column; gap: var(--space-4); padding: var(--space-8); border-radius: 10px; border: 1px solid var(--line); background: var(--panel); box-shadow: 0 10px 30px rgb(0 0 0 / 0.35); }
+/* A flex column with a capped height (max-height above) shrinks its children to
+   fit BEFORE overflow-y kicks in — so a tall menu (the Governance popover's
+   seven full toggle/select rows) had its rows squeezed under their content
+   height. Rows floored by their own min-height (.proj-autonomy) then spilled
+   their 2-line hint onto the next row, reading as overlapping text. Pin the
+   children at their content height so the menu scrolls instead of compressing. */
+.proj-keys-menu > * { flex-shrink: 0; }
 .proj-keys-hint { font-size: var(--fz-11); color: var(--muted); margin-bottom: var(--space-4); line-height: 1.4; }
 .proj-keys-item { display: flex; align-items: center; gap: var(--space-8); font-size: var(--fz-12-5); color: var(--text); cursor: pointer; padding: 2px 0; }
 .proj-keys-item input { flex: none; }
