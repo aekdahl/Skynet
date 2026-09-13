@@ -1,0 +1,26 @@
+# Cloud Build source-upload excludes (used by `gcloud builds submit ../..`).
+# The image is built in-cluster — the Dockerfile runs the install + build — so
+# dependencies, build outputs, and local tooling never need uploading. Keeping
+# the tarball small also avoids the 300s upload timeout on slower links.
+#
+# NOTE: once this file exists, gcloud uses ONLY it (it no longer falls back to
+# .gitignore), so this must list everything to exclude — including the nested
+# .terraform dirs that .gitignore handles but the gcloud fallback missed.
+
+.git/
+node_modules/
+dist/
+build/
+out/
+.next/
+coverage/
+*.log
+.DS_Store
+
+# Terraform working dirs: provider plugins are ~100+ MB and are never needed to
+# build the app image (this is what was bloating the upload to ~188 MB).
+.terraform/
+*.tfstate
+*.tfstate.*
+terraform.tfvars
+crash.log
