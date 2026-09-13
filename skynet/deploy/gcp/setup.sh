@@ -210,8 +210,23 @@ ssh_vm() { gcloud compute ssh "$VM" --zone="$ZONE" --project="$PROJECT" --tunnel
 # reauth (the tunnel blocks silently instead of erroring, so setup.sh could hang
 # for hours at "re-running startup on the VM…").
 say "▸ Rebooting the VM to pull the new image + apply the startup script…"
-gcloud compute instances reset "$VM" --zone="$ZONE" --project="$PROJECT" >/dev/null 2>&1 \
-  || echo "  (reset failed — run 'gcloud auth login', then re-run this script)"
+# FATAL, not a warning: the new image was already built + pushed and the VM's
+# metadata already updated above, but neither takes effect on a RUNNING
+# instance without this reboot (the tag is always :latest — see the comment
+# above). If this call fails silently and the script carries on to the health
+# gate below, that gate happily reports "✓ serving" — it's still the OLD
+# container answering, not the one that was just deployed. A "successful"
+# redeploy that quietly changed nothing is worse than a loud failure, so stop
+# here rather than let that health check lie.
+if ! gcloud compute instances reset "$VM" --zone="$ZONE" --project="$PROJECT" >/dev/null 2>&1; then
+  echo "  ✗ VM reset failed — the new image was built + pushed, but the running"
+  echo "    container was NOT restarted onto it (the old one is still serving)."
+  echo "    Most likely your gcloud login needs reauth. Fix it, then reboot:"
+  echo "      gcloud auth login"
+  echo "      gcloud compute instances reset ${VM} --zone=${ZONE} --project=${PROJECT}"
+  echo "    (or just re-run ./setup.sh once you're re-authed)"
+  exit 1
+fi
 
 # Health gate. public_ui: poll the PUBLIC url — no tunnel (so reauth can't block
 # it), and it proves Caddy + Let's Encrypt actually serve (the app up on :8080 is
