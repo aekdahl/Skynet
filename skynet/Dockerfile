@@ -23,6 +23,18 @@ FROM base AS build
 COPY pnpm-workspace.yaml package.json pnpm-lock.yaml tsconfig.base.json ./
 COPY packages ./packages
 COPY apps ./apps
+# Two repo-root files reached by relative path from apps/server/src, neither
+# under packages/ or apps/ above — without them the image build breaks (or, for
+# ROADMAP.md, silently degrades) even though a full checkout (local/CI) never
+# notices:
+#   • docs/sensitive-paths.json — imported at COMPILE time by orchestrator.ts
+#     (`import … from "../../../docs/sensitive-paths.json"`). Missing here
+#     fails `pnpm build` with TS2307 "Cannot find module".
+#   • ROADMAP.md — read at RUNTIME by the /api/roadmap handler, wrapped in a
+#     try/catch with a "not bundled with this build" fallback stub. Missing
+#     here doesn't break the build, just silently serves that stub in prod.
+COPY docs ./docs
+COPY ROADMAP.md ./ROADMAP.md
 RUN pnpm install --frozen-lockfile
 RUN pnpm build
 
