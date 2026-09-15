@@ -875,10 +875,17 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         await api.reorderTask(projectId, taskId, beforeId);
       },
       transitionTask: async (projectId, taskId, to, preserve) => {
+        // Toast the server's rejection (e.g. an illegal kanban transition) for the
+        // board's fire-and-forget callers, then RE-THROW a clean Error so callers
+        // that await can tell the move failed. Steward's confirm chip relies on
+        // this: without a throw it marked the action ✓ done even when the server
+        // rejected it and the task never moved.
         try {
           await api.transitionTask(projectId, taskId, to, preserve);
         } catch (e) {
-          if (e instanceof api.ApiError) toast(serverMessage(e, "Couldn't move the task."));
+          const message = serverMessage(e, "Couldn't move the task.");
+          if (e instanceof api.ApiError) toast(message);
+          throw new Error(message);
         }
       },
       forceTaskDone: async (projectId, taskId) => {

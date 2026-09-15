@@ -16,7 +16,7 @@
 // content or project state.
 
 import type { Agent, Feature, HitlItem, Milestone, Project, SourceRef, Task, TaskAssignment, TaskRun } from "@skynet/shared";
-import { ProjectStatus, SourceRef as SourceRefSchema, TaskState } from "@skynet/shared";
+import { HUMAN_TASK_TRANSITIONS, ProjectStatus, SourceRef as SourceRefSchema, TaskState } from "@skynet/shared";
 import {
   ASSISTANT_MODEL,
   oneShotRepoAssistant,
@@ -57,6 +57,11 @@ const SYSTEM =
   "Use the task ids from PROJECT STATUS (each task is listed as `[id] text`); if a request references a task that isn't listed, ask instead of guessing. Valid action objects:\n" +
   '  {"kind":"add_task","text":"<title>","description":"<optional — the full brief the agent gets>"}\n' +
   '  {"kind":"move_task","taskId":"<id>","to":"backlog|triage|todo|ongoing|review|done"}\n' +
+  "    move_task is only legal along these human kanban edges (from → allowed): " +
+  "backlog → triage; triage → todo or backlog; todo → triage or backlog; ongoing → todo; " +
+  "review → done or todo; done → triage or backlog. Propose the next LEGAL step toward what the " +
+  "operator wants (e.g. to get a backlog task to todo, move it to triage first), or explain the path — " +
+  "NEVER propose an illegal jump like backlog → todo. (`todo → ongoing` is 'start the task', not a move.)\n" +
   '  {"kind":"rename_task","taskId":"<id>","text":"<new title>"}\n' +
   '  {"kind":"set_task_desc","taskId":"<id>","description":"<text>"}\n' +
   '  {"kind":"remove_task","taskId":"<id>"}\n' +
@@ -366,6 +371,12 @@ export function validateProjectAction(obj: unknown, ctx: ProjectActionContext): 
       const t = task(o.taskId);
       const to = str(o.to) as Task["state"];
       if (!t || !TaskState.options.includes(to)) return null;
+      // Only accept a move the server will actually perform. HUMAN_TASK_TRANSITIONS
+      // is the single source of truth for legal human kanban edges (e.g. backlog can
+      // only go to triage, never straight to todo) and has no self-loops, so this also
+      // drops a no-op same-state move. Without it Steward confirms an illegal move
+      // that Operations.transitionTask rejects — the chip goes ✓ and nothing moves.
+      if (!(HUMAN_TASK_TRANSITIONS[t.state] ?? []).includes(to)) return null;
       return { kind, taskId: t.id, to, summary: `Move “${clip(t.text)}” → ${to}` };
     }
     case "rename_task": {

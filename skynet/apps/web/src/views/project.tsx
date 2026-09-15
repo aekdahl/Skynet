@@ -655,7 +655,7 @@ function TaskCard({
               className="kb-tool"
               title="Reopen this done task in the backlog for another round of work — doesn't touch the already-merged branch."
               aria-label="Send to Backlog for rework"
-              onClick={() => void transitionTask(pid, task.id, "backlog")}
+              onClick={() => void transitionTask(pid, task.id, "backlog").catch(() => undefined)}
             >
               ↺
             </button>
@@ -948,7 +948,7 @@ function TaskCard({
                     },
                   ],
                 });
-                if (picked) void transitionTask(pid, task.id, "todo", picked === "keep");
+                if (picked) void transitionTask(pid, task.id, "todo", picked === "keep").catch(() => undefined);
               }}
             >
               ↩ Send to To-do
@@ -1810,10 +1810,10 @@ export function ProjectView({
         confirmLabel: "Merge anyway",
         danger: true,
       }).then((ok) => {
-        if (ok) void transitionTask(project.id, d.taskId, to);
+        if (ok) void transitionTask(project.id, d.taskId, to).catch(() => undefined);
       });
     } else {
-      void transitionTask(project.id, d.taskId, to);
+      void transitionTask(project.id, d.taskId, to).catch(() => undefined);
     }
     setDrag(null);
     setDropBeforeId(null);
