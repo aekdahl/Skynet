@@ -71,6 +71,23 @@ export const TaskState = z.enum([
 ]);
 export type TaskState = z.infer<typeof TaskState>;
 
+// The LEGAL human-driven kanban moves, keyed by the task's CURRENT state. Single
+// source of truth for "which move may a human make": the server enforces it
+// (Operations.transitionTask) and Steward validates proposed moves against it, so
+// the assistant never confirms a move the store will reject. Edges are narrow on
+// purpose: `backlog` can only advance to `triage` (never straight to `todo`);
+// `ongoing` is run-driven so a human can only abandon it back to `todo`. No
+// self-loops (same-state is a no-op, not a transition). The autonomy loop uses its
+// own paths and is NOT bound by this table.
+export const HUMAN_TASK_TRANSITIONS: Record<TaskState, TaskState[]> = {
+  backlog: ["triage"],
+  triage: ["todo", "backlog"],
+  todo: ["triage", "backlog"],
+  ongoing: ["todo"],
+  review: ["done", "todo"],
+  done: ["triage", "backlog"],
+};
+
 // A task's agent *eligibility* — WHO may take it, distinct from who actually did
 // (that's TaskRun.agentId). The set, not a hard binding: any idle eligible agent
 // runs it.

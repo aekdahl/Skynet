@@ -59,6 +59,25 @@ describe("validateProjectAction — whitelist + project-scoped id resolution", (
     expect(validateProjectAction({ kind: "move_task", taskId: "t-1", to: "shipped" }, ctx)).toBeNull();
   });
 
+  it("move_task rejects a move that isn't a legal transition from the task's current state", () => {
+    // t-2 is in `backlog`, which can ONLY advance to `triage`. A backlog → todo jump
+    // is what the server (HUMAN_TASK_TRANSITIONS) rejects — so Steward must not
+    // propose it (else the confirm chip goes ✓ while the task never moves).
+    expect(validateProjectAction({ kind: "move_task", taskId: "t-2", to: "todo" }, ctx)).toBeNull();
+    expect(validateProjectAction({ kind: "move_task", taskId: "t-2", to: "done" }, ctx)).toBeNull();
+    // The one legal step out of backlog IS accepted.
+    expect(validateProjectAction({ kind: "move_task", taskId: "t-2", to: "triage" }, ctx)).toMatchObject({
+      kind: "move_task",
+      taskId: "t-2",
+      to: "triage",
+    });
+    // A no-op same-state move has no legal edge either → rejected.
+    expect(validateProjectAction({ kind: "move_task", taskId: "t-2", to: "backlog" }, ctx)).toBeNull();
+    // review → todo is legal (abandon back); review → triage is not.
+    expect(validateProjectAction({ kind: "move_task", taskId: "t-1", to: "todo" }, ctx)).toMatchObject({ kind: "move_task", to: "todo" });
+    expect(validateProjectAction({ kind: "move_task", taskId: "t-1", to: "triage" }, ctx)).toBeNull();
+  });
+
   it("rename_task / set_task_desc / reorder_task require a known task", () => {
     expect(validateProjectAction({ kind: "rename_task", taskId: "t-2", text: "add Prometheus metrics" }, ctx)).toMatchObject({ kind: "rename_task", taskId: "t-2" });
     expect(validateProjectAction({ kind: "set_task_desc", taskId: "t-1", description: "302 loop on Safari" }, ctx)).toMatchObject({ kind: "set_task_desc", taskId: "t-1" });

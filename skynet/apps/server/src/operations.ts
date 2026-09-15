@@ -88,7 +88,7 @@ import type {
   PauseCredentialResult,
   SecretMeta,
 } from "@skynet/shared";
-import { modelValidForProvider, ProjectCharter as ProjectCharterSchema, WorkspaceSettings } from "@skynet/shared";
+import { modelValidForProvider, ProjectCharter as ProjectCharterSchema, WorkspaceSettings, HUMAN_TASK_TRANSITIONS as HUMAN_TRANSITIONS } from "@skynet/shared";
 import { type AutonomyDetent, AUTONOMY_DETENT_COST_WEIGHT, detentFor, fieldsForDetent } from "@skynet/shared";
 import type { AutonomyTelemetryRollup } from "@skynet/shared";
 import { computeAutonomyTelemetryRollup } from "./autonomy-telemetry-rollup.js";
@@ -265,17 +265,11 @@ export type ProjectRoadmapResult =
   | { state: "not_found" }
   | { state: "github_error"; message: string };
 
-// Legal HUMAN kanban moves (the autonomy loop uses its own paths). `ongoing` is
-// run-driven — a human uses Stop on the run, or abandons back to `todo` (which
-// stops+detaches the run). `todo → ongoing` is "Start now" (assignTask), not here.
-const HUMAN_TRANSITIONS: Record<Task["state"], Task["state"][]> = {
-  backlog: ["triage"],
-  triage: ["todo", "backlog"],
-  todo: ["triage", "backlog"],
-  ongoing: ["todo"],
-  review: ["done", "todo"],
-  done: ["triage", "backlog"],
-};
+// Legal HUMAN kanban moves live in @skynet/shared (HUMAN_TASK_TRANSITIONS, imported
+// here as HUMAN_TRANSITIONS) so the server and Steward validate against the SAME
+// table. The autonomy loop uses its own paths. `ongoing` is run-driven — a human
+// uses Stop on the run, or abandons back to `todo` (which stops+detaches the run).
+// `todo → ongoing` is "Start now" (assignTask), not here.
 
 export interface OperationsDeps {
   store: Store;
